@@ -17,6 +17,16 @@ export type WalletAuthoritativeSnapshot = WalletSyncSource & {
   pendingOutputKeyImageCount?: number | string;
 };
 
+/** A saved initial Ledger check does not cover outputs received afterwards. */
+export function ledgerBalanceIsVerified(
+  snapshot: WalletAuthoritativeSnapshot | null | undefined,
+  initialVerificationComplete: boolean,
+): boolean {
+  const pending = Number(snapshot?.pendingOutputKeyImageCount);
+  return Boolean(snapshot) && initialVerificationComplete
+    && Number.isSafeInteger(pending) && pending === 0;
+}
+
 export type WalletReadinessPhase =
   | "block-sync"
   | "wallet-scan"
@@ -59,11 +69,11 @@ function snapshotRevision(snapshot: WalletAuthoritativeSnapshot | null | undefin
 /**
  * The one cross-platform publication gate for wallet state.
  *
- * A native snapshot is working data until the Core is synchronized, any
- * required Ledger key-image import is durable, no owned output is waiting for
- * a key image, and the snapshot has a newer native revision. Until then the
- * UI retains its last confirmed state instead of exposing an incoming-only
- * balance or an incomplete history.
+ * A native snapshot is working data until Core is synchronized, the caller's
+ * required Ledger check is complete, and the native revision is newer. Until
+ * then, retain the previous publication. Callers allowing later read-only
+ * Ledger snapshots must use ledgerBalanceIsVerified to label a provisional
+ * balance; publication alone does not authorize spending.
  */
 export function nextWalletPublication<
   TSnapshot extends WalletAuthoritativeSnapshot,
@@ -155,10 +165,10 @@ export type WalletSyncPresentation = {
 
 export type WalletSyncPresentationOptions = {
   /**
-   * Authoritative start of the visible sync range: the restore height chosen
-   * by the owner, or (for a new wallet) its first live Core height. When
-   * absent, progress intentionally remains indeterminate instead of treating
-   * genesis or an old UI cache as the beginning of this sync.
+   * Start of the visible work range, normally the first live Core height in
+   * this session. It may equal the chosen restore point on a fresh import.
+   * Without a baseline, keep progress indeterminate rather than measuring
+   * from genesis or old restore history on every reopen.
    */
   startHeight?: number | string;
 };
@@ -184,6 +194,8 @@ export type WalletSyncEtaState = {
   smoothedBlocksPerSecond?: number;
   /** Last stable estimate, retained while a non-scan phase is running. */
   etaSeconds?: number;
+  /** Transport generation that produced the current throughput sample. */
+  providerGeneration?: number;
 };
 
 export type WalletSyncEtaEstimate = {
@@ -197,6 +209,8 @@ export type WalletSyncEtaOptions = {
    * checkpoints wallets, retries, or is otherwise outside block flow.
    */
   active?: boolean;
+  /** Reset measurements when the app switches to another node/provider. */
+  providerGeneration?: number;
 };
 
 function nonNegativeNumber(value: number | string): number {
@@ -205,19 +219,36 @@ function nonNegativeNumber(value: number | string): number {
 }
 
 /**
- * Selects the only valid presentation baseline for a wallet sync. A user
- * supplied restore height is durable and wins over a transient UI snapshot.
- * New wallets have no chosen height, so their first live Core height is the
- * best available baseline for the current session.
+ * Prefer the current live session baseline for presentation. A configured
+ * restore point is only a fallback for callers that have no live session
+ * yet; it still independently controls the native historical scan.
  */
 export function syncStartHeightForWallet(
   restoreHeight: number | string | undefined,
   liveStartHeight?: number | string,
 ): number | undefined {
-  const configured = nonNegativeNumber(restoreHeight ?? 0);
-  if (configured > 0) return configured;
   const live = nonNegativeNumber(liveStartHeight ?? 0);
-  return live > 0 ? live : undefined;
+  if (live > 0) return live;
+  const configured = nonNegativeNumber(restoreHeight ?? 0);
+  return configured > 0 ? configured : undefined;
+}
+
+/**
+ * Presentation-only baseline for the work remaining in this app session.
+ * Capture the first live Core height, not the historical restore point. Keep
+ * it across progress polls/retries; rebase after completion or a rewind.
+ * This never changes the native scan cursor or the wallet's readiness.
+ */
+export function nextWalletSyncStartHeight(
+  previous: number | undefined,
+  snapshot: WalletSyncSource | null | undefined,
+): number | undefined {
+  const prior = nonNegativeNumber(previous ?? 0) || undefined;
+  const current = nonNegativeNumber(snapshot?.walletHeight ?? 0);
+  if (!current) return prior;
+  return snapshot?.synchronized || prior === undefined
+    ? current
+    : Math.min(prior, current);
 }
 
 /**
@@ -347,7 +378,12 @@ export function updateWalletSyncEta(
     return { state: undefined, etaSeconds: undefined };
   }
 
-  if (!previous || remainingBlocks > previous.startRemainingBlocks) {
+  const providerChanged =
+    previous?.providerGeneration !== undefined &&
+    options.providerGeneration !== undefined &&
+    previous.providerGeneration !== options.providerGeneration;
+
+  if (!previous || remainingBlocks > previous.startRemainingBlocks || providerChanged) {
     return {
       state: {
         startedAt: observedAt,
@@ -358,6 +394,7 @@ export function updateWalletSyncEta(
         lastObservedAt: observedAt,
         activeElapsedMs: 0,
         lastProgressActiveElapsedMs: 0,
+        providerGeneration: options.providerGeneration,
       },
       etaSeconds: undefined,
     };
@@ -367,6 +404,8 @@ export function updateWalletSyncEta(
   const observationDeltaMs = Math.max(0, observedAt - previous.lastObservedAt);
   let state: WalletSyncEtaState = {
     ...previous,
+    providerGeneration:
+      options.providerGeneration ?? previous.providerGeneration,
     lastObservedAt: observedAt,
     activeElapsedMs:
       previous.activeElapsedMs + (active ? observationDeltaMs : 0),

@@ -4,12 +4,13 @@
 //! immutable WebP covers from the TEX8 CDN.
 
 mod ads;
+mod articles;
 
 use axum::{
     extract::DefaultBodyLimit,
-    extract::{Query, State},
-    http::StatusCode,
-    response::IntoResponse,
+    extract::{Path, Query, State},
+    http::{header, HeaderValue, StatusCode},
+    response::{Html, IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
@@ -25,8 +26,6 @@ use tokio::sync::{Mutex, RwLock};
 
 pub use ads::AdConfig;
 
-const CURATED_CATALOG_IMAGE_CDN: &str =
-    "https://cdn.tex8.com/tex8-images/monero-fast-wallet/news/v1/2026-08-20";
 const CACHE_FOR: Duration = Duration::from_secs(15 * 60);
 const NEWS_CATALOG_LIMIT: usize = 10;
 const MARKET_QUOTE_CACHE_FOR: Duration = Duration::from_secs(60);
@@ -315,6 +314,8 @@ pub fn router(state: NewsState) -> Router {
         .route("/healthz", get(healthz))
         .route("/v1/news", get(news))
         .route("/v1/news/catalog-hash", get(catalog_hash_endpoint))
+        .route("/articles", get(article_index))
+        .route("/articles/{slug}", get(article_page))
         .route("/v1/market/quote", get(market_quote))
         .route("/v1/market/chart", get(market_chart))
         .route("/v1/ads/catalog", get(ads::public_catalog))
@@ -369,6 +370,41 @@ async fn catalog_hash_endpoint(State(state): State<NewsState>) -> Json<CatalogHa
     Json(CatalogHashResponse {
         catalog_hash: state.catalog_hash.clone(),
     })
+}
+
+async fn article_index() -> Response {
+    article_html(articles::render_index())
+}
+
+async fn article_page(Path(slug): Path<String>) -> Response {
+    match articles::find(&slug) {
+        Some(article) => article_html(articles::render_article(article)),
+        None => (StatusCode::NOT_FOUND, "article_not_found").into_response(),
+    }
+}
+
+fn article_html(body: String) -> Response {
+    let mut response = Html(body).into_response();
+    let headers = response.headers_mut();
+    headers.insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static(
+            "default-src 'none'; img-src https://cdn.tex8.com; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'",
+        ),
+    );
+    headers.insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("no-referrer"),
+    );
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    headers.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("public, max-age=300"),
+    );
+    response
 }
 
 async fn market_quote(State(state): State<NewsState>) -> Result<Json<MarketQuote>, ApiError> {
@@ -486,54 +522,7 @@ fn normalise_market_points(points: impl Iterator<Item = MarketPoint>) -> Option<
 }
 
 fn curated_catalog() -> Vec<NewsItem> {
-    let image_url = |name: &str| format!("{CURATED_CATALOG_IMAGE_CDN}/{name}.webp");
-    vec![
-        NewsItem {
-            id: "2026-08-20-nano-ledger".to_string(),
-            title: "Nano Ledger: Monero sicher signieren".to_string(),
-            summary: "Der Spend Key bleibt auf dem Hardware-Gerät. Prüfe Empfänger, Betrag und Gebühr immer auf dem Display, bevor du die Signatur freigibst.".to_string(),
-            published_at: "2026-08-20T15:00:00Z".to_string(),
-            category: NewsCategory::Wallet,
-            url: "https://www.getmonero.org/resources/user-guides/ledger-wallet-cli.html".to_string(),
-            image_url: image_url("nano-ledger"),
-        },
-        NewsItem {
-            id: "2026-08-20-monero".to_string(),
-            title: "Monero: Private Zahlungen ohne öffentliche Kontostände".to_string(),
-            summary: "Ring-Signaturen, Stealth-Adressen und vertrauliche Beträge schützen die Zahlungsdaten auf Protokollebene.".to_string(),
-            published_at: "2026-08-20T14:00:00Z".to_string(),
-            category: NewsCategory::Network,
-            url: "https://www.getmonero.org/get-started/what-is-monero/".to_string(),
-            image_url: image_url("monero"),
-        },
-        NewsItem {
-            id: "2026-08-20-monero-fast-wallet".to_string(),
-            title: "Monero Fast Wallet: Schneller Sync, Schlüssel lokal".to_string(),
-            summary: "Die Wallet nutzt den gemeinsamen Monero-Core, beschleunigt den Blockabruf und lässt Seed sowie Signaturen auf deinem Gerät.".to_string(),
-            published_at: "2026-08-20T13:00:00Z".to_string(),
-            category: NewsCategory::Wallet,
-            url: "https://www.getmonero.org/resources/user-guides/".to_string(),
-            image_url: image_url("monero-fast-wallet"),
-        },
-        NewsItem {
-            id: "2026-08-20-monero-fast-node".to_string(),
-            title: "Monero Fast Node: Privater Zugang zur Blockchain".to_string(),
-            summary: "Monero Fast Node stellt Wallets einen zuverlässigen Node-Zugang bereit und bleibt mit dem Monero-Netzwerk kompatibel.".to_string(),
-            published_at: "2026-08-20T12:00:00Z".to_string(),
-            category: NewsCategory::Network,
-            url: "https://www.getmonero.org/resources/moneropedia/node.html".to_string(),
-            image_url: image_url("monero-fast-node"),
-        },
-        NewsItem {
-            id: "2026-08-20-global-privacy".to_string(),
-            title: "Globale Privacy: Weniger Datenspuren im Alltag".to_string(),
-            summary: "Lokale Schlüssel, verschlüsselte Verbindungen und datensparsame Dienste sind praktische Bausteine digitaler Selbstbestimmung.".to_string(),
-            published_at: "2026-08-20T11:00:00Z".to_string(),
-            category: NewsCategory::Ecosystem,
-            url: "https://www.getmonero.org/get-started/what-is-monero/".to_string(),
-            image_url: image_url("privacy"),
-        },
-    ]
+    articles::news_items()
 }
 
 #[derive(Serialize)]
@@ -587,17 +576,30 @@ mod tests {
     #[test]
     fn serves_the_curated_tex8_catalog() {
         let news = curated_catalog();
-        assert_eq!(news.len(), 5);
+        assert_eq!(news.len(), 7);
         assert!(news
             .iter()
-            .all(|item| item.url.starts_with("https://www.getmonero.org/")));
+            .all(|item| item.url.starts_with("https://xmr.tex8.com/news/articles/")));
         assert!(news.iter().all(|item| {
-            item.image_url.starts_with(CURATED_CATALOG_IMAGE_CDN)
-                && item.image_url.ends_with(".webp")
+            item.image_url.starts_with(
+                "https://cdn.tex8.com/tex8-images/monero-fast-wallet/news/v1/2026-10-06/",
+            ) && item.image_url.ends_with(".webp")
         }));
         let encoded = serde_json::to_value(&news[0]).expect("catalog serializes");
         assert!(encoded["imageUrl"].as_str().is_some());
         assert_eq!(encoded.as_object().map(|item| item.len()), Some(7));
+    }
+
+    #[test]
+    fn renders_catalog_and_article_pages() {
+        let index = articles::render_index();
+        assert!(index.contains("Monero-News"));
+        assert!(index.contains("/news/articles/monero-fast-node-datenweg"));
+        let article = articles::find("mfw-namen-zwei-schritte").expect("article exists");
+        let page = articles::render_article(article);
+        assert!(page.contains("Schritt 1: Commit"));
+        assert!(page.contains("Schritt 2: Claim"));
+        assert!(articles::find("../invalid").is_none());
     }
 
     #[test]

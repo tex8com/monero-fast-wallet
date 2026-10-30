@@ -226,11 +226,37 @@ describe('sensitive native boundary contract', () => {
       'Executors.newSingleThreadExecutor',
     );
     expect(androidWalletModule).toContain('"mfw-native-wallet"');
-    expect(androidWalletModule).toContain('nativeWalletExecutor.execute');
+    expect(androidWalletModule).toContain(
+      'executor: Executor = nativeWalletExecutor',
+    );
+    expect(androidWalletModule).toContain('executor.execute');
     expect(androidWalletModule).toContain('"queuedMs" to');
     expect(androidWalletModule).toContain(
       'if (!requireAppAuthorized(promise))',
     );
+  });
+
+  it('keeps slow Push registration off the wallet queue without skipping authorization', () => {
+    const register = androidWalletModule.slice(
+      androidWalletModule.indexOf('override fun registerFastWalletProvider('),
+      androidWalletModule.indexOf('override fun sendFastWalletTestPush('),
+    );
+    expect(register).toContain('executor = fastWalletProviderExecutor');
+    expect(register).toContain('requireFastWalletAlertFeature(promise)');
+    expect(register.match(/FAST_WALLET_PROVIDER_CONNECT_TIMEOUT_MS/g)).toHaveLength(2);
+    expect(androidWalletModule).toContain('fastWalletProviderExecutor.shutdown()');
+    expect(androidWalletModule).toContain('synchronized(fastWalletInstallationLock)');
+    const disable = androidWalletModule.slice(
+      androidWalletModule.indexOf('override fun disableFastWalletDelivery('),
+      androidWalletModule.indexOf('override fun deleteFastWalletAssignment('),
+    );
+    expect(disable).toContain('executor = fastWalletProviderExecutor');
+    const dispatcher = androidWalletModule.slice(
+      androidWalletModule.indexOf('private fun <T> dispatchNative('),
+      androidWalletModule.indexOf('private inline fun <T> timedNativeOperation('),
+    );
+    expect(dispatcher.match(/requireAppAuthorized\(promise\)/g)).toHaveLength(2);
+    expect(dispatcher).toContain('requireLinked(promise)');
   });
 
   it('does not block wallet reads while Android prepares a Ledger GATT connection', () => {

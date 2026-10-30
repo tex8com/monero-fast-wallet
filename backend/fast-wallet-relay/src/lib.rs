@@ -3,6 +3,8 @@
 //! This crate never links a Monero wallet implementation and has no type that
 //! can hold an address, view key, transaction ID, amount or provider token.
 
+pub mod hosting;
+
 use axum::{
     extract::{DefaultBodyLimit, Path as AxumPath, State},
     http::{HeaderMap, StatusCode},
@@ -11,8 +13,8 @@ use axum::{
     Json, Router,
 };
 use fast_wallet_protocol::{
-    key_id, worker_receipt_body, ProtocolError, WatchEnvelope, WorkerAuthPurpose,
-    WorkerDescriptor, WorkerRequestAuth, WATCH_ENVELOPE_SIZE, WORKER_AUTH_SIZE,
+    key_id, worker_receipt_body, ProtocolError, WatchEnvelope, WorkerAuthPurpose, WorkerDescriptor,
+    WorkerRequestAuth, WATCH_ENVELOPE_SIZE, WORKER_AUTH_SIZE,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -110,6 +112,7 @@ pub enum SubmitDisposition {
 }
 
 pub struct RelayMailbox {
+    hosting: Mutex<hosting::HostingQueue>,
     state: Mutex<PersistedState>,
     path: Option<PathBuf>,
     _lease: Option<File>,
@@ -154,6 +157,7 @@ impl RelayApiState {
 
 pub fn router(state: RelayApiState) -> Router {
     Router::new()
+        .merge(hosting::routes())
         .route("/healthz", get(health))
         .route("/v1/assignments/sponsor", post(sponsor_assignment))
         .route("/v1/assignments/delete", post(delete_assignment))
@@ -187,7 +191,9 @@ async fn sponsor_assignment(
         expires_at: input.expires_at,
     };
     state.mailbox.sponsor_assignment(permit, unix_seconds())?;
-    eprintln!("FAST_WALLET_DIAGNOSTICS service=fast-wallet-relay event=assignment.success status=201");
+    eprintln!(
+        "FAST_WALLET_DIAGNOSTICS service=fast-wallet-relay event=assignment.success status=201"
+    );
     Ok((
         StatusCode::CREATED,
         Json(AcceptedResponse { accepted: true }),
@@ -268,36 +274,39 @@ async fn pull_messages(
         log_worker_pull_rejection("invalid-auth-payload", &error);
         error
     })?;
-    let batch = state.mailbox.pull(
-        &descriptor,
-        &auth,
-        input.limit,
-        input.include_envelopes,
-        unix_seconds(),
-    ).map_err(|error| {
-        // Do not log descriptor, signature, replay nonce, or envelope data.
-        // The reason is enough to distinguish the worker's 401 boundary.
-        let reason = match error {
-            RelayError::Unauthorized => "signature-clock-or-trust",
-            RelayError::Replay => "replayed-auth",
-            RelayError::UnknownAssignment => "unknown-assignment",
-            RelayError::WrongWorker => "wrong-worker",
-            RelayError::Expired => "expired-assignment",
-            RelayError::StaleAssignment => "stale-assignment",
-            RelayError::AssignmentConflict => "assignment-conflict",
-            RelayError::InvalidEnvelope => "invalid-envelope",
-            RelayError::InvalidAssignment => "invalid-assignment",
-            RelayError::InvalidAck => "invalid-ack",
-            RelayError::ReplayCacheFull => "replay-cache-full",
-            RelayError::MailboxFull => "mailbox-full",
-            RelayError::AssignmentFull => "assignment-full",
-            RelayError::InvalidState => "invalid-state",
-            RelayError::Storage => "storage",
-        };
-        let api_error = RelayApiError::from(error);
-        log_worker_pull_rejection(reason, &api_error);
-        api_error
-    })?;
+    let batch = state
+        .mailbox
+        .pull(
+            &descriptor,
+            &auth,
+            input.limit,
+            input.include_envelopes,
+            unix_seconds(),
+        )
+        .map_err(|error| {
+            // Do not log descriptor, signature, replay nonce, or envelope data.
+            // The reason is enough to distinguish the worker's 401 boundary.
+            let reason = match error {
+                RelayError::Unauthorized => "signature-clock-or-trust",
+                RelayError::Replay => "replayed-auth",
+                RelayError::UnknownAssignment => "unknown-assignment",
+                RelayError::WrongWorker => "wrong-worker",
+                RelayError::Expired => "expired-assignment",
+                RelayError::StaleAssignment => "stale-assignment",
+                RelayError::AssignmentConflict => "assignment-conflict",
+                RelayError::InvalidEnvelope => "invalid-envelope",
+                RelayError::InvalidAssignment => "invalid-assignment",
+                RelayError::InvalidAck => "invalid-ack",
+                RelayError::ReplayCacheFull => "replay-cache-full",
+                RelayError::MailboxFull => "mailbox-full",
+                RelayError::AssignmentFull => "assignment-full",
+                RelayError::InvalidState => "invalid-state",
+                RelayError::Storage => "storage",
+            };
+            let api_error = RelayApiError::from(error);
+            log_worker_pull_rejection(reason, &api_error);
+            api_error
+        })?;
     let delivery_count = batch.deliveries.len();
     let deletion_count = batch.deletions.len();
     let deliveries = batch
@@ -595,6 +604,7 @@ struct AckResponse {
 impl RelayMailbox {
     pub fn in_memory() -> Self {
         Self {
+            hosting: Mutex::new(hosting::HostingQueue::default()),
             state: Mutex::new(PersistedState::default()),
             path: None,
             _lease: None,
@@ -639,6 +649,7 @@ impl RelayMailbox {
             None => PersistedState::default(),
         };
         Ok(Self {
+            hosting: Mutex::new(hosting::HostingQueue::default()),
             state: Mutex::new(state),
             path: Some(path),
             _lease: Some(lease),
@@ -844,6 +855,7 @@ impl RelayMailbox {
             return Err(RelayError::Unauthorized);
         }
         state.consume_auth(replay_id, auth.expires_at)?;
+        self.note_regular_poll(descriptor, now)?;
         let mut batch = RelayPullBatch::default();
         if include_envelopes {
             for (message_id, message) in state.messages.iter_mut() {
@@ -937,7 +949,9 @@ impl RelayMailbox {
         for receipt in acceptance_receipts {
             let id = hex::encode(receipt.message_id);
             if !requested.contains(&id)
-                || receipts_by_id.insert(id.clone(), &receipt.receipt).is_some()
+                || receipts_by_id
+                    .insert(id.clone(), &receipt.receipt)
+                    .is_some()
             {
                 return Err(RelayError::InvalidAck);
             }
@@ -1733,7 +1747,13 @@ mod tests {
         .unwrap();
         assert_eq!(
             relay
-                .ack(&fixture.descriptor, &ack, &[deletion_id], &[], fixture.now + 3)
+                .ack(
+                    &fixture.descriptor,
+                    &ack,
+                    &[deletion_id],
+                    &[],
+                    fixture.now + 3
+                )
                 .unwrap(),
             1
         );
@@ -1917,12 +1937,9 @@ mod tests {
 
         let response = app
             .oneshot(
-                Request::get(format!(
-                    "/v1/envelopes/{}/receipt",
-                    hex::encode(message_id)
-                ))
-                .body(Body::empty())
-                .unwrap(),
+                Request::get(format!("/v1/envelopes/{}/receipt", hex::encode(message_id)))
+                    .body(Body::empty())
+                    .unwrap(),
             )
             .await
             .unwrap();
@@ -1932,10 +1949,7 @@ mod tests {
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["status"], "accepted");
-        assert_eq!(
-            json["receipt"],
-            hex::encode(receipt.receipt.encode())
-        );
+        assert_eq!(json["receipt"], hex::encode(receipt.receipt.encode()));
     }
 
     #[test]

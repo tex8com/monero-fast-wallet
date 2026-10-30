@@ -2326,6 +2326,22 @@ Java_com_monerowallet_NativeMoneroWalletJni_nativeVerifyFastWalletWorkerReceipt(
 }
 
 extern "C" JNIEXPORT void JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativeVerifyFastWalletHostingProof(
+    JNIEnv* env, jclass, jstring descriptor, jstring network, jdouble now,
+    jstring handle, jdouble epoch, jstring nonce, jboolean hosted,
+    jdouble checkedAt, jstring proof) {
+  try {
+    tex8::wallet::fast_wallet_protocol_bridge::verifyHostingStatus(
+        toStdString(env, descriptor), parseNetwork(toStdString(env, network)),
+        toUInt64(now, "now"), toStdString(env, handle), toUInt64(epoch, "assignmentEpoch"),
+        toStdString(env, nonce), hosted == JNI_TRUE, toUInt64(checkedAt, "checkedAt"),
+        toStdString(env, proof));
+  } catch (const std::exception& error) {
+    throwJavaError(env, error);
+  }
+}
+
+extern "C" JNIEXPORT void JNICALL
 Java_com_monerowallet_NativeMoneroWalletJni_nativeCloseWallet(
     JNIEnv* env,
     jclass,

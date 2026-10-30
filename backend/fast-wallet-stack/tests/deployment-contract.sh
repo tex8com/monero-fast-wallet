@@ -15,6 +15,10 @@ grep -q 'Monero Fast Node release source mismatch' "$deploy/activate-staged-rele
 grep -q 'FAST_WALLET_RELAY_TRUSTED_WORKER_DESCRIPTOR_FILE=/etc/monero-fast-wallet/worker-descriptor.hex' \
   "$deploy/activate-staged-release.sh"
 test -x "$deploy/provision-notification-fcm-service-account.sh"
+test -x "$deploy/activate-renewed-worker-descriptor.sh"
+grep -q 'worker-descriptor-worker.hex' "$deploy/activate-renewed-worker-descriptor.sh"
+grep -q 'trap rollback EXIT' "$deploy/activate-renewed-worker-descriptor.sh"
+grep -q 'systemctl is-active --quiet' "$deploy/activate-renewed-worker-descriptor.sh"
 grep -q 'NOTIFICATION_GATEWAY_FCM_SERVICE_ACCOUNT_FILE=' \
   "$deploy/provision-notification-fcm-service-account.sh"
 
@@ -88,6 +92,10 @@ if grep -q '/debug/v1/test-push' "$nginx"; then
 fi
 grep -q 'FAST_WALLET_WORKER_DEBUG_BIND=127.0.0.1:8097' \
   "$repo_root/backend/fast-wallet-worker/README.md"
+grep -q "worker_binary_target='/opt/monero-fast-wallet/bin/fast-wallet-worker'" \
+  "$deploy/activate-renewed-worker-descriptor.sh"
+grep -q 'fast-wallet-worker" "$worker_binary_stage"' \
+  "$deploy/activate-renewed-worker-descriptor.sh"
 
 grep -q 'NOTIFICATION_GATEWAY_WORKER_DIRECTORY_ORIGIN=http://127.0.0.1:8096' \
   "$deploy/activate-staged-release.sh"

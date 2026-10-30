@@ -9,7 +9,6 @@ import {
 } from './EmbeddedTor';
 import { withSystemUiInterruption } from './SystemUiInterruption';
 import {
-  applyGlobalFastWalletDeliveryState,
   assertIndependentFastReceiveIdentityId,
   createFastReceiveIdentityId,
   createFastReceiveIdentityRecord,
@@ -20,7 +19,9 @@ import {
   nextFastReceiveDerivationIndex,
   removeFastReceiveIdentity,
   reserveRetiredFastWalletSlot,
-  saveFastReceiveIdentities,
+  sameFastWalletHostingAssignment,
+  setGlobalFastWalletDeliveryState,
+  storeFastWalletHostingStatus,
   upsertFastReceiveIdentity,
 } from './FastReceiveRegistry';
 import { FastWalletPushService } from './FastWalletPushService';
@@ -95,6 +96,11 @@ import type {
 import type { LedgerKeyImageSyncResult } from '../../specs/NativeMoneroWallet';
 import { v1ReleaseFeatures } from '../../../../packages/wallet-shared/src/v1ReleaseFeatures';
 import {
+  fastWalletHostingNeedsRepair,
+  freshFastWalletHostingView,
+  type FastWalletHostingView,
+} from '../../../../packages/wallet-shared/src/fastWalletHosting';
+import {
   restoreHeightFromStartDate,
   todayRestoreDate,
 } from '../../../../packages/wallet-shared/src/restoreStart';
@@ -147,8 +153,7 @@ const LEDGER_NODE_VERIFICATION_ERROR_CODE =
 export function isLedgerNodeVerificationError(error: unknown): boolean {
   if (error && typeof error === 'object' && 'code' in error) {
     if (
-      (error as { code?: unknown }).code ===
-      LEDGER_NODE_VERIFICATION_ERROR_CODE
+      (error as { code?: unknown }).code === LEDGER_NODE_VERIFICATION_ERROR_CODE
     ) {
       return true;
     }
@@ -278,6 +283,10 @@ export interface DisableFastReceiveIdentityInput {
 
 export interface EnableEncryptedFastWalletAlertsInput {
   identityId: string;
+  /** Explicit hosting repair must not reseal an already accepted pending envelope. */
+  forceNewAssignment?: boolean;
+  /** Repair must keep an existing official observer despite global UI changes. */
+  worker?: 'official';
   /**
    * Omitted for the built-in official Worker. A private descriptor may enter
    * only after the native private-pairing confirmation path accepts it.
@@ -366,12 +375,17 @@ export type LedgerReconciliationProgress = {
   viewHeight?: number;
 };
 
+const fastWalletAssignmentOperationTails = new Map<string, Promise<void>>();
+
 export class WalletService {
   private activeSession: WalletSession | undefined;
   private appUnlockInFlight?: Promise<BiometricAuthResult>;
   private walletRecoveryInFlight?: Promise<RegisteredWallet[]>;
+  private walletRemovalTail: Promise<void> = Promise.resolve();
   private fastSignalRefreshInFlight?: Promise<FastWalletSignalRefreshResult[]>;
   private fastWalletAssignmentRenewalInFlight?: Promise<void>;
+  private fastWalletHostingChecks = new Map<string, Promise<FastWalletHostingView>>();
+  private fastWalletAssignmentOperations = fastWalletAssignmentOperationTails;
   private fastSignalSessions = new Map<string, WalletSession>();
   private fastReceiveRepairInFlight = new Map<
     string,
@@ -420,7 +434,8 @@ export class WalletService {
   ): number | undefined {
     if (
       requestedAccountIndex !== undefined &&
-      (!Number.isSafeInteger(requestedAccountIndex) || requestedAccountIndex < 0)
+      (!Number.isSafeInteger(requestedAccountIndex) ||
+        requestedAccountIndex < 0)
     ) {
       throw new Error('Transaction account index is invalid.');
     }
@@ -942,6 +957,26 @@ export class WalletService {
   }
 
   async removeRegisteredWallet(walletId: string): Promise<RegisteredWallet[]> {
+    const removal = this.walletRemovalTail.then(async () => {
+      const registrations = await loadRegisteredWallets();
+      const target = registrations.find(wallet => wallet.id === walletId);
+      const identities = target ? registrations.filter(wallet => wallet.kind === 'fast'
+        && walletRegistrationIsRemovedWithTarget(wallet, target)).map(wallet => wallet.id).sort() : [];
+      const removeUnderAssignmentLocks = (index: number): Promise<RegisteredWallet[]> => index >= identities.length
+        ? this.removeRegisteredWalletExclusive(walletId)
+        : this.withFastWalletAssignmentOperation(identities[index], () => removeUnderAssignmentLocks(index + 1));
+      return removeUnderAssignmentLocks(0);
+    });
+    this.walletRemovalTail = removal.then(
+      () => undefined,
+      () => undefined,
+    );
+    return removal;
+  }
+
+  private async removeRegisteredWalletExclusive(
+    walletId: string,
+  ): Promise<RegisteredWallet[]> {
     const registrations = await loadRegisteredWallets();
     const target = registrations.find(wallet => wallet.id === walletId);
     if (!target) {
@@ -1029,6 +1064,7 @@ export class WalletService {
             workerDescriptorHex: undefined,
             watchMessageId: undefined,
             workerReceiptVerified: false,
+            hostingStatus: undefined,
             updatedAt,
           });
         } catch (reason) {
@@ -1929,8 +1965,7 @@ export class WalletService {
             },
           );
 
-          let nodeOnlyRetry =
-            viewSnapshot.pendingOutputKeyImageCount === 0;
+          let nodeOnlyRetry = viewSnapshot.pendingOutputKeyImageCount === 0;
           if (!nodeOnlyRetry) {
             onProgress?.({ phase: 'connecting-ledger' });
             const transportStartedAt = Date.now();
@@ -3195,7 +3230,136 @@ export class WalletService {
     );
   }
 
+  /** Owner initiated, single-flight per wallet. No receipt or local flag is a live proof. */
+  checkFastWalletHosting(identityId: string): Promise<FastWalletHostingView> {
+    const pending = this.fastWalletHostingChecks.get(identityId);
+    if (pending) return pending;
+    const operation = this.withFastWalletAssignmentOperation(identityId, () => this.checkFastWalletHostingAndRepair(identityId)).finally(() => {
+      this.fastWalletHostingChecks.delete(identityId);
+    });
+    this.fastWalletHostingChecks.set(identityId, operation);
+    return operation;
+  }
+
+  private async persistFastWalletHostingStatus(
+    identityId: string,
+    hostingStatus: FastWalletHostingView,
+    expected?: FastReceiveIdentityRecord,
+  ): Promise<FastWalletHostingView> {
+    return storeFastWalletHostingStatus(identityId, hostingStatus, expected);
+  }
+
+  private withFastWalletAssignmentOperation<T>(identityId: string, operation: () => Promise<T>): Promise<T> {
+    const previous = this.fastWalletAssignmentOperations.get(identityId) ?? Promise.resolve();
+    const result = previous.then(operation, operation);
+    const tail = result.then(() => undefined, () => undefined);
+    this.fastWalletAssignmentOperations.set(identityId, tail);
+    tail.then(() => {
+      if (this.fastWalletAssignmentOperations.get(identityId) === tail) this.fastWalletAssignmentOperations.delete(identityId);
+    });
+    return result;
+  }
+
+  private async checkFastWalletHostingAndRepair(identityId: string): Promise<FastWalletHostingView> {
+    const attemptedAt = Math.floor(Date.now() / 1_000);
+    let repairAttempted = false;
+    let expectedIdentity: FastReceiveIdentityRecord | undefined;
+    logWalletEvent('WalletService', 'fastWalletHosting.check.start', { identityId: maskIdentifier(identityId) });
+    try {
+      const identity = (await loadFastReceiveIdentities()).find(item => item.id === identityId);
+      if (!identity || !isIndependentFastReceiveIdentityId(identity.id)) {
+        return this.persistFastWalletHostingStatus(identityId, {
+          status: 'unsupported', attemptedAt, verified: false,
+          repairAttempted, errorCode: 'unsupported_wallet',
+        });
+      }
+      const nativeWallet = requireNativeMoneroWallet();
+      const read = async (): Promise<FastWalletHostingView> => {
+        const phaseIdentity = (await loadFastReceiveIdentities()).find(item => item.id === identityId);
+        expectedIdentity = phaseIdentity;
+        if (!phaseIdentity) throw new Error('Hosting assignment changed');
+        const result = freshFastWalletHostingView(await nativeWallet.checkFastWalletHosting({
+          identityId, network: phaseIdentity.network, now: Math.floor(Date.now() / 1_000),
+          workerDescriptorHex: phaseIdentity.workerKind && phaseIdentity.workerKind !== 'official'
+            ? phaseIdentity.workerDescriptorHex : undefined,
+        }), Math.floor(Date.now() / 1_000));
+        const latest = (await loadFastReceiveIdentities()).find(item => item.id === identityId);
+        if (!sameFastWalletHostingAssignment(phaseIdentity, latest)) {
+          return { status: 'unknown', attemptedAt, verified: false, repairAttempted, errorCode: 'assignment_changed' };
+        }
+        const hasRegistryAssignment = Boolean(phaseIdentity.assignmentHandle || phaseIdentity.assignmentEpoch
+          || phaseIdentity.watchMessageId || phaseIdentity.workerReceiptVerified);
+        if (result.verified && hasRegistryAssignment && (
+          result.assignmentHandle !== phaseIdentity.assignmentHandle || result.assignmentEpoch !== phaseIdentity.assignmentEpoch
+          || (phaseIdentity.hostingStatus?.workerRootId && result.workerRootId !== phaseIdentity.hostingStatus.workerRootId)
+        )) {
+          return { status: 'blocked', attemptedAt, verified: false, repairAttempted, errorCode: 'assignment_state_inconsistent' };
+        }
+        if (result.errorCode === 'no_assignment' && (phaseIdentity.assignmentHandle || phaseIdentity.assignmentEpoch
+          || phaseIdentity.watchMessageId || phaseIdentity.workerReceiptVerified)) {
+          return { status: 'blocked', attemptedAt, verified: false, repairAttempted, errorCode: 'assignment_state_inconsistent' };
+        }
+        return result;
+      };
+      let result = await read();
+      if (fastWalletHostingNeedsRepair(result)) {
+        const registration = (await loadRegisteredWallets()).find(item => item.id === identityId);
+        if (registration?.seedBackupStatus !== 'verified') {
+          return this.persistFastWalletHostingStatus(identityId, {
+            status: 'blocked', attemptedAt, verified: false,
+            repairAttempted, errorCode: 'backup_required',
+          }, expectedIdentity);
+        }
+        if (identity.workerKind && identity.workerKind !== 'official' && !identity.workerDescriptorHex) {
+          return this.persistFastWalletHostingStatus(identityId, {
+            status: 'unsupported', attemptedAt, verified: false,
+            repairAttempted, errorCode: 'unsupported_worker',
+          }, expectedIdentity);
+        }
+        repairAttempted = true;
+        logWalletEvent('WalletService', 'fastWalletHosting.repair.start', { identityId: maskIdentifier(identityId) });
+        await this.enableEncryptedFastWalletAlertsUnlocked({
+          identityId,
+          forceNewAssignment: true,
+          worker: identity.workerKind === 'official' ? 'official' : undefined,
+          workerDescriptorHex: identity.workerKind && identity.workerKind !== 'official'
+            ? identity.workerDescriptorHex : undefined,
+        });
+        result = await read();
+        result = {
+          ...result,
+          status: result.status === 'hosted' && result.verified ? 'rehosted' : result.status,
+          errorCode: result.status === 'missing' ? 'missing_after_repair' : result.errorCode,
+        };
+      }
+      const completed = { ...result, attemptedAt, repairAttempted };
+      logWalletEvent('WalletService', 'fastWalletHosting.check.complete', {
+        identityId: maskIdentifier(identityId),
+        status: completed.status, verified: completed.verified, repairAttempted,
+        errorCode: completed.errorCode,
+        elapsedMs: Date.now() - attemptedAt * 1_000,
+      });
+      return this.persistFastWalletHostingStatus(identityId, completed, expectedIdentity);
+    } catch (error) {
+      const failure = fastWalletHostingFailure(error);
+      logWalletEvent('WalletService', 'fastWalletHosting.check.failed', {
+        identityId: maskIdentifier(identityId),
+        errorCode: failure.errorCode, repairAttempted,
+        elapsedMs: Date.now() - attemptedAt * 1_000,
+      });
+      return this.persistFastWalletHostingStatus(identityId, {
+        ...failure, attemptedAt, verified: false, repairAttempted,
+      }, expectedIdentity);
+    }
+  }
+
   async enableEncryptedFastWalletAlerts(
+    input: EnableEncryptedFastWalletAlertsInput,
+  ): Promise<CreateFastReceiveIdentityResult> {
+    return this.withFastWalletAssignmentOperation(input.identityId, () => this.enableEncryptedFastWalletAlertsUnlocked(input));
+  }
+
+  private async enableEncryptedFastWalletAlertsUnlocked(
     input: EnableEncryptedFastWalletAlertsInput,
   ): Promise<CreateFastReceiveIdentityResult> {
     return traceWalletOperation(
@@ -3210,6 +3374,8 @@ export class WalletService {
         const explicitWorkerDescriptor = input.workerDescriptorHex?.trim();
         const workerSelection = explicitWorkerDescriptor
           ? undefined
+          : input.worker === 'official'
+          ? { kind: 'recommended' as const }
           : await loadFastWalletWorkerSelection(existing.network);
         const selectedWorkerDescriptor =
           explicitWorkerDescriptor ||
@@ -3265,6 +3431,7 @@ export class WalletService {
               network: existing.network,
               restoreHeight: existing.restoreHeight,
               workerDescriptorHex: selectedWorkerDescriptor,
+              forceNewAssignment: input.forceNewAssignment,
             },
           );
           const checkedAt = new Date().toISOString();
@@ -3290,17 +3457,14 @@ export class WalletService {
               : undefined,
             watchMessageId: enrolled.messageId,
             workerReceiptVerified: true,
+            hostingStatus: {
+              status: 'unknown', attemptedAt: Math.floor(Date.now() / 1_000),
+              verified: false, repairAttempted: false,
+            },
             updatedAt: checkedAt,
           };
-          const next = await saveFastReceiveIdentities(
-            applyGlobalFastWalletDeliveryState(
-              identities.map(item =>
-                item.id === identity.id ? identity : item,
-              ),
-              true,
-              checkedAt,
-            ),
-          );
+          await upsertFastReceiveIdentity(identity);
+          const next = await setGlobalFastWalletDeliveryState(true, checkedAt);
           logWalletEvent(
             'WalletService',
             'fastWalletAlerts.enrollment.success',
@@ -3315,22 +3479,42 @@ export class WalletService {
             error,
           });
           const checkedAt = new Date().toISOString();
-          const failed: FastReceiveIdentityRecord = {
-            ...existing,
-            status: 'registration-error',
-            scannerStatus: 'needs-attention',
-            scannerUrl: '',
-            scannerCheckedAt: checkedAt,
-            notificationsEnabled: false,
-            updatedAt: checkedAt,
-          };
-          await saveFastReceiveIdentities(
-            identities.map(item => (item.id === failed.id ? failed : item)),
-          );
+          const hasPreviousAssignment =
+            existing.workerReceiptVerified === true &&
+            (existing.assignmentExpiresAt ?? 0) >
+              Math.floor(Date.now() / 1_000);
+          const failed: FastReceiveIdentityRecord = hasPreviousAssignment
+            ? {
+                ...existing,
+                status: 'enabled',
+                scannerStatus: 'enabled',
+                scannerCheckedAt: checkedAt,
+                notificationsEnabled: true,
+                updatedAt: checkedAt,
+              }
+            : {
+                ...existing,
+                status: 'registration-error',
+                scannerStatus: 'needs-attention',
+                scannerUrl: '',
+                scannerCheckedAt: checkedAt,
+                notificationsEnabled: false,
+                updatedAt: checkedAt,
+              };
+          await upsertFastReceiveIdentity(failed);
           throw error;
         }
       },
-    );
+    ).catch(async error => {
+      // Includes pre-enrollment permission/authorization failures. Persist per wallet;
+      // a short-lived overlay or a later navigation must not erase the failure.
+      await this.persistFastWalletHostingStatus(input.identityId, {
+        ...fastWalletHostingFailure(error),
+        attemptedAt: Math.floor(Date.now() / 1_000),
+        verified: false, repairAttempted: false,
+      });
+      throw error;
+    });
   }
 
   async enableEncryptedLedgerFastWalletAlerts(
@@ -3439,11 +3623,17 @@ export class WalletService {
           );
           return hostedRegistration;
         } catch (error) {
+          const oldAssignmentStillWorks =
+            registration.fastWalletHostingStatus === 'enabled' &&
+            (registration.fastWalletAssignmentExpiresAt ?? 0) >
+              Math.floor(Date.now() / 1_000);
           await upsertRegisteredWallet(
-            {
-              ...registration,
-              fastWalletHostingStatus: 'needs-attention',
-            },
+            oldAssignmentStillWorks
+              ? registration
+              : {
+                  ...registration,
+                  fastWalletHostingStatus: 'needs-attention',
+                },
             false,
           );
           throw error;
@@ -3505,7 +3695,11 @@ export class WalletService {
             now + FAST_WALLET_ASSIGNMENT_RENEWAL_WINDOW_SECONDS),
     );
 
-    for (const identity of due) {
+    for (const dueIdentity of due) {
+      await this.withFastWalletAssignmentOperation(dueIdentity.id, async () => {
+      const identity = (await loadFastReceiveIdentities()).find(item => item.id === dueIdentity.id);
+      if (!identity || !identity.notificationsEnabled || !identity.credentialKey || !identity.assignmentHandle
+        || (identity.workerReceiptVerified === true && (identity.assignmentExpiresAt ?? 0) > Math.floor(Date.now() / 1000) + FAST_WALLET_ASSIGNMENT_RENEWAL_WINDOW_SECONDS)) return;
       try {
         const enrolled = await enrollFastWalletWatch(
           requireNativeMoneroWallet(),
@@ -3532,6 +3726,7 @@ export class WalletService {
           assignmentExpiresAt: enrolled.assignment.expiresAt,
           watchMessageId: enrolled.messageId,
           workerReceiptVerified: true,
+          hostingStatus: undefined,
           updatedAt,
         });
         logWalletEvent('WalletService', 'fastWalletAssignment.renewed', {
@@ -3546,8 +3741,13 @@ export class WalletService {
             ...identity,
             status: 'registration-error',
             scannerStatus: 'needs-attention',
-            notificationsEnabled: false,
+            // Preserve the owner's opt-in so the next unlock can retry.
+            // Assignment expiry and receipt verification still gate delivery.
             scannerCheckedAt: new Date().toISOString(),
+            hostingStatus: {
+              status: 'unknown', attemptedAt: Math.floor(Date.now() / 1000),
+              verified: false, repairAttempted: false, errorCode: 'hosting_check_failed',
+            },
             updatedAt: new Date().toISOString(),
           });
         }
@@ -3557,6 +3757,7 @@ export class WalletService {
           error: errorMessage(error),
         });
       }
+      });
     }
   }
 
@@ -3566,12 +3767,7 @@ export class WalletService {
     assertIndependentFastReceiveIdentityId(identityId);
     await FastWalletPushService.disableFastWalletNotifications();
     const checkedAt = new Date().toISOString();
-    const identities = applyGlobalFastWalletDeliveryState(
-      await loadFastReceiveIdentities(),
-      false,
-      checkedAt,
-    );
-    const next = await saveFastReceiveIdentities(identities);
+    const next = await setGlobalFastWalletDeliveryState(false, checkedAt);
     const identity = next.find(item => item.id === identityId);
     if (!identity) {
       throw new Error('Unknown Fast Wallet');
@@ -3580,6 +3776,12 @@ export class WalletService {
   }
 
   async deleteHostedFastWalletData(
+    identityId: string,
+  ): Promise<CreateFastReceiveIdentityResult> {
+    return this.withFastWalletAssignmentOperation(identityId, () => this.deleteHostedFastWalletDataUnlocked(identityId));
+  }
+
+  private async deleteHostedFastWalletDataUnlocked(
     identityId: string,
   ): Promise<CreateFastReceiveIdentityResult> {
     assertIndependentFastReceiveIdentityId(identityId);
@@ -3610,6 +3812,7 @@ export class WalletService {
       workerDescriptorHex: undefined,
       watchMessageId: undefined,
       workerReceiptVerified: false,
+      hostingStatus: undefined,
       updatedAt,
     };
     const next = await upsertFastReceiveIdentity(identity);
@@ -5268,6 +5471,33 @@ function maskIdentifier(value: string | undefined): string {
     return value;
   }
   return `${value.slice(0, 8)}...${value.slice(-6)}`;
+}
+
+function fastWalletHostingFailure(error: unknown): {
+  status: 'blocked' | 'unknown'; errorCode: string;
+} {
+  const message = error instanceof Error ? error.message : String(error);
+  const code = error && typeof error === 'object' && 'code' in error
+    ? String(error.code) : '';
+  if (/apns-authorization-error|apns-registration-(error|timeout|failed)/i.test(`${code} ${message}`)) {
+    return { status: 'unknown', errorCode: 'notification_service_error' };
+  }
+  if (/apns-authorization-denied/i.test(`${code} ${message}`)) {
+    return { status: 'blocked', errorCode: 'notification_permission_required' };
+  }
+  if (/backup_required|back up|backup/i.test(`${code} ${message}`)) {
+    return { status: 'blocked', errorCode: 'backup_required' };
+  }
+  if (/permission|allow notifications|not permitted/i.test(`${code} ${message}`)) {
+    return { status: 'blocked', errorCode: 'notification_permission_required' };
+  }
+  if (/biometr|authentication|authorization|locked|cancel/i.test(`${code} ${message}`)) {
+    return { status: 'blocked', errorCode: 'authorization_required' };
+  }
+  if (/invalid_proof|signature|proof/i.test(`${code} ${message}`)) {
+    return { status: 'unknown', errorCode: 'invalid_proof' };
+  }
+  return { status: 'unknown', errorCode: 'hosting_check_failed' };
 }
 
 function errorMessage(error: unknown): string {

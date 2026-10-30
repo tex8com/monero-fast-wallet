@@ -73,7 +73,7 @@ umask 077
   printf 'grpc_range_spool=%s\n' "${range_spool:-disabled}"
   printf 'grpc_range_spool_dir=%s\n' "${range_spool_dir:-not-set}"
   printf 'grpc_range_spool_max_bytes=%s\n' "${range_spool_max_bytes:-range-pool-default-4294967296}"
-  printf 'grpc_chunk_hint=%s\n' "${chunk_hint:-wallet-default-1000}"
+  printf 'grpc_chunk_hint=%s\n' "${chunk_hint:-wallet-default-64}"
   printf 'range_pool_contract=opt-in desktop benchmark; finite non-overlapping ranges; ordered release; per-lane bounded queues; optional byte-capped ephemeral spool; local subchannel pool only when explicitly set, to prevent gRPC global TCP connection reuse; all lanes cancelled on transport failure; wallet chain validation remains authoritative for reorg handling\n'
   printf 'runner_path=%s\n' "$runner"
   shasum -a 256 "$runner"

@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ScrollView,
   StyleSheet,
@@ -7,6 +7,8 @@ import {
   View,
 } from 'react-native';
 import Clipboard from '@react-native-clipboard/clipboard';
+import { useFocusEffect } from '@react-navigation/native';
+import { transactionConfirmationProgress } from '../../../../packages/wallet-shared/src/transactionConfirmations';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { Icon } from '../components/Icon';
@@ -30,14 +32,66 @@ type DetailRouteParams = {
 export default function TransactionDetailScreen({ navigation, route }: any) {
   const insets = useSafeAreaInsets();
   const { dateLocale, t } = useI18n();
-  const { registeredWallet, transactions } = useWalletState();
+  const { registeredWallet, transactions, refreshTransactions } = useWalletState();
   const [copied, setCopied] = useState(false);
   const params = (route?.params ?? {}) as DetailRouteParams;
+  const targetHash = params.transactionHash ?? params.transaction?.hash;
+  const belongsToCurrentWallet = !params.walletId || params.walletId === registeredWallet?.id;
+  const detailIdentity = JSON.stringify([
+    params.walletId ?? registeredWallet?.id, targetHash,
+    params.transaction?.direction, params.transaction?.subaddrAccount,
+  ]);
+  const findSelectedTransaction = useCallback(
+    (items: readonly WalletTransaction[]) => items.find(item =>
+      item.hash === targetHash &&
+      (params.transaction?.direction === undefined || item.direction === params.transaction.direction) &&
+      (params.transaction?.subaddrAccount === undefined || item.subaddrAccount === params.transaction.subaddrAccount),
+    ),
+    [params.transaction?.direction, params.transaction?.subaddrAccount, targetHash],
+  );
+  const contextualTransaction = belongsToCurrentWallet
+    ? findSelectedTransaction(transactions)
+    : undefined;
+  const [liveDetail, setLiveDetail] = useState<{
+    identity: string; loaded: boolean; transaction?: WalletTransaction;
+  }>();
+  const previousContextRef = useRef<{
+    identity: string; transaction?: WalletTransaction;
+  } | undefined>(undefined);
+
+  // WalletState already refreshes native history every five seconds. Follow
+  // its selected wallet's real history, including removal after a reorg.
+  useEffect(() => {
+    if (!belongsToCurrentWallet) return;
+    const previous = previousContextRef.current;
+    previousContextRef.current = { identity: detailIdentity, transaction: contextualTransaction };
+    if (contextualTransaction || (previous?.identity === detailIdentity && previous.transaction)) {
+      setLiveDetail({ identity: detailIdentity, loaded: true, transaction: contextualTransaction });
+    }
+  }, [belongsToCurrentWallet, contextualTransaction, detailIdentity]);
+
+  useFocusEffect(useCallback(() => {
+    if (!belongsToCurrentWallet || !targetHash || !refreshTransactions) return;
+    let active = true;
+    const contextAtRequest = previousContextRef.current;
+    refreshTransactions().then(items => {
+      // A newer context publication, including removal, supersedes this read.
+      if (!active || previousContextRef.current !== contextAtRequest) return;
+      setLiveDetail({
+        identity: detailIdentity, loaded: true,
+        transaction: findSelectedTransaction(items),
+      });
+    }).catch(() => undefined);
+    return () => { active = false; };
+  }, [belongsToCurrentWallet, detailIdentity, findSelectedTransaction, refreshTransactions, targetHash]));
+
   const transaction = useMemo(
-    () =>
-      transactions.find(item => item.hash === params.transactionHash) ??
-      params.transaction,
-    [params.transaction, params.transactionHash, transactions],
+    () => contextualTransaction ?? (
+      liveDetail?.identity === detailIdentity && liveDetail.loaded
+        ? liveDetail.transaction
+        : params.transaction
+    ),
+    [contextualTransaction, detailIdentity, liveDetail, params.transaction],
   );
 
   if (!transaction) {
@@ -67,13 +121,22 @@ export default function TransactionDetailScreen({ navigation, route }: any) {
     maxFractionDigits: 12,
     minFractionDigits: 2,
   });
-  const status = transaction.failed
+  const confirmation = transactionConfirmationProgress(transaction);
+  const confirmationProgress = t('transactions.confirmationProgress', {
+    current: confirmation.current, required: confirmation.required,
+  });
+  const status = confirmation.state === 'failed'
     ? t('status.failed')
+    : confirmation.state === 'confirmed'
+    ? t('transactions.confirmed')
     : transaction.pending
     ? t('status.pending')
-    : transaction.confirmations > 0
-    ? t('transactions.confirmed')
-    : t('status.unconfirmed');
+    : t('transactions.confirming');
+  const incomingLabel = confirmation.state === 'confirmed'
+    ? t('home.received')
+    : confirmation.state === 'failed'
+    ? t('status.failed')
+    : t('home.receiving');
   const date = transaction.timestamp
     ? new Date(transaction.timestamp * 1000).toLocaleString(dateLocale, {
         dateStyle: 'medium',
@@ -116,7 +179,7 @@ export default function TransactionDetailScreen({ navigation, route }: any) {
           </View>
           <Text style={s.summaryDirection}>
             {incoming
-              ? t('home.received')
+              ? incomingLabel
               : selfTransfer
               ? t('transactions.selfTransfer')
               : t('home.sent')}
@@ -135,7 +198,7 @@ export default function TransactionDetailScreen({ navigation, route }: any) {
               s.statusPill,
               transaction.failed
                 ? s.statusFailed
-                : transaction.pending
+                : confirmation.state !== 'confirmed'
                 ? s.statusPending
                 : s.statusConfirmed,
             ]}
@@ -145,12 +208,12 @@ export default function TransactionDetailScreen({ navigation, route }: any) {
                 s.statusText,
                 transaction.failed
                   ? s.statusTextFailed
-                  : transaction.pending
+                  : confirmation.state !== 'confirmed'
                   ? s.statusTextPending
                   : s.statusTextConfirmed,
               ]}
             >
-              {status}
+              {status} · {confirmationProgress}
             </Text>
           </View>
         </View>
@@ -186,7 +249,7 @@ export default function TransactionDetailScreen({ navigation, route }: any) {
             label={t('transactions.direction')}
             value={
               incoming
-                ? t('home.received')
+                ? incomingLabel
                 : selfTransfer
                 ? t('transactions.selfTransfer')
                 : t('home.sent')
@@ -204,7 +267,7 @@ export default function TransactionDetailScreen({ navigation, route }: any) {
           />
           <DetailRow
             label={t('transactions.confirmations')}
-            value={String(transaction.confirmations)}
+            value={`${confirmation.current}/${confirmation.required}`}
           />
           <DetailRow
             label={t('transactions.blockHeight')}

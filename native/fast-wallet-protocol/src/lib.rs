@@ -14,6 +14,9 @@ use sha2::{Digest, Sha256};
 use url::Url;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
+pub mod hosting;
+pub use hosting::{hosting_status_body, verify_hosting_status, HOSTING_PROOF_LIFETIME_SECONDS};
+
 // Android and iOS must not link two Rust `staticlib` archives because each
 // archive embeds Rust's standard library. The mobile builder supplies the
 // authenticated, patch-series-owned Monero acceleration source path and the
@@ -285,6 +288,7 @@ pub enum WorkerAuthPurpose {
     Wake = 4,
     DirectoryRegister = 5,
     DirectoryHeartbeat = 6,
+    HostingStatus = 7,
 }
 
 impl WorkerAuthPurpose {
@@ -296,6 +300,7 @@ impl WorkerAuthPurpose {
             4 => Ok(Self::Wake),
             5 => Ok(Self::DirectoryRegister),
             6 => Ok(Self::DirectoryHeartbeat),
+            7 => Ok(Self::HostingStatus),
             _ => Err(ProtocolError::WrongPurpose),
         }
     }
@@ -303,6 +308,7 @@ impl WorkerAuthPurpose {
     fn maximum_lifetime(self) -> u64 {
         match self {
             Self::Receipt => MAX_WORKER_RECEIPT_LIFETIME_SECONDS,
+            Self::HostingStatus => HOSTING_PROOF_LIFETIME_SECONDS,
             Self::Pull
             | Self::Ack
             | Self::Wake
@@ -1028,7 +1034,9 @@ fn validate_relay_origin(origin: &str) -> Result<(), ProtocolError> {
         && parsed.host_str().is_some_and(|host| {
             host.len() == 62
                 && host.ends_with(".onion")
-                && host[..56].bytes().all(|byte| matches!(byte, b'a'..=b'z' | b'2'..=b'7'))
+                && host[..56]
+                    .bytes()
+                    .all(|byte| matches!(byte, b'a'..=b'z' | b'2'..=b'7'))
         });
     if (parsed.scheme() != "https" && !onion)
         || parsed.host_str().is_none()
@@ -1548,6 +1556,63 @@ pub mod ffi {
                     &fixed_array(message_id_bytes)?,
                 );
                 receipt.verify(&descriptor, WorkerAuthPurpose::Receipt, &body, now)
+            })();
+            if result.is_ok() {
+                OK
+            } else {
+                INVALID_DESCRIPTOR
+            }
+        })
+        .unwrap_or(INVALID_DESCRIPTOR)
+    }
+
+    #[no_mangle]
+    pub unsafe extern "C" fn tex8_fast_wallet_protocol_verify_hosting_status_v1(
+        descriptor: *const u8,
+        descriptor_len: usize,
+        expected_network: u8,
+        now: u64,
+        assignment_handle: *const u8,
+        assignment_epoch: u64,
+        nonce: *const u8,
+        hosted: u8,
+        checked_at: u64,
+        proof: *const u8,
+        proof_len: usize,
+    ) -> i32 {
+        catch_unwind(|| {
+            let Ok(network) = Network::decode(expected_network) else {
+                return INVALID_ARGUMENT;
+            };
+            if hosted > 1 {
+                return INVALID_ARGUMENT;
+            }
+            let Some(descriptor_bytes) = checked_input(descriptor, descriptor_len, 1, 4096) else {
+                return INVALID_ARGUMENT;
+            };
+            let Some(handle) = checked_input(assignment_handle, 32, 32, 32) else {
+                return INVALID_ARGUMENT;
+            };
+            let Some(nonce) = checked_input(nonce, 32, 32, 32) else {
+                return INVALID_ARGUMENT;
+            };
+            let Some(proof) = checked_input(proof, proof_len, WORKER_AUTH_SIZE, WORKER_AUTH_SIZE)
+            else {
+                return INVALID_ARGUMENT;
+            };
+            let result = (|| {
+                let descriptor = WorkerDescriptor::decode(descriptor_bytes)?;
+                descriptor.verify(network, now)?;
+                verify_hosting_status(
+                    &descriptor,
+                    &fixed_array(handle)?,
+                    assignment_epoch,
+                    &fixed_array(nonce)?,
+                    hosted == 1,
+                    checked_at,
+                    &WorkerRequestAuth::decode(proof)?,
+                    now,
+                )
             })();
             if result.is_ok() {
                 OK

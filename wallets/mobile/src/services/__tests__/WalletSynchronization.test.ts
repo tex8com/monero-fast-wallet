@@ -12,12 +12,19 @@ const snapshot = {
   walletHeight: 100,
   daemonHeight: 100,
   daemonTargetHeight: 100,
-  synchronized: false,
+  pendingOutputKeyImageCount: 0,
+  synchronized: true,
 };
 
 describe('walletSnapshotIsSynchronized', () => {
-  it('accepts proven height parity while the Core flag is one publication late', () => {
+  it('accepts a Core-confirmed wallet at the current target height', () => {
     expect(walletSnapshotIsSynchronized(snapshot)).toBe(true);
+  });
+
+  it('waits for native finalization even when the wallet has reached the chain tip', () => {
+    expect(
+      walletSnapshotIsSynchronized({ ...snapshot, synchronized: false }),
+    ).toBe(false);
   });
 
   it('returns to synchronizing when the daemon target advances', () => {
@@ -40,6 +47,30 @@ describe('walletSnapshotIsSynchronized', () => {
 });
 
 describe('walletIsSpendReady', () => {
+  it('requires the new outputs to be verified even after the signing cache reached this height', () => {
+    expect(
+      walletIsSpendReady({
+        snapshot: { ...snapshot, pendingOutputKeyImageCount: 1 },
+        hardwareWallet: true,
+        readOnlySession: true,
+        ledgerSigningReadyHeight: 100,
+      }),
+    ).toBe(false);
+  });
+
+  it('never permits spending before Core finalization, even with a current signing cache', () => {
+    for (const hardwareWallet of [false, true]) {
+      expect(
+        walletIsSpendReady({
+          snapshot: { ...snapshot, synchronized: false },
+          hardwareWallet,
+          readOnlySession: hardwareWallet,
+          ledgerSigningReadyHeight: 100,
+        }),
+      ).toBe(false);
+    }
+  });
+
   it('does not call a Ledger viewing wallet spend-ready without a matching signing cache', () => {
     expect(
       walletIsSpendReady({

@@ -1,4 +1,5 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { useFocusEffect } from '@react-navigation/native';
 import {
   ActivityIndicator,
   Alert,
@@ -14,6 +15,8 @@ import TransactionRow, {
   transactionRowKey,
 } from '../components/TransactionRow';
 import TransactionLoadMoreButton from '../components/TransactionLoadMoreButton';
+import FastWalletHostingPanel from '../components/FastWalletHostingPanel';
+import type { FastWalletHostingView } from '../../../../packages/wallet-shared/src/fastWalletHosting';
 import { useI18n } from '../i18n';
 import type { FastWalletStatusTone } from '../services/FastWalletStatus';
 import {
@@ -53,6 +56,16 @@ export default function WalletsScreen({ navigation }: any) {
   const [walletActionError, setWalletActionError] = useState<
     string | undefined
   >();
+  const [hostingStatuses, setHostingStatuses] = useState<Record<string, FastWalletHostingView | undefined>>({});
+  const [checkingHostingWalletId, setCheckingHostingWalletId] = useState<string>();
+  const hostingCheckInFlight = useRef(false);
+  const refreshHostingStatuses = useCallback(async () => {
+    const identities = await walletService.loadFastReceiveIdentities();
+    setHostingStatuses(Object.fromEntries(identities.map(identity => [identity.id, identity.hostingStatus])));
+  }, []);
+  useFocusEffect(useCallback(() => {
+    refreshHostingStatuses().catch(() => undefined);
+  }, [refreshHostingStatuses]));
   const [renamingWalletId, setRenamingWalletId] = useState<
     string | undefined
   >();
@@ -60,6 +73,10 @@ export default function WalletsScreen({ navigation }: any) {
   const [renameError, setRenameError] = useState<string | undefined>();
   const [renameBusy, setRenameBusy] = useState(false);
   const [openingWalletId, setOpeningWalletId] = useState<string | undefined>();
+  const [removingWalletId, setRemovingWalletId] = useState<
+    string | undefined
+  >();
+  const removingWalletIdRef = useRef<string | undefined>(undefined);
 
   useEffect(
     () => () => {
@@ -109,6 +126,9 @@ export default function WalletsScreen({ navigation }: any) {
   };
 
   const showRemoveWalletConfirmation = (wallet: RegisteredWallet) => {
+    if (removingWalletIdRef.current) {
+      return;
+    }
     Alert.alert(
       t('wallets.removeWallet'),
       t('wallets.removeWalletConfirm', { name: walletDisplayName(wallet) }),
@@ -118,6 +138,11 @@ export default function WalletsScreen({ navigation }: any) {
           text: t('wallets.removeFromApp'),
           style: 'destructive',
           onPress: async () => {
+            if (removingWalletIdRef.current) {
+              return;
+            }
+            removingWalletIdRef.current = wallet.id;
+            setRemovingWalletId(wallet.id);
             try {
               await removeRegisteredWallet(wallet.id);
               await reloadRegisteredWallets();
@@ -128,6 +153,11 @@ export default function WalletsScreen({ navigation }: any) {
                   ? error.message
                   : t('wallets.removeFailed'),
               );
+            } finally {
+              if (removingWalletIdRef.current === wallet.id) {
+                removingWalletIdRef.current = undefined;
+                setRemovingWalletId(undefined);
+              }
             }
           },
         },
@@ -201,12 +231,14 @@ export default function WalletsScreen({ navigation }: any) {
       });
       setFastWalletTransfer({ walletId: wallet.id, status: 'accepted' });
       await reloadRegisteredWallets();
+      await refreshHostingStatuses();
       fastWalletTransferTimer.current = setTimeout(
         () => setFastWalletTransfer(undefined),
         2200,
       );
     } catch (error) {
       setFastWalletTransfer({ walletId: wallet.id, status: 'failed' });
+      await refreshHostingStatuses();
       setWalletActionError(
         error instanceof Error
           ? error.message
@@ -214,6 +246,25 @@ export default function WalletsScreen({ navigation }: any) {
       );
     } finally {
       setBackingUpWalletId(undefined);
+    }
+  };
+
+  const checkHosting = async (wallet: RegisteredWallet) => {
+    if (hostingCheckInFlight.current || backingUpWalletId) return;
+    hostingCheckInFlight.current = true;
+    setCheckingHostingWalletId(wallet.id);
+    try {
+      const result = await walletService.checkFastWalletHosting(wallet.id);
+      setHostingStatuses(previous => ({ ...previous, [wallet.id]: result }));
+      await reloadRegisteredWallets();
+    } catch {
+      setHostingStatuses(previous => ({ ...previous, [wallet.id]: {
+        status: 'unknown', attemptedAt: Math.floor(Date.now() / 1000),
+        verified: false, repairAttempted: false, errorCode: 'hosting_check_failed',
+      } }));
+    } finally {
+      hostingCheckInFlight.current = false;
+      setCheckingHostingWalletId(undefined);
     }
   };
 
@@ -272,8 +323,11 @@ export default function WalletsScreen({ navigation }: any) {
                     badge={fastWallet ? t('walletSelector.fast') : undefined}
                     busy={
                       openingWalletId === wallet.id ||
-                      backingUpWalletId === wallet.id
+                      backingUpWalletId === wallet.id ||
+                      checkingHostingWalletId === wallet.id
                     }
+                    actionsDisabled={Boolean(removingWalletId)}
+                    removing={removingWalletId === wallet.id}
                     onSelect={
                       needsSeedBackup
                         ? undefined
@@ -324,6 +378,12 @@ export default function WalletsScreen({ navigation }: any) {
                     }
                     onRemove={() => showRemoveWalletConfirmation(wallet)}
                   />
+                  {fastWallet ? <FastWalletHostingPanel
+                    status={hostingStatuses[wallet.id]}
+                    busy={checkingHostingWalletId === wallet.id}
+                    disabled={Boolean(checkingHostingWalletId || backingUpWalletId || removingWalletId)}
+                    onCheck={() => { checkHosting(wallet).catch(() => undefined); }}
+                  /> : null}
                   {renamingWalletId === wallet.id ? (
                     <View style={s.renameBox}>
                       <TextInput
@@ -431,6 +491,7 @@ export default function WalletsScreen({ navigation }: any) {
 
 function WalletRow({
   active,
+  actionsDisabled,
   address,
   badge,
   busy,
@@ -445,8 +506,10 @@ function WalletRow({
   onRename,
   onManageAddresses,
   onRemove,
+  removing,
 }: {
   active?: boolean;
+  actionsDisabled?: boolean;
   address?: string;
   badge?: string;
   busy?: boolean;
@@ -461,6 +524,7 @@ function WalletRow({
   onRename?: () => void;
   onManageAddresses?: () => void;
   onRemove: () => void;
+  removing?: boolean;
 }) {
   const { t } = useI18n();
 
@@ -470,7 +534,7 @@ function WalletRow({
         accessibilityLabel={`Open ${title}`}
         accessibilityRole="button"
         activeOpacity={onSelect ? 0.72 : 1}
-        disabled={!onSelect || busy}
+        disabled={!onSelect || busy || actionsDisabled}
         onPress={onSelect}
         style={s.walletSelect}
       >
@@ -552,6 +616,7 @@ function WalletRow({
             accessibilityLabel={`${t('receive.manageAddresses')}: ${title}`}
             accessibilityRole="button"
             activeOpacity={0.72}
+            disabled={actionsDisabled}
             onPress={onManageAddresses}
             style={s.addressesButton}
           >
@@ -563,6 +628,7 @@ function WalletRow({
             accessibilityLabel={`Rename ${title}`}
             accessibilityRole="button"
             activeOpacity={0.72}
+            disabled={actionsDisabled}
             onPress={onRename}
             style={s.renameButton}
           >
@@ -572,11 +638,20 @@ function WalletRow({
         <TouchableOpacity
           accessibilityLabel={`Remove ${title}`}
           accessibilityRole="button"
+          accessibilityState={{
+            busy: removing,
+            disabled: actionsDisabled,
+          }}
           activeOpacity={0.72}
+          disabled={actionsDisabled}
           onPress={onRemove}
           style={s.removeButton}
         >
-          <Icon name="trash" size={17} color={colors.error} />
+          {removing ? (
+            <ActivityIndicator color={colors.error} size="small" />
+          ) : (
+            <Icon name="trash" size={17} color={colors.error} />
+          )}
         </TouchableOpacity>
       </View>
     </View>

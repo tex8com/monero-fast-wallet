@@ -4,6 +4,15 @@
 
 namespace tex8::desktop {
 
+// Presence only; the wallet core still verifies the device's public identity.
+bool ledgerUsbAvailable();
+
+// Installs the macOS CoreBluetooth callbacks into the native Monero Ledger
+// device. This is deliberately idempotent so every wallet open/reconnect can
+// establish the required transport contract without depending on a prior UI
+// discovery call.
+void installLedgerBleTransportCallbacks();
+
 // Scans for a nearby Ledger Nano X/Flex/Stax on macOS, selects it for the
 // native Monero core, and returns a sanitized transport-status JSON object.
 // APDUs and Bluetooth identifiers never cross into the Tauri renderer.

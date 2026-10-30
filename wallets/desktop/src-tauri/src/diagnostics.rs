@@ -10,7 +10,8 @@ use tauri::{AppHandle, Manager};
 
 const FILE_NAME: &str = "diagnostics.jsonl";
 const PREVIOUS_FILE_NAME: &str = "diagnostics.previous.jsonl";
-const MAX_BYTES: u64 = 512 * 1024;
+const MAX_BYTES: u64 = 4 * 1024 * 1024;
+static WRITER: Mutex<()> = Mutex::new(());
 static LAST_SAMPLES: OnceLock<Mutex<HashMap<String, u64>>> = OnceLock::new();
 
 /// Append a privacy-safe operational event.  This is deliberately not a
@@ -20,6 +21,9 @@ static LAST_SAMPLES: OnceLock<Mutex<HashMap<String, u64>>> = OnceLock::new();
 /// failures even when a packaged macOS app has no attached terminal.
 pub fn record(app: &AppHandle, event: &str, fields: &[(&str, String)]) {
     let result = (|| -> Result<(), std::io::Error> {
+        let _writer = WRITER
+            .lock()
+            .map_err(|_| std::io::Error::other("Diagnostic writer unavailable"))?;
         let directory = app
             .path()
             .app_data_dir()
@@ -39,13 +43,23 @@ pub fn record(app: &AppHandle, event: &str, fields: &[(&str, String)]) {
         let field_values = safe_fields(fields);
         let mut entry = Map::new();
         entry.insert("timestamp".to_owned(), Value::from(now()));
+        entry.insert(
+            "timestampMs".to_owned(),
+            Value::from(
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64,
+            ),
+        );
+        entry.insert("processId".to_owned(), Value::from(std::process::id()));
         entry.insert("event".to_owned(), Value::String(event.to_owned()));
         entry.insert("fields".to_owned(), Value::Object(field_values));
         let encoded =
             serde_json::to_string(&Value::Object(entry)).map_err(std::io::Error::other)?;
         let mut file = OpenOptions::new().create(true).append(true).open(path)?;
         writeln!(file, "{encoded}")?;
-        file.sync_data()
+        Ok(())
     })();
 
     if let Err(error) = result {
@@ -72,6 +86,10 @@ fn safe_fields(fields: &[(&str, String)]) -> Map<String, Value> {
 // fields fail closed until explicitly reviewed here. In particular wallet,
 // registration, address, path, transaction and token identifiers are absent.
 const SAFE_FIELD_NAMES: &[&str] = &[
+    "targetHeight",
+    "remainingBlocks",
+    "stalledMs",
+    "transport",
     "account",
     "app-lock-state-changed",
     "assignmentEpoch",
@@ -79,6 +97,9 @@ const SAFE_FIELD_NAMES: &[&str] = &[
     "available",
     "daemonFallback",
     "delivery",
+    "pushTestEventId",
+    "scheduledAt",
+    "deliverAfter",
     "elapsedMs",
     "endpointPresent",
     "event",
@@ -88,12 +109,16 @@ const SAFE_FIELD_NAMES: &[&str] = &[
     "filesRetained",
     "flow",
     "grpcFallback",
+    "hostingCheckId",
+    "httpStatus",
     "kind",
     "leaseState",
     "legacy",
     "network",
     "nodeMode",
     "normalLoaded",
+    "nsErrorDomain",
+    "nsErrorCode",
     "opened",
     "operation",
     "outcome",
@@ -120,9 +145,58 @@ const SAFE_FIELD_NAMES: &[&str] = &[
     "worker",
 ];
 
+/// Drain independently of the wallet mutex, including during blocking I/O.
+pub fn start_native_drain(app: AppHandle) {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        let lines = crate::native_wallet::drain_diagnostics();
+        if lines.is_empty() {
+            continue;
+        }
+        let result = (|| -> std::io::Result<()> {
+            let directory = app
+                .path()
+                .app_data_dir()
+                .map_err(std::io::Error::other)?
+                .join("wallets");
+            fs::create_dir_all(&directory)?;
+            let path = directory.join("native-diagnostics.log");
+            if fs::metadata(&path)
+                .map(|m| m.len() > 16 * 1024 * 1024)
+                .unwrap_or(false)
+            {
+                fs::rename(&path, directory.join("native-diagnostics.previous.log"))?;
+            }
+            let mut file = OpenOptions::new().create(true).append(true).open(path)?;
+            for line in lines {
+                if line.starts_with("MONERO_WALLET_DIAGNOSTICS ")
+                    && line.len() < 8192
+                    && !line.contains('\n')
+                {
+                    writeln!(file, "processId={} {line}", std::process::id())?;
+                }
+            }
+            Ok(())
+        })();
+        if result.is_err() {
+            eprintln!("MONERO_DESKTOP_DIAGNOSTICS native-drain-write-failed");
+        }
+    });
+}
+
 fn safe_error_code(error: &str) -> &'static str {
     let normalized = error.to_ascii_lowercase();
-    if normalized.contains("session-stale") || normalized.contains("no longer open") {
+    if normalized.contains("apns-authorization-error") {
+        "apns-authorization-error"
+    } else if normalized.contains("apns-authorization-denied") {
+        "apns-authorization-denied"
+    } else if normalized.contains("apns-registration-error") {
+        "apns-registration-error"
+    } else if normalized.contains("apns-registration-timeout") {
+        "apns-registration-timeout"
+    } else if normalized.contains("apns-registration-failed") {
+        "apns-registration-failed"
+    } else if normalized.contains("session-stale") || normalized.contains("no longer open") {
         "session-stale"
     } else if normalized.contains("timeout") || normalized.contains("timed out") {
         "timeout"
@@ -215,5 +289,19 @@ mod tests {
                 .and_then(|value| value.as_str()),
             Some("3")
         );
+    }
+
+    #[test]
+    fn apns_system_errors_remain_distinct_from_user_denial() {
+        for code in ["apns-authorization-error", "apns-authorization-denied", "apns-registration-error", "apns-registration-timeout"] {
+            let fields = safe_fields(&[("error", format!("{code}: macOS notification operation stopped"))]);
+            assert_eq!(fields.get("safeErrorCode").and_then(|value| value.as_str()), Some(code));
+        }
+        let fields = safe_fields(&[("nsErrorDomain", "UNErrorDomain".to_owned()),
+            ("nsErrorCode", "1".to_owned()), ("userInfo", "private content".to_owned()),
+            ("deviceToken", "private token".to_owned())]);
+        assert_eq!(fields.len(), 2);
+        assert!(!fields.contains_key("userInfo"));
+        assert!(!fields.contains_key("deviceToken"));
     }
 }

@@ -22,6 +22,7 @@ const CATALOG_HASH_SERVICE = 'Monero Fast Wallet Onion news catalog hash';
 const CACHE_KEY = 'tex8-monero-news-v3';
 const NEWS_IMAGE_PREFIX = 'https://cdn.tex8.com/tex8-images/monero-fast-wallet/news/v1/';
 const NEWS_IMAGE_URL_PATTERN = /^https:\/\/cdn\.tex8\.com\/tex8-images\/monero-fast-wallet\/news\/v1\/[a-z0-9-]+\/[a-z0-9-]+\.webp$/;
+const NEWS_ARTICLE_URL_PATTERN = /^https:\/\/xmr\.tex8\.com\/news\/articles\/[a-z0-9-]+$/;
 const RETRY_DELAYS_MS = [15_000, 30_000, 60_000, 5 * 60_000];
 let memoryCache: Cache | null = null;
 
@@ -53,7 +54,8 @@ function parseNews(value: unknown): MoneroNewsItem[] {
       !Number.isFinite(Date.parse(candidate.publishedAt))
     ) return [];
     const url = typeof candidate.url === 'string'
-      && candidate.url.startsWith('https://www.getmonero.org/')
+      && (candidate.url.startsWith('https://www.getmonero.org/')
+        || NEWS_ARTICLE_URL_PATTERN.test(candidate.url))
       ? candidate.url
       : undefined;
     const imageUrl = isNewsImageUrl(candidate.imageUrl)

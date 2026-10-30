@@ -287,7 +287,7 @@ describe('Ledger companion signing prime bridge contract', () => {
     expect(localResetPatch).toContain('m_synchronized = false;');
   });
 
-  it('primes while keeping the companion open through the first parity check', () => {
+  it('adopts the frozen companion while keeping it open through parity proof', () => {
     const connectStart = walletState.indexOf(
       'const connectLedgerForSigning = useCallback',
     );
@@ -301,7 +301,7 @@ describe('Ledger companion signing prime bridge contract', () => {
     const companionBranch = connectFlow.slice(
       companionBranchStart,
       connectFlow.indexOf(
-        '// Await the native coordinator join',
+        '// Wallets without an encrypted companion retain the legacy scan',
         companionBranchStart,
       ),
     );
@@ -309,17 +309,20 @@ describe('Ledger companion signing prime bridge contract', () => {
       'await walletService.primeHardwareWalletFromViewOnly(',
     );
     expect(companionBranch).not.toContain('await closeReadOnlyCompanion()');
-    expect(connectFlow.indexOf('primeHardwareWalletFromViewOnly')).toBeLessThan(
-      connectFlow.indexOf('await walletService.startRefresh('),
+    expect(connectFlow).toContain(
+      'if (!hasEncryptedViewCompanion) {\n          await walletService.startRefresh(',
     );
     expect(
       connectFlow.indexOf(
         'await waitForLedgerSigningSpendReadyWithSingleRebuild({',
       ),
     ).toBeLessThan(connectFlow.lastIndexOf('await closeReadOnlyCompanion()'));
-    expect(connectFlow).toContain('refreshReferenceAfterMismatch:');
-    expect(connectFlow).toContain(
-      'await walletService.rebuildHardwareWalletCacheFromViewOnly(',
+    expect(connectFlow).not.toContain('refreshReferenceAfterMismatch:');
+    expect(connectFlow).not.toContain(
+      'rebuildHardwareWalletCacheFromViewOnly',
+    );
+    expect(connectFlow.match(/primeHardwareWalletFromViewOnly/g)).toHaveLength(
+      2,
     );
     expect(connectFlow).toContain(
       'const readOnlySession = readOnlyCompanionClosed',

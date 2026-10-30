@@ -1,4 +1,5 @@
 import NativeMoneroWalletTurbo from '../../specs/NativeMoneroWallet';
+import { parseFastWalletHostingView, type FastWalletHostingView } from '../../../../packages/wallet-shared/src/fastWalletHosting';
 import type {
   AppProtectionStatus,
   BiometricAuthResult,
@@ -6,6 +7,7 @@ import type {
   FastReceiveIdentity,
   FastWalletAssignment,
   FastWalletProviderRegistration,
+  FastWalletTestPushReceipt,
   HardwareWalletStatus,
   LedgerKeyImageSyncResult,
   LedgerTransportStatus,
@@ -153,11 +155,22 @@ export interface SponsorFastWalletAssignmentInput {
   network: MoneroNetwork;
   assignmentExpiresAt: number;
   now: number;
+  forceNewAssignment?: boolean;
+}
+
+export interface CheckFastWalletHostingInput {
+  identityId: string;
+  workerDescriptorHex?: string;
+  network: MoneroNetwork;
+  now: number;
 }
 
 export interface SubmitFastWalletWatchInput {
+  identityId: string;
   workerDescriptorHex: string;
   network: MoneroNetwork;
+  assignmentHandleHex: string;
+  assignmentEpoch: number;
   now: number;
   envelopeHex: string;
 }
@@ -247,6 +260,7 @@ export type {
   FastReceiveIdentity,
   FastWalletAssignment,
   FastWalletProviderRegistration,
+  FastWalletTestPushReceipt,
   HardwareWalletStatus,
   LedgerTransportStatus,
   MoneroEnthusiastV1Status,
@@ -288,10 +302,7 @@ export interface NativeMoneroWalletModule {
   getLedgerTransportStatus(): Promise<LedgerTransportStatus>;
   requestLedgerTransportAccess(): Promise<LedgerTransportStatus>;
   cancelLedgerOperation(): Promise<void>;
-  beginSystemUiInterruption(
-    reason: string,
-    timeoutMs: number,
-  ): Promise<string>;
+  beginSystemUiInterruption(reason: string, timeoutMs: number): Promise<string>;
   endSystemUiInterruption(token: string): Promise<void>;
   getBiometricAuthStatus(): Promise<BiometricAuthStatus>;
   authenticateBiometric(reason: string): Promise<BiometricAuthResult>;
@@ -355,7 +366,7 @@ export interface NativeMoneroWalletModule {
     providerToken: string,
     appCheckToken: string,
   ): Promise<FastWalletProviderRegistration>;
-  sendFastWalletTestPush(): Promise<void>;
+  sendFastWalletTestPush(): Promise<FastWalletTestPushReceipt>;
   loadOfficialFastWalletWorkerDescriptor(
     network: MoneroNetwork,
     now: number,
@@ -375,6 +386,7 @@ export interface NativeMoneroWalletModule {
   sponsorFastWalletAssignment(
     input: SponsorFastWalletAssignmentInput,
   ): Promise<FastWalletAssignment>;
+  checkFastWalletHosting(input: CheckFastWalletHostingInput): Promise<FastWalletHostingView>;
   submitFastWalletWatch(input: SubmitFastWalletWatchInput): Promise<string>;
   disableFastWalletDelivery(): Promise<void>;
   deleteFastWalletAssignment(
@@ -749,11 +761,23 @@ const nativeModule: NativeMoneroWalletModule | undefined = turboModule
           input.network,
           input.assignmentExpiresAt,
           input.now,
+          input.forceNewAssignment === true,
         ),
+      checkFastWalletHosting: async input => {
+        const raw = await turboModule.checkFastWalletHosting(
+          input.identityId, input.workerDescriptorHex ?? '', input.network, input.now,
+        );
+        const view = parseFastWalletHostingView(JSON.parse(raw));
+        if (!view) throw new Error('invalid_proof');
+        return view;
+      },
       submitFastWalletWatch: input =>
         turboModule.submitFastWalletWatch(
+          input.identityId,
           input.workerDescriptorHex,
           input.network,
+          input.assignmentHandleHex,
+          input.assignmentEpoch,
           input.now,
           input.envelopeHex,
         ),
@@ -899,7 +923,9 @@ const nativeModule: NativeMoneroWalletModule | undefined = turboModule
       createSubaddress: (walletId, accountIndex = 0, label = '') =>
         turboModule.createSubaddress(walletId, accountIndex, label),
       listSubaddresses: (walletId, accountIndex = 0) =>
-        turboModule.listSubaddresses(walletId, accountIndex) as Promise<WalletSubaddress[]>,
+        turboModule.listSubaddresses(walletId, accountIndex) as Promise<
+          WalletSubaddress[]
+        >,
       presentRecoverySeed: (walletId, reason) =>
         turboModule.presentRecoverySeed(walletId, reason),
       getBalance: (walletId, accountIndex = 0) =>
@@ -909,10 +935,7 @@ const nativeModule: NativeMoneroWalletModule | undefined = turboModule
       snapshot: walletId => turboModule.snapshot(walletId),
       getTransactions: (walletId, limit = 25) =>
         turboModule.getTransactions(walletId, limit),
-      primeHardwareWalletFromViewOnly: (
-        hardwareWalletId,
-        viewOnlyWalletId,
-      ) =>
+      primeHardwareWalletFromViewOnly: (hardwareWalletId, viewOnlyWalletId) =>
         turboModule.primeHardwareWalletFromViewOnly(
           hardwareWalletId,
           viewOnlyWalletId,

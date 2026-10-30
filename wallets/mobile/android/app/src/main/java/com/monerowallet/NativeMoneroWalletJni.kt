@@ -491,6 +491,14 @@ internal object NativeMoneroWalletJni {
     nativeCloseWallet(walletId, store)
   }
 
+  fun verifyFastWalletHostingProof(
+    descriptor: String, network: String, now: Double, handle: String,
+    epoch: Double, nonce: String, hosted: Boolean, checkedAt: Double, proof: String,
+  ) {
+    requireLoaded()
+    nativeVerifyFastWalletHostingProof(descriptor, network, now, handle, epoch, nonce, hosted, checkedAt, proof)
+  }
+
   fun setDaemon(
     walletId: String,
     address: String,
@@ -1669,6 +1677,11 @@ internal object NativeMoneroWalletJni {
   )
 
   @JvmStatic private external fun nativeCloseWallet(walletId: String, store: Boolean)
+
+  @JvmStatic private external fun nativeVerifyFastWalletHostingProof(
+    descriptor: String, network: String, now: Double, handle: String,
+    epoch: Double, nonce: String, hosted: Boolean, checkedAt: Double, proof: String,
+  )
 
   @JvmStatic private external fun nativeSetDaemon(
     walletId: String,

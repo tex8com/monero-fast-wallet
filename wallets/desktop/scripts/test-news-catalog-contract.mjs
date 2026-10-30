@@ -24,6 +24,7 @@ test('desktop checks the private catalog hash before loading the WebP catalog', 
 test('desktop only permits the TEX8 WebP prefix and renders it with a local fallback', () => {
   assert.match(news, /https:\/\/cdn\.tex8\.com\/tex8-images\/monero-fast-wallet\/news\/v1\//);
   assert.match(news, /NEWS_IMAGE_URL_PATTERN/);
+  assert.match(news, /NEWS_ARTICLE_URL_PATTERN/);
   assert.match(app, /function NewsCatalogImage/);
   assert.match(app, /item\.imageUrl/);
   assert.match(tauriConfig, /img-src 'self' asset: data: blob: https:\/\/cdn\.tex8\.com/);

@@ -158,6 +158,31 @@ test("registration covers local or manual addresses and debounced availability",
   assert.match(namesUi, /expiry block is authoritative/);
   assert.match(namesUi, /expiryHeight: number \| null/);
   assert.match(namesUi, /expiryHeight: result\.expiryHeight \?\? undefined/);
+  assert.match(
+    namesUi,
+    /availability &&\s*\["available", "available-again"\]\.includes\([\s\S]*?!busy && \([\s\S]*?<button\s*className="primary"\s*onClick=\{advanceRegistration\}/,
+  );
+  assert.doesNotMatch(
+    namesUi,
+    /disabled=\{\s*!availability \|\|[\s\S]*?availabilityLoading/,
+  );
+});
+
+test("MFW resolver and wallet-address waits never block the desktop UI thread", () => {
+  for (const command of [
+    "wallet_address",
+    "resolve_mfw_name_for_payment",
+    "check_mfw_name_availability",
+    "suggest_mfw_names",
+    "discover_mfw_names_for_wallet",
+  ]) {
+    assert.match(
+      host,
+      new RegExp(
+        `async fn ${command}\\([\\s\\S]*?spawn_blocking\\(move \\|\\|`,
+      ),
+    );
+  }
 });
 
 test("resolver supports the pinned direct-Onion resolvers and native signature verification", () => {

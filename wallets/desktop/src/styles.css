@@ -384,8 +384,13 @@ h2 { letter-spacing: -0.65px; }
 .send-amount-card > header { display: flex; align-items: center; justify-content: space-between; width: 100%; margin-bottom: 5px; }
 .send-amount-card > header strong { color: #aaa1b4; font-size: 12px; letter-spacing: 0.05em; text-transform: uppercase; }
 .send-amount-card > header .quiet-button { margin: 0; padding: 0; color: #fa762f; font-size: 12px; text-transform: uppercase; }
-.send-amount-card > output { max-width: 100%; overflow: hidden; color: #fff; font-size: clamp(36px, 6vw, 52px); font-weight: 900; letter-spacing: -0.04em; text-overflow: ellipsis; white-space: nowrap; }
+.send-amount-actions { display: flex; align-items: center; gap: 12px; }
+.send-amount-input { width: 100%; min-width: 0; padding: 2px 0; overflow: hidden; border: 0; outline: 0; color: #fff; background: transparent; font: inherit; font-size: clamp(36px, 6vw, 52px); font-weight: 900; letter-spacing: -0.04em; text-align: center; text-overflow: ellipsis; white-space: nowrap; }
+.send-amount-input::placeholder { color: #fff; opacity: 1; }
+.send-amount-input:focus-visible { border-radius: 6px; outline: 1px solid rgb(250 103 28 / 70%); outline-offset: 3px; }
 .send-amount-card > b { color: #fa762f; font-size: 14px; letter-spacing: 0.08em; }
+.send-amount-equivalent { min-height: 18px; color: #aaa1b4; font-size: 12px; }
+.send-amount-equivalent.unavailable { color: #f6b94c; }
 .send-keypad { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px; width: 100%; margin-top: 12px; }
 .send-keypad button { min-height: 52px; border: 1px solid rgb(255 255 255 / 10%); border-radius: 10px; color: #f5f0f7; background: rgb(255 255 255 / 5.5%); cursor: pointer; font: inherit; font-size: 20px; font-weight: 800; }
 .send-keypad button:hover { border-color: #7b4b4c; background: rgb(242 104 34 / 10%); }
@@ -516,6 +521,10 @@ h2 { letter-spacing: -0.65px; }
 .transaction-row.selected { box-shadow: inset 3px 0 #fa671c; }
 .tx-direction { display: grid; place-items: center; width: 33px; height: 33px; border-radius: 50%; color: #ffd1bd; background: #4d2631; font-size: 20px; }
 .tx-direction.incoming { color: #aef1d8; background: #143a32; }
+.transaction-row.pending { color: #aaa4b3; background: #15131b; }
+.transaction-row.pending .tx-direction,
+.tx-direction.pending { color: #c4becb; background: #393540; }
+.transaction-row.pending em { color: #aaa4b3; }
 .transaction-list strong,
 .transaction-list small { display: block; }
 .transaction-list small { overflow: hidden; margin-top: 4px; color: #9e96ac; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
@@ -809,6 +818,22 @@ html[dir="rtl"] textarea { text-align: right; }
 .settings-toggle-row,
 .settings-info-row { grid-template-columns: minmax(0, 1fr) auto; align-items: center; }
 .settings-wallet-actions .secondary { margin: 0; }
+.push-test-panel .push-test-actions { margin: 0; align-items: stretch; }
+.push-test-panel .push-test-actions > button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 44px; margin: 0; padding: 10px 16px; border: 1px solid transparent; line-height: 1.25; white-space: nowrap; transition: transform 90ms ease, background-color 120ms ease, box-shadow 120ms ease; }
+.push-test-panel .push-test-actions > .secondary { border-color: #564565; }
+.push-test-panel .push-test-actions > button:not(:disabled):hover { box-shadow: 0 0 0 2px rgb(250 103 28 / 16%); }
+.push-test-panel .push-test-actions > .secondary:not(:disabled):hover { background: rgb(250 103 28 / 10%); }
+.push-test-panel .push-test-actions > .primary:not(:disabled):hover { background: #ff7b3f; }
+.push-test-panel .push-test-actions > button:not(:disabled):active { transform: translateY(1px) scale(0.98); box-shadow: 0 0 0 3px rgb(250 103 28 / 24%); }
+.push-test-panel .push-test-actions > button:focus { outline: 2px solid #ffb18b; outline-offset: 3px; }
+.push-test-panel .push-test-actions > button:disabled { opacity: 0.7; cursor: wait; }
+.push-test-panel .push-test-feedback.is-attention { padding: 10px 12px; border: 1px solid #aa633d; border-radius: 9px; background: rgb(250 103 28 / 9%); color: #ffcea8; animation: push-test-attention 350ms ease-out; }
+@keyframes push-test-attention { from { box-shadow: 0 0 0 4px rgb(250 103 28 / 24%); } to { box-shadow: 0 0 0 0 rgb(250 103 28 / 0%); } }
+@media (prefers-reduced-motion: reduce) {
+  .push-test-panel .push-test-actions > button { transition: none; }
+  .push-test-panel .push-test-actions > button:not(:disabled):active { transform: none; }
+  .push-test-panel .push-test-feedback.is-attention { animation: none; }
+}
 .password-change { grid-template-columns: minmax(0, 1fr) minmax(360px, 0.9fr); align-items: end; }
 .password-fields { display: grid; grid-template-columns: 1fr 1fr auto; gap: 8px; }
 .password-fields input,
@@ -1142,6 +1167,12 @@ html[dir="rtl"] textarea { text-align: right; }
 .fast-wallet-live span { color: #d5e6de; font-size: 12px; font-weight: 700; }
 .fast-wallet-live p { margin: 4px 0 0; color: #c8d9d1; font-size: 12px; line-height: 1.45; }
 .fast-wallet-alerts { display: grid; gap: 12px; padding: 14px; border: 1px solid #3b3550; border-radius: 11px; background: #151121; }
+.fast-wallet-hosting { display: grid; gap: 8px; padding: 14px; border: 1px solid #3b3550; border-radius: 11px; background: #151121; }
+.fast-wallet-hosting-header { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
+.fast-wallet-hosting-header > strong.positive { color: #00d68f; }
+.fast-wallet-hosting-header button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 44px; }
+.fast-wallet-hosting > p { margin: 0; color: #ff9a91; font-size: 13px; line-height: 1.5; }
+.fast-wallet-hosting > small { color: #c2baca; line-height: 1.5; }
 .fast-wallet-alerts > div:first-child { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 7px 12px; }
 .fast-wallet-alerts > div:first-child p { grid-column: 1 / -1; margin: 0; color: #c2baca; font-size: 12px; line-height: 1.5; }
 .fast-wallet-alerts > label { display: grid; gap: 7px; color: #c4bdcd; font-size: 13px; font-weight: 750; }
@@ -1288,9 +1319,6 @@ html[dir="rtl"] textarea { text-align: right; }
 .sync-reading em { color: #f4bd55; font-size: 17px; font-style: normal; font-weight: 900; }
 .sync-reading em.ready { color: #00d68f; }
 .sync-reading em.sync-working { animation: sync-working 1.1s ease-in-out infinite; }
-.sync-refresh { border: 0; border-radius: 999px; padding: 1px 5px; color: #bdb4c8; background: transparent; cursor: pointer; font: inherit; font-size: 17px; line-height: 1; }
-.sync-refresh:hover,
-.sync-refresh:focus-visible { color: #fff; background: #2a2338; outline: none; }
 .sync-metrics { display: grid; gap: 6px; min-width: 0; }
 .sync-metrics-primary { display: flex; align-items: center; justify-content: space-between; gap: 7px; min-width: 0; }
 .sync-metrics span { border: 1px solid #383047; border-radius: 999px; color: #bdb4c8; font-size: 11px; font-weight: 700; padding: 5px 8px; }
@@ -1302,6 +1330,7 @@ html[dir="rtl"] textarea { text-align: right; }
 .sync-led.failed { background: #ff5c76; box-shadow: 0 0 0 5px rgb(255 92 118 / 10%); }
 .sync-track { height: 5px; overflow: hidden; border-radius: 99px; background: #282236; }
 .sync-track span { display: block; height: 100%; border-radius: inherit; background: #f4bd55; transition: width 0.3s ease; }
+.desktop-sync-progress.wallet .sync-track span:not(.ready) { background: #737381; }
 .sync-track span.ready { background: #00d68f; }
 @keyframes sync-working {
   50% { opacity: 0.35; transform: translateY(-1px); }
@@ -1354,6 +1383,10 @@ html[dir="rtl"] textarea { text-align: right; }
 .home-transaction-row strong { color: #eee8f2; font-size: 13px; }
 .home-transaction-row small { margin-top: 4px; color: #9c94a9; font-size: 11px; }
 .home-transaction-row em { color: #b8e7d4; font-size: 11px; font-style: normal; font-weight: 800; }
+.home-transaction-row.pending { color: #aaa4b3; background: #15131b; }
+.home-transaction-row.pending .home-transaction-icon,
+.home-transaction-icon.pending { color: #c4becb; background: #393540; }
+.home-transaction-row.pending em { color: #aaa4b3; }
 .home-transaction-icon { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 50%; color: #ffd2bf; background: #4d2631; font-size: 20px; }
 .home-transaction-icon.incoming { color: #afeed7; background: #143a32; }
 .home-lock-row { display: flex; align-items: center; justify-content: flex-end; gap: 16px; }

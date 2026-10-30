@@ -30,6 +30,7 @@ const APP_VAULT_SYSTEM_KEK_IDENTIFIER: &str = "v1";
 const APP_VAULT_KEK_BYTES: usize = 32;
 const NOTIFICATION_AUTH_PREFIX: &str = "notification-installation-auth";
 const FAST_WALLET_ASSIGNMENT_PREFIX: &str = "fast-wallet-assignment";
+const FAST_WALLET_PENDING_ASSIGNMENT_PREFIX: &str = "fast-wallet-pending-assignment";
 const APP_PASSWORD_ARGON2_MEMORY_KIB: u32 = 65_536;
 const APP_PASSWORD_ARGON2_ITERATIONS: u32 = 3;
 const APP_PASSWORD_ARGON2_PARALLELISM: u32 = 1;
@@ -586,6 +587,36 @@ pub fn delete_fast_wallet_assignment_state(identity_id: &str) -> Result<(), Stri
         FAST_WALLET_ASSIGNMENT_PREFIX,
         identity_id,
         "Fast Wallet assignment state",
+    )
+}
+
+pub fn store_fast_wallet_pending_assignment_state(
+    identity_id: &str,
+    state: String,
+) -> Result<(), String> {
+    store_secret(
+        FAST_WALLET_PENDING_ASSIGNMENT_PREFIX,
+        identity_id,
+        state,
+        "pending Fast Wallet assignment state",
+    )
+}
+
+pub fn load_fast_wallet_pending_assignment_state(
+    identity_id: &str,
+) -> Result<Option<String>, String> {
+    load_secret(
+        FAST_WALLET_PENDING_ASSIGNMENT_PREFIX,
+        identity_id,
+        "pending Fast Wallet assignment state",
+    )
+}
+
+pub fn delete_fast_wallet_pending_assignment_state(identity_id: &str) -> Result<(), String> {
+    delete_secret(
+        FAST_WALLET_PENDING_ASSIGNMENT_PREFIX,
+        identity_id,
+        "pending Fast Wallet assignment state",
     )
 }
 
@@ -1454,17 +1485,20 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn diagnostic_migration_keeps_wallets_but_resets_ad_hoc_app_lock_records() {
+    fn macos_legacy_migration_keeps_wallets_and_respects_build_policy() {
         assert!(super::should_migrate_legacy_macos_secret("wallet-password"));
         assert!(super::should_migrate_legacy_macos_secret(
             "fast-wallet-password"
         ));
-        assert!(!super::should_migrate_legacy_macos_secret(
-            "app-protection-password"
-        ));
-        assert!(!super::should_migrate_legacy_macos_secret(
-            "app-protection-mode"
-        ));
+        let migrate_app_lock = !cfg!(debug_assertions);
+        assert_eq!(
+            super::should_migrate_legacy_macos_secret("app-protection-password"),
+            migrate_app_lock
+        );
+        assert_eq!(
+            super::should_migrate_legacy_macos_secret("app-protection-mode"),
+            migrate_app_lock
+        );
     }
 
     #[test]

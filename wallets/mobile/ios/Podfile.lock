@@ -1850,7 +1850,7 @@ PODS:
     - ReactCommon/turbomodule/core
     - ReactNativeDependencies
     - Yoga
-  - RNFBApp (24.0.0):
+  - RNFBApp (24.1.1):
     - Firebase/CoreOnly (= 12.10.0)
     - hermes-engine
     - RCTRequired
@@ -1872,7 +1872,7 @@ PODS:
     - ReactCommon/turbomodule/core
     - ReactNativeDependencies
     - Yoga
-  - RNFBAppCheck (24.0.0):
+  - RNFBAppCheck (24.1.1):
     - Firebase/AppCheck (= 12.10.0)
     - hermes-engine
     - RCTRequired
@@ -1895,7 +1895,7 @@ PODS:
     - ReactNativeDependencies
     - RNFBApp
     - Yoga
-  - RNFBMessaging (24.0.0):
+  - RNFBMessaging (24.1.1):
     - Firebase/Messaging (= 12.10.0)
     - FirebaseCoreExtension
     - hermes-engine
@@ -2430,9 +2430,9 @@ SPEC CHECKSUMS:
   ReactNativeDependencies: fe070f05e56f12c5883e95c62d0a721090047bdb
   RecaptchaInterop: 11e0b637842dfb48308d242afc3f448062325aba
   RNCClipboard: 26237d7fcfc6359e674655b02d03d6178d63d085
-  RNFBApp: 0b6a22fb66b5eb9309d58a09fe732c4862d77927
-  RNFBAppCheck: 31ea1a4314c8606a9042e8084aa012fcdf823f14
-  RNFBMessaging: d45ac79c980ce07de7ebbdaf422f728850a78968
+  RNFBApp: 0f04f739699499c7f732b5c561bb9a60bf9c08c3
+  RNFBAppCheck: e226ec644bcb4f1c90b9ff824f9deb6b4ab4ed30
+  RNFBMessaging: 62ed8b4c42062921474761c59bf969db13b5a145
   RNGestureHandler: 2498a0d5f428d4bb3bac23479584a965a1a93096
   RNPermissions: 4edc5e7c7d39fb12e56d5bd8f3b22328274d2bf9
   RNScreens: 4f8237da8f9f7aaac0f375bb61efe6011f5cd13b

@@ -78,6 +78,7 @@ import java.util.LinkedHashMap
 import java.util.LinkedHashSet
 import java.util.Locale
 import java.util.UUID
+import java.util.concurrent.Executor
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.crypto.Cipher
@@ -118,6 +119,16 @@ class NativeMoneroWalletModule(
   private val nativeWalletExecutor = Executors.newSingleThreadExecutor { work ->
     Thread(work, "mfw-native-wallet").apply { isDaemon = true }
   }
+  // A cold Onion circuit may take longer than a wallet snapshot's deadline.
+  // Provider registration only exchanges installation credentials; it must
+  // never delay opening, configuring or reading a wallet.
+  private val fastWalletProviderExecutor = Executors.newSingleThreadExecutor { work ->
+    Thread(work, "mfw-push-registration").apply { isDaemon = true }
+  }
+  private val fastWalletHostingExecutor = Executors.newSingleThreadExecutor { work ->
+    Thread(work, "mfw-hosting-check").apply { isDaemon = true }
+  }
+  private val fastWalletInstallationLock = Any()
   // Establishing Android GATT can take two bounded 20-second attempts. It is
   // transport setup only and must never occupy the serial wallet executor;
   // otherwise snapshots/history time out while an unavailable Ledger is
@@ -156,6 +167,8 @@ class NativeMoneroWalletModule(
     cancelPendingLedgerBleScan()
     walletAppVault.lock()
     nativeWalletExecutor.shutdown()
+    fastWalletProviderExecutor.shutdown()
+    fastWalletHostingExecutor.shutdownNow()
     ledgerTransportExecutor.shutdown()
     pendingMfwRecoveryExportBytes?.fill(0)
     pendingMfwRecoveryExportBytes = null
@@ -2357,7 +2370,11 @@ class NativeMoneroWalletModule(
     if (!requireFastWalletAlertFeature(promise)) {
       return
     }
-    resolveNativeMap(promise, "registerFastWalletProvider") {
+    resolveNativeMap(
+      promise,
+      "registerFastWalletProvider",
+      executor = fastWalletProviderExecutor,
+    ) {
       val checkedProviderToken = providerToken.trim()
       val checkedAppCheckToken = appCheckToken.trim()
       require(checkedProviderToken.length in 16..4_096) {
@@ -2371,6 +2388,8 @@ class NativeMoneroWalletModule(
           method = "POST",
           origin = BuildConfig.FAST_WALLET_REGISTRATION_ORIGIN,
           route = "/api/v1/provider-grants",
+          connectTimeoutMs = FAST_WALLET_PROVIDER_CONNECT_TIMEOUT_MS,
+          readTimeoutMs = FAST_WALLET_PROVIDER_READ_TIMEOUT_MS,
           headers = mapOf("X-Firebase-AppCheck" to checkedAppCheckToken),
           body = JSONObject().apply {
             put("provider", "fcm")
@@ -2390,6 +2409,8 @@ class NativeMoneroWalletModule(
           method = "POST",
           origin = BuildConfig.FAST_WALLET_GATEWAY_ORIGIN,
           route = "/api/v1/installations/provider",
+          connectTimeoutMs = FAST_WALLET_PROVIDER_CONNECT_TIMEOUT_MS,
+          readTimeoutMs = FAST_WALLET_PROVIDER_READ_TIMEOUT_MS,
           headers = installation.headers(),
           body = JSONObject().apply {
             put("provider", "fcm")
@@ -2427,19 +2448,35 @@ class NativeMoneroWalletModule(
     if (!requireFastWalletAlertFeature(promise)) {
       return
     }
-    resolveNativeVoid(promise, "sendFastWalletTestPush") {
-      withFastWalletInstallationCredentials { installation ->
+    resolveNativeMap(
+      promise,
+      "sendFastWalletTestPush",
+      executor = fastWalletProviderExecutor,
+    ) {
+      withFastWalletInstallationCredentials(requireExisting = true) { installation ->
         val response = timedNativeOperation("sendFastWalletTestPush.gateway") {
           fixedOriginJsonRequest(
             method = "POST",
             origin = BuildConfig.FAST_WALLET_GATEWAY_ORIGIN,
             route = "/api/v1/installations/test-push",
+            connectTimeoutMs = FAST_WALLET_PROVIDER_CONNECT_TIMEOUT_MS,
+            readTimeoutMs = FAST_WALLET_PROVIDER_READ_TIMEOUT_MS,
             headers = installation.headers(),
             body = JSONObject(),
           )
         }
-        require(response.optBoolean("accepted", false)) {
-          "Test notification was not accepted"
+        require(response.optBoolean("accepted", false)) { "Test notification was not accepted" }
+        val eventId = response.getString("eventId")
+        require(eventId.matches(Regex("^evt_[0-9a-f]{64}$"))) { "Invalid test notification event" }
+        val scheduledAt = checkedJsUnsignedInteger(response.getDouble("scheduledAt"), "scheduledAt")
+        val deliverAfter = checkedJsUnsignedInteger(response.getDouble("deliverAfter"), "deliverAfter")
+        require(scheduledAt > 0 && deliverAfter - scheduledAt == 10L) { "Invalid test notification schedule" }
+        logNativeEvent("testPush.scheduled", mapOf("eventId" to eventId))
+        Arguments.createMap().apply {
+          putBoolean("accepted", true)
+          putString("eventId", eventId)
+          putDouble("scheduledAt", scheduledAt.toDouble())
+          putDouble("deliverAfter", deliverAfter.toDouble())
         }
       }
     }
@@ -2645,6 +2682,7 @@ class NativeMoneroWalletModule(
     network: String,
     assignmentExpiresAt: Double,
     now: Double,
+    forceNewAssignment: Boolean,
     promise: Promise,
   ) {
     resolveNativeMap(promise, "sponsorFastWalletAssignment") {
@@ -2668,26 +2706,53 @@ class NativeMoneroWalletModule(
         checkedNow,
       )
       val stateKey = fastWalletAssignmentSecretKey(checkedIdentityId)
+      val pendingStateKey = fastWalletPendingAssignmentSecretKey(checkedIdentityId)
       val existing = readSecretValue(stateKey)?.let(::parseFastWalletAssignmentState)
-      val descriptorHash =
-        sha256Hex(checkedDescriptor.toByteArray(Charsets.US_ASCII))
-      require(
-        existing == null || existing.workerRootId == trustedDescriptor.workerRootId
-      ) {
+      val existingPending =
+        readSecretValue(pendingStateKey)?.let(::parseFastWalletAssignmentState)
+      require(existing == null || existing.workerRootId == trustedDescriptor.workerRootId) {
         "Changing a Fast Wallet Worker requires deleting the existing assignment first"
       }
-      val handle = existing?.handle ?: randomHex(32)
-      val epoch = existing?.epoch?.plus(1L) ?: 1L
-      require(epoch > 0L) { "Fast Wallet assignment epoch is exhausted" }
-      val pending = FastWalletAssignmentState(
-        handle = handle,
-        epoch = epoch,
-        expiresAt = checkedExpiresAt,
-        descriptorHash = descriptorHash,
-        workerRootId = trustedDescriptor.workerRootId,
-        status = "pending",
-      )
-      storeSecretValue(stateKey, pending.toJson().toString())
+      require(existingPending == null || existingPending.workerRootId == trustedDescriptor.workerRootId) {
+        "Changing a pending Fast Wallet Worker requires deleting its assignment first"
+      }
+      val nextEpoch = Math.addExact(maxOf(existing?.epoch ?: 0L, existingPending?.epoch ?: 0L), 1L)
+      require(nextEpoch in 1L..9_007_199_254_740_991L) { "Fast Wallet assignment epoch is exhausted" }
+      if (forceNewAssignment && existingPending != null) {
+        require(existingPending.handle != existing?.handle && existingPending.status == "pending") {
+          "An active Fast Wallet assignment cannot be retired as pending"
+        }
+        withFastWalletInstallationCredentials(requireExisting = true) { installation ->
+          fixedOriginJsonRequest(
+            method = "DELETE", origin = BuildConfig.FAST_WALLET_GATEWAY_ORIGIN,
+            route = "/api/v1/installations/assignments/${existingPending.handle}",
+            headers = installation.headers(), body = null,
+            acceptedStatusCodes = setOf(200, 204),
+          )
+        }
+        // Only a confirmed remote retirement permits forgetting this pending
+        // handle. The previous active assignment remains untouched.
+        deleteSecretValue(pendingStateKey)
+      }
+      val descriptorHash =
+        sha256Hex(checkedDescriptor.toByteArray(Charsets.US_ASCII))
+      val reusablePending = existingPending?.takeIf {
+        !forceNewAssignment && it.status == "pending" &&
+          it.expiresAt > checkedNow &&
+          it.workerRootId == trustedDescriptor.workerRootId &&
+          it.descriptorHash == descriptorHash
+      }
+      val pending = reusablePending ?: run {
+        FastWalletAssignmentState(
+          handle = randomHex(32),
+          epoch = nextEpoch,
+          expiresAt = checkedExpiresAt,
+          descriptorHash = descriptorHash,
+          workerRootId = trustedDescriptor.workerRootId,
+          status = "pending",
+        )
+      }
+      storeSecretValue(pendingStateKey, pending.toJson().toString())
       val sponsored =
         withFastWalletInstallationCredentials(requireExisting = true) { installation ->
         val response = fixedOriginJsonRequest(
@@ -2697,8 +2762,8 @@ class NativeMoneroWalletModule(
           headers = installation.headers(),
           body = JSONObject().apply {
             put("workerDescriptor", checkedDescriptor)
-            put("assignmentHandle", handle)
-            put("assignmentEpoch", epoch)
+            put("assignmentHandle", pending.handle)
+            put("assignmentEpoch", pending.epoch)
             put("expiresAt", checkedExpiresAt)
           },
         )
@@ -2718,23 +2783,166 @@ class NativeMoneroWalletModule(
         )
         pending.copy(expiresAt = effectiveExpiry)
       }
-      val active = pending.copy(
-        expiresAt = sponsored.expiresAt,
-        status = "active",
-      )
-      storeSecretValue(stateKey, active.toJson().toString())
-      active.toWritableMap()
+      val acceptedPending = pending.copy(expiresAt = sponsored.expiresAt)
+      storeSecretValue(pendingStateKey, acceptedPending.toJson().toString())
+      acceptedPending.toWritableMap()
+    }
+  }
+
+  override fun checkFastWalletHosting(
+    identityId: String, workerDescriptorHex: String, network: String,
+    now: Double, promise: Promise,
+  ) {
+    // Network/proof work uses its own executor, never the wallet's
+    // serial queue or WalletEngine. dispatchNative retains the normal gates.
+    dispatchNative(promise, "checkFastWalletHosting", emptyMap(), {
+      checkFastWalletHostingNative(identityId, workerDescriptorHex, network, now)
+    }, fastWalletHostingExecutor) { promise.resolve(it) }
+  }
+
+  private fun checkFastWalletHostingNative(
+    identityId: String, workerDescriptorHex: String, network: String, now: Double,
+  ): String {
+    val attemptedAt = System.currentTimeMillis() / 1_000L
+    val deadline = SystemClock.elapsedRealtime() + 60_000L
+    var hostingCheckId: String? = null
+    var validatingResponse = false
+    fun result(status: String, code: String? = null, checkedAt: Long? = null, binding: FastWalletAssignmentState? = null): String =
+      JSONObject().apply {
+        put("status", status); put("attemptedAt", attemptedAt)
+        put("verified", checkedAt != null); put("repairAttempted", false)
+        checkedAt?.let { put("checkedAt", it) }; code?.let { put("errorCode", it) }
+        if (checkedAt != null) {
+          val verifiedAssignment = requireNotNull(binding)
+          put("assignmentHandle", verifiedAssignment.handle)
+          put("assignmentEpoch", verifiedAssignment.epoch)
+          put("workerRootId", verifiedAssignment.workerRootId)
+        }
+      }.toString()
+    fun jsonInteger(json: JSONObject, key: String): Long {
+      val value = json.get(key)
+      require(value is Number) { "Hosting proof integer is invalid" }
+      return checkedJsUnsignedInteger(value.toDouble(), key)
+    }
+    try {
+      checkedJsUnsignedInteger(now, "now") // Input is syntax only; trust uses native time.
+      val identity = checkedPathSegment(identityId, "identityId")
+      val stored = readSecretValue(fastWalletAssignmentSecretKey(identity))
+        ?: readSecretValue(fastWalletPendingAssignmentSecretKey(identity))
+        ?: return result("missing", "no_assignment")
+      val assignment = parseFastWalletAssignmentState(stored)
+      require(assignment.epoch <= 9_007_199_254_740_991L) { "Hosting assignment epoch is invalid" }
+      val descriptor = if (workerDescriptorHex.isBlank()) {
+        if (!BuildConfig.FAST_WALLET_OFFICIAL_WORKER_ENABLED) return result("unsupported", "unsupported_worker")
+        val officialRoot = BuildConfig.FAST_WALLET_OFFICIAL_WORKER_ROOT_ID.trim()
+        if (!MessageDigest.isEqual(officialRoot.toByteArray(Charsets.US_ASCII), assignment.workerRootId.toByteArray(Charsets.US_ASCII))) {
+          return result("blocked", "assignment_state_inconsistent")
+        }
+        val directory = fixedOriginJsonRequest(
+          "GET", BuildConfig.FAST_WALLET_GATEWAY_ORIGIN,
+          "/api/v1/official-worker-descriptor", emptyMap(), null,
+          deadlineElapsedMs = deadline,
+        )
+        checkedCanonicalHex(directory.getString("workerDescriptor"), "workerDescriptor", maximumBytes = 512)
+      } else checkedCanonicalHex(workerDescriptorHex, "workerDescriptor", maximumBytes = 512)
+      val trusted = requireTrustedFastWalletDescriptor(descriptor, network, System.currentTimeMillis() / 1_000L)
+      if (!MessageDigest.isEqual(trusted.workerRootId.toByteArray(Charsets.US_ASCII), assignment.workerRootId.toByteArray(Charsets.US_ASCII))) {
+        return result("blocked", "assignment_state_inconsistent")
+      }
+      if (assignment.expiresAt <= attemptedAt) return result("missing", "assignment_expired")
+      val nonce = randomHex(32)
+      val checkId = nonce.take(16)
+      hostingCheckId = checkId
+      val body = JSONObject().apply {
+        put("assignmentEpoch", assignment.epoch); put("nonce", nonce); put("workerDescriptor", descriptor)
+      }
+      return withFastWalletInstallationCredentials(requireExisting = true) { installation ->
+        while (SystemClock.elapsedRealtime() < deadline) {
+          if (!NativeAppAuthorization.isAuthorized()) return@withFastWalletInstallationCredentials result("blocked", "authorization_required")
+          val remaining = (deadline - SystemClock.elapsedRealtime()).coerceAtLeast(1L)
+          logNativeEvent("fastWalletHosting.request", mapOf("hostingCheckId" to checkId))
+          validatingResponse = false
+          val response = fixedOriginJsonRequest(
+            "POST", BuildConfig.FAST_WALLET_GATEWAY_ORIGIN,
+            "/api/v1/installations/assignments/${assignment.handle}/hosting-check",
+            installation.headers(), body,
+            connectTimeoutMs = minOf(FAST_WALLET_CONNECT_TIMEOUT_MS.toLong(), remaining / 2L).coerceAtLeast(1L).toInt(),
+            readTimeoutMs = minOf(FAST_WALLET_READ_TIMEOUT_MS.toLong(), remaining / 2L).coerceAtLeast(1L).toInt(),
+            deadlineElapsedMs = deadline,
+            hostingCheckId = checkId,
+          )
+          validatingResponse = true
+          require(response.getString("contractVersion") == "monero-fast-wallet-hosting.v1") { "Hosting proof contract is invalid" }
+          val state = response.getString("status")
+          if (state == "unsupported") return@withFastWalletInstallationCredentials result("unsupported", "unsupported_worker")
+          require(checkedCanonicalHex(response.getString("assignmentHandle"), "assignmentHandle", exactBytes = 32) == assignment.handle &&
+            jsonInteger(response, "assignmentEpoch") == assignment.epoch &&
+            checkedCanonicalHex(response.getString("nonce"), "nonce", exactBytes = 32) == nonce) { "Hosting proof binding is invalid" }
+          if (state == "pending") {
+            val wait = minOf(1_000L, (deadline - SystemClock.elapsedRealtime()).coerceAtLeast(0L))
+            if (wait > 0L) Thread.sleep(wait)
+            continue
+          }
+          require(state == "hosted" || state == "missing") { "Hosting proof state is invalid" }
+          val checkedAt = jsonInteger(response, "checkedAt")
+          val currentTime = System.currentTimeMillis() / 1_000L
+          require(checkedAt >= attemptedAt - 5L && checkedAt <= currentTime + 5L) { "Hosting proof freshness is invalid" }
+          NativeMoneroWalletJni.verifyFastWalletHostingProof(descriptor, network, currentTime.toDouble(),
+            assignment.handle, assignment.epoch.toDouble(), nonce, state == "hosted", checkedAt.toDouble(),
+            checkedCanonicalHex(response.getString("proof"), "hostingProof", maximumBytes = 4096))
+          if (!NativeAppAuthorization.isAuthorized()) return@withFastWalletInstallationCredentials result("blocked", "authorization_required")
+          val latestStored = readSecretValue(fastWalletAssignmentSecretKey(identity))
+            ?: readSecretValue(fastWalletPendingAssignmentSecretKey(identity))
+          val latest = latestStored?.let(::parseFastWalletAssignmentState)
+          if (latest == null || latest.handle != assignment.handle || latest.epoch != assignment.epoch || latest.workerRootId != assignment.workerRootId) {
+            return@withFastWalletInstallationCredentials result("unknown", "assignment_changed")
+          }
+          if (latest.expiresAt <= currentTime) return@withFastWalletInstallationCredentials result("missing", "assignment_expired")
+          logNativeEvent("fastWalletHosting.verified", mapOf("hostingCheckId" to checkId, "status" to state))
+          return@withFastWalletInstallationCredentials result(state, checkedAt = checkedAt, binding = latest)
+        }
+        result("unknown", "check_timeout")
+      }
+    } catch (error: Exception) {
+      val status = fastWalletHttpStatus(error)
+      val code = when (status) {
+        401 -> "authentication_failed"
+        403 -> "authorization_required"
+        404, 405, 501 -> "unsupported_worker"
+        else -> when {
+          error.message?.contains("must be enabled first") == true -> "authorization_required"
+          validatingResponse || error is org.json.JSONException || error.message?.contains("hosting proof", ignoreCase = true) == true -> "invalid_proof"
+          SystemClock.elapsedRealtime() >= deadline -> "check_timeout"
+          else -> "notification_service_error"
+        }
+      }
+      logNativeEvent("fastWalletHosting.failed", mapOf("httpStatus" to status, "errorCode" to code, "hostingCheckId" to hostingCheckId))
+      return result(if (code == "authorization_required" || code == "authentication_failed") "blocked" else if (code == "unsupported_worker") "unsupported" else "unknown", code)
     }
   }
 
   override fun submitFastWalletWatch(
+    identityId: String,
     workerDescriptorHex: String,
     network: String,
+    assignmentHandleHex: String,
+    assignmentEpoch: Double,
     now: Double,
     envelopeHex: String,
     promise: Promise,
   ) {
     resolveNativeString(promise, "submitFastWalletWatch") {
+      val checkedIdentityId = checkedPathSegment(identityId, "identityId")
+      val checkedAssignmentHandle = checkedCanonicalHex(
+        assignmentHandleHex,
+        "assignmentHandle",
+        exactBytes = 32,
+      )
+      val checkedAssignmentEpoch = checkedJsUnsignedInteger(
+        assignmentEpoch,
+        "assignmentEpoch",
+      )
+      require(checkedAssignmentEpoch > 0L) { "Fast Wallet assignment epoch is invalid" }
       val checkedNow = checkedJsUnsignedInteger(now, "now")
       val checkedDescriptor = checkedCanonicalHex(
         workerDescriptorHex,
@@ -2787,6 +2995,43 @@ class NativeMoneroWalletModule(
             messageId,
             receipt,
           )
+          val stateKey = fastWalletAssignmentSecretKey(checkedIdentityId)
+          val pendingStateKey = fastWalletPendingAssignmentSecretKey(checkedIdentityId)
+          val pending = readSecretValue(pendingStateKey)
+            ?.let(::parseFastWalletAssignmentState)
+            ?: error("Pending Fast Wallet assignment does not exist")
+          require(
+            pending.status == "pending" &&
+              pending.handle == checkedAssignmentHandle &&
+              pending.epoch == checkedAssignmentEpoch &&
+              pending.workerRootId == requireTrustedFastWalletDescriptor(
+                checkedDescriptor,
+                network,
+                checkedNow,
+              ).workerRootId &&
+              pending.descriptorHash == sha256Hex(
+                checkedDescriptor.toByteArray(Charsets.US_ASCII),
+              )
+          ) {
+            "Acknowledged Fast Wallet assignment is no longer current"
+          }
+          val previous = readSecretValue(stateKey)?.let(::parseFastWalletAssignmentState)
+          val active = pending.copy(status = "active")
+          storeSecretValue(stateKey, active.toJson().toString())
+          deleteSecretValue(pendingStateKey)
+          if (previous != null && previous.handle != active.handle) {
+            runCatching {
+              withFastWalletInstallationCredentials(requireExisting = true) { installation ->
+                fixedOriginJsonRequest(
+                  method = "DELETE",
+                  origin = BuildConfig.FAST_WALLET_GATEWAY_ORIGIN,
+                  route = "/api/v1/installations/assignments/${previous.handle}",
+                  headers = installation.headers(),
+                  body = null,
+                )
+              }
+            }
+          }
           return@resolveNativeString messageId
         }
         require(status == "pending" && receiptResponse.isNull("receipt")) {
@@ -2799,12 +3044,18 @@ class NativeMoneroWalletModule(
   }
 
   override fun disableFastWalletDelivery(promise: Promise) {
-    resolveNativeVoid(promise, "disableFastWalletDelivery") {
+    resolveNativeVoid(
+      promise,
+      "disableFastWalletDelivery",
+      executor = fastWalletProviderExecutor,
+    ) {
       withFastWalletInstallationCredentials(requireExisting = true) { installation ->
         fixedOriginJsonRequest(
           method = "DELETE",
           origin = BuildConfig.FAST_WALLET_GATEWAY_ORIGIN,
           route = "/api/v1/installations/provider/delivery",
+          connectTimeoutMs = FAST_WALLET_PROVIDER_CONNECT_TIMEOUT_MS,
+          readTimeoutMs = FAST_WALLET_PROVIDER_READ_TIMEOUT_MS,
           headers = installation.headers(),
           body = null,
         )
@@ -2825,12 +3076,16 @@ class NativeMoneroWalletModule(
         exactBytes = 32,
       )
       val stateKey = fastWalletAssignmentSecretKey(checkedIdentityId)
-      val existing = readSecretValue(stateKey)
-        ?.let(::parseFastWalletAssignmentState)
-        ?: error("Fast Wallet assignment does not exist")
+      val pendingStateKey = fastWalletPendingAssignmentSecretKey(checkedIdentityId)
+      val existing = readSecretValue(stateKey)?.let(::parseFastWalletAssignmentState)
+      val pending = readSecretValue(pendingStateKey)?.let(::parseFastWalletAssignmentState)
+      require(existing != null || pending != null) {
+        "Fast Wallet assignment does not exist"
+      }
+      val owner = existing ?: pending!!
       require(
         MessageDigest.isEqual(
-          existing.handle.toByteArray(Charsets.US_ASCII),
+          owner.handle.toByteArray(Charsets.US_ASCII),
           checkedHandle.toByteArray(Charsets.US_ASCII),
         )
       ) {
@@ -2844,7 +3099,19 @@ class NativeMoneroWalletModule(
           headers = installation.headers(),
           body = null,
         )
+        if (pending != null && pending.handle != checkedHandle) {
+          runCatching {
+            fixedOriginJsonRequest(
+              method = "DELETE",
+              origin = BuildConfig.FAST_WALLET_GATEWAY_ORIGIN,
+              route = "/api/v1/installations/assignments/${pending.handle}",
+              headers = installation.headers(),
+              body = null,
+            )
+          }
+        }
       }
+      deleteSecretValue(pendingStateKey)
       deleteSecretValue(stateKey)
     }
   }
@@ -4613,7 +4880,11 @@ class NativeMoneroWalletModule(
       "getBalance",
       mapOf("accountIndex" to accountIndex, "walletId" to maskIdentifier(walletId)),
     ) {
-      NativeMoneroWalletJni.getBalance(walletId, accountIndex)
+      NativeMoneroWalletJni.getBalance(walletId, accountIndex).also { balance ->
+        logNativeEvent("getBalance.balanceState", mapOf(
+          "balancePositive" to (balance.toBigIntegerOrNull()?.signum() == 1),
+        ))
+      }
     }
   }
 
@@ -6535,9 +6806,10 @@ class NativeMoneroWalletModule(
     promise: Promise,
     operation: String? = null,
     fields: Map<String, Any?> = emptyMap(),
+    executor: Executor = nativeWalletExecutor,
     block: () -> Unit,
   ) {
-    dispatchNative(promise, operation, fields, block) {
+    dispatchNative(promise, operation, fields, block, executor) {
       promise.resolve(null)
     }
   }
@@ -6546,9 +6818,10 @@ class NativeMoneroWalletModule(
     promise: Promise,
     operation: String? = null,
     fields: Map<String, Any?> = emptyMap(),
+    executor: Executor = nativeWalletExecutor,
     block: () -> WritableMap,
   ) {
-    dispatchNative(promise, operation, fields, block) { value ->
+    dispatchNative(promise, operation, fields, block, executor) { value ->
       promise.resolve(value)
     }
   }
@@ -6580,6 +6853,7 @@ class NativeMoneroWalletModule(
     operation: String?,
     fields: Map<String, Any?>,
     block: () -> T,
+    executor: Executor = nativeWalletExecutor,
     resolve: (T) -> Unit,
   ) {
     if (!requireAppAuthorized(promise)) {
@@ -6594,7 +6868,7 @@ class NativeMoneroWalletModule(
       logNativeEvent("$operation.queued", fields)
     }
     runCatching {
-      nativeWalletExecutor.execute {
+      executor.execute {
         if (!requireAppAuthorized(promise)) {
           return@execute
         }
@@ -6669,8 +6943,11 @@ class NativeMoneroWalletModule(
     }
     val details = fields.entries
       .filter { (key, value) ->
-        key in NATIVE_DIAGNOSTIC_FIELD_ALLOWLIST &&
-          (value is Boolean || value is Number)
+        (key in NATIVE_DIAGNOSTIC_FIELD_ALLOWLIST && (value is Boolean || value is Number)) ||
+          (key == "eventId" && value is String && value.matches(Regex("^evt_[0-9a-f]{64}$"))) ||
+          (key == "hostingCheckId" && value is String && value.matches(Regex("^[0-9a-f]{16}$"))) ||
+          (key == "status" && value in setOf("hosted", "missing")) ||
+          (key == "errorCode" && value in setOf("authentication_failed", "authorization_required", "unsupported_worker", "invalid_proof", "check_timeout", "notification_service_error"))
       }
       .joinToString(separator = " ") { (key, value) -> "$key=$value" }
     val suffix = if (details.isBlank()) "" else " $details"
@@ -7211,6 +7488,11 @@ class NativeMoneroWalletModule(
     route: String,
     headers: Map<String, String>,
     body: JSONObject?,
+    connectTimeoutMs: Int = FAST_WALLET_CONNECT_TIMEOUT_MS,
+    readTimeoutMs: Int = FAST_WALLET_READ_TIMEOUT_MS,
+    acceptedStatusCodes: Set<Int>? = null,
+    deadlineElapsedMs: Long? = null,
+    hostingCheckId: String? = null,
   ): JSONObject {
     require(method in setOf("GET", "POST", "DELETE")) {
       "Unsupported request method"
@@ -7227,8 +7509,8 @@ class NativeMoneroWalletModule(
     val base = normalizeFastWalletOrigin(origin)
     val connection = TorHttpConnection.open(reactApplicationContext, URL("$base$route")).apply {
       requestMethod = method
-      connectTimeout = FAST_WALLET_CONNECT_TIMEOUT_MS
-      readTimeout = FAST_WALLET_READ_TIMEOUT_MS
+      connectTimeout = connectTimeoutMs
+      readTimeout = readTimeoutMs
       instanceFollowRedirects = false
       useCaches = false
       setRequestProperty("Accept", "application/json")
@@ -7248,6 +7530,15 @@ class NativeMoneroWalletModule(
         setRequestProperty("Content-Type", "application/json")
       }
     }
+    val deadlineTimer = deadlineElapsedMs?.let { deadline ->
+      val remaining = deadline - SystemClock.elapsedRealtime()
+      require(remaining > 0L) { "Hosting check timed out" }
+      java.util.Timer("mfw-hosting-deadline", true).apply {
+        schedule(object : java.util.TimerTask() {
+          override fun run() { runCatching { connection.disconnect() } }
+        }, remaining)
+      }
+    }
     try {
       if (body != null) {
         val encoded = body.toString().toByteArray(Charsets.UTF_8)
@@ -7259,7 +7550,10 @@ class NativeMoneroWalletModule(
         encoded.fill(0)
       }
       val responseCode = connection.responseCode
-      if (responseCode !in 200..299) {
+      if (hostingCheckId != null) {
+        logNativeEvent("fastWalletHosting.http", mapOf("hostingCheckId" to hostingCheckId, "httpStatus" to responseCode))
+      }
+      if (responseCode !in 200..299 || (acceptedStatusCodes != null && responseCode !in acceptedStatusCodes)) {
         connection.errorStream?.close()
         error("Fast Wallet service request failed with HTTP $responseCode")
       }
@@ -7269,6 +7563,7 @@ class NativeMoneroWalletModule(
       )
       return if (response.isBlank()) JSONObject() else JSONObject(response)
     } finally {
+      deadlineTimer?.cancel()
       connection.disconnect()
     }
   }
@@ -7346,7 +7641,7 @@ class NativeMoneroWalletModule(
 
   private fun fastWalletInstallationCredentials(
     requireExisting: Boolean = false,
-  ): FastWalletInstallationCredentials {
+  ): FastWalletInstallationCredentials = synchronized(fastWalletInstallationLock) {
     var installationId = readSecretValue(FAST_WALLET_INSTALLATION_ID_SECRET_KEY)
     var installationAuthHex =
       readSecretValue(FAST_WALLET_INSTALLATION_AUTH_SECRET_KEY)
@@ -7376,7 +7671,7 @@ class NativeMoneroWalletModule(
       "installationAuth",
       exactBytes = 32,
     ).chunked(2).map { it.toInt(16).toByte() }.toByteArray()
-    return FastWalletInstallationCredentials(installationId, auth)
+    FastWalletInstallationCredentials(installationId, auth)
   }
 
   private inline fun <T> withFastWalletInstallationCredentials(
@@ -7393,6 +7688,9 @@ class NativeMoneroWalletModule(
 
   private fun fastWalletAssignmentSecretKey(identityId: String): String =
     "monero.fastwallet.assignment.v1.${sha256Hex(identityId.toByteArray(Charsets.UTF_8))}"
+
+  private fun fastWalletPendingAssignmentSecretKey(identityId: String): String =
+    "monero.fastwallet.assignment.pending.v1.${sha256Hex(identityId.toByteArray(Charsets.UTF_8))}"
 
   private fun requireTrustedFastWalletDescriptor(
     workerDescriptorHex: String,
@@ -8022,6 +8320,12 @@ class NativeMoneroWalletModule(
 
   private fun snapshotToWritableMap(snapshot: Map<String, Any>): WritableMap =
     Arguments.createMap().apply {
+      logNativeEvent("snapshot.balanceState", mapOf(
+        "balancePositive" to (snapshot.stringValue("balanceAtomic").toBigIntegerOrNull()?.signum() == 1),
+        "unlockedBalancePositive" to (snapshot.stringValue("unlockedBalanceAtomic").toBigIntegerOrNull()?.signum() == 1),
+        "pendingOutputKeyImageCount" to snapshot.numberValue("pendingOutputKeyImageCount"),
+        "snapshotRevision" to snapshot.numberValue("snapshotRevision"),
+      ))
       putString("id", snapshot.stringValue("id"))
       putString("path", snapshot.stringValue("path"))
       putString("primaryAddress", snapshot.stringValue("primaryAddress"))
@@ -8033,6 +8337,8 @@ class NativeMoneroWalletModule(
       putDouble("walletHeight", snapshot.numberValue("walletHeight"))
       putDouble("daemonHeight", snapshot.numberValue("daemonHeight"))
       putDouble("daemonTargetHeight", snapshot.numberValue("daemonTargetHeight"))
+      // Keep the native history/snapshot coherence token across this bridge.
+      putDouble("snapshotRevision", snapshot.numberValue("snapshotRevision"))
       // This metadata-only queue depth is the trigger for every incremental
       // Ledger reconciliation after the initial history scan. Omitting it at
       // the Kotlin/React boundary makes new outputs look permanently verified
@@ -9287,6 +9593,8 @@ class NativeMoneroWalletModule(
     private const val MAX_PRIVATE_PHONE_SNAPSHOT_BYTES = 64 * 1024 * 1024
     private const val FAST_WALLET_CONNECT_TIMEOUT_MS = 12_000
     private const val FAST_WALLET_READ_TIMEOUT_MS = 12_000
+    private const val FAST_WALLET_PROVIDER_CONNECT_TIMEOUT_MS = 60_000
+    private const val FAST_WALLET_PROVIDER_READ_TIMEOUT_MS = 20_000
     private const val FAST_WALLET_MAX_REQUEST_BYTES = 24 * 1024
     private const val FAST_WALLET_MAX_RESPONSE_BYTES = 24 * 1024
     private const val FAST_WALLET_MAX_HEADER_BYTES = 12 * 1024
@@ -9323,11 +9631,18 @@ class NativeMoneroWalletModule(
     private const val DIAGNOSTIC_CURRENT_FILE = "wallet-events.log"
     private const val DIAGNOSTIC_PREVIOUS_FILE = "wallet-events.previous.log"
     private const val MAX_DIAGNOSTIC_LINE_CHARS = 2_048
-    private const val MAX_DIAGNOSTIC_FILE_BYTES = 512 * 1024L
+    // Current plus previous retain at most 10 MiB of already allowlisted,
+    // privacy-safe operational events. This is large enough to include the
+    // original failure before a long retry loop without growing unbounded.
+    private const val MAX_DIAGNOSTIC_FILE_BYTES = 5 * 1024 * 1024L
     private const val TRANSACTION_AUDIT_DIRECTORY = "transaction-audit"
     private const val TRANSACTION_AUDIT_CURRENT_FILE = "ledger-transaction-audit.json"
     private val NATIVE_DIAGNOSTIC_FIELD_ALLOWLIST =
       setOf(
+        "snapshotRevision",
+        "balancePositive",
+        "unlockedBalancePositive",
+        "pendingOutputKeyImageCount",
         "count",
         "accountIndex",
         "attempt",

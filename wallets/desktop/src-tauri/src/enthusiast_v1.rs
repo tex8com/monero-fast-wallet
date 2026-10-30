@@ -166,10 +166,11 @@ impl CommunityV1State {
         };
         let store_key = Zeroizing::new(secure_store::ensure_community_v1_matrix_store_key()?);
         let store_path = matrix_store_path(app)?;
+        let tor_proxy = crate::tor_transport::proxy_uri();
         let client = MatrixE2eeClient::restore(
             MatrixClientConfig {
                 homeserver: &config.matrix_homeserver,
-                proxy: Some(crate::tor_transport::TOR_SOCKS_PROXY),
+                proxy: Some(&tor_proxy),
                 store_path: &store_path,
                 store_passphrase: store_key.as_str(),
                 allow_loopback_http_for_tests: false,
@@ -953,10 +954,11 @@ impl CommunityV1State {
         }
         let store_key = Zeroizing::new(secure_store::ensure_community_v1_matrix_store_key()?);
         let store_path = matrix_store_path(app)?;
+        let tor_proxy = crate::tor_transport::proxy_uri();
         let login = MatrixE2eeClient::login(
             MatrixClientConfig {
                 homeserver: &config.matrix_homeserver,
-                proxy: Some(crate::tor_transport::TOR_SOCKS_PROXY),
+                proxy: Some(&tor_proxy),
                 store_path: &store_path,
                 store_passphrase: store_key.as_str(),
                 allow_loopback_http_for_tests: false,

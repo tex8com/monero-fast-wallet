@@ -1,5 +1,7 @@
 #import <CoreBluetooth/CoreBluetooth.h>
 #import <Foundation/Foundation.h>
+#import <os/log.h>
+#import <IOKit/IOKitLib.h>
 
 #include "DesktopLedgerBle.h"
 #include "WalletEngine.h"
@@ -22,12 +24,47 @@ constexpr int64_t kLedgerBleProtocolMtuTimeoutNanoseconds = 2500 * NSEC_PER_MSEC
 // transport metadata. Peripheral identifiers, names, APDUs and wallet data are
 // never logged.
 void ledgerBleDiagnostic(NSString *event, NSString *detail = nil) {
-  NSLog(@"MONERO_WALLET_DIAGNOSTICS native=macos scope=ledgerBleExchange event=%@%@",
-        event,
-        detail.length == 0 ? @"" : [@" " stringByAppendingString:detail]);
+  NSString *line = [NSString
+      stringWithFormat:
+          @"MONERO_WALLET_DIAGNOSTICS native=macos scope=ledgerBleExchange event=%@%@",
+          event,
+          detail.length == 0 ? @"" : [@" " stringByAppendingString:detail]];
+  os_log_info(OS_LOG_DEFAULT, "%{public}s", line.UTF8String);
+  // Persist only reviewed metadata; never APDUs or peripheral identifiers.
+  tex8::wallet::WalletEngine::recordDiagnosticEvent(
+      "ledgerBle." + std::string(event.UTF8String), {});
+  for (NSString *part in [detail componentsSeparatedByString:@" "]) {
+    NSArray<NSString *> *pair = [part componentsSeparatedByString:@"="];
+    if (pair.count != 2) continue;
+    const std::string key(pair[0].UTF8String);
+    if (key == "frameSize" || key == "userInput" || key == "elapsedMs" || key == "reason") {
+      tex8::wallet::WalletEngine::recordDiagnosticEvent(
+          "ledgerBle." + std::string(event.UTF8String), {{key, std::string(pair[1].UTF8String)}});
+    }
+  }
 }
 
 }  // namespace
+
+bool tex8::desktop::ledgerUsbAvailable() {
+  io_iterator_t devices = IO_OBJECT_NULL;
+  if (IOServiceGetMatchingServices(kIOMainPortDefault,
+      IOServiceMatching("IOUSBHostDevice"), &devices) != KERN_SUCCESS) return false;
+  bool found = false;
+  io_object_t device;
+  while ((device = IOIteratorNext(devices)) != IO_OBJECT_NULL) {
+    CFTypeRef vendor = IORegistryEntryCreateCFProperty(device, CFSTR("idVendor"), kCFAllocatorDefault, 0);
+    int vendorId = 0;
+    if (vendor && CFGetTypeID(vendor) == CFNumberGetTypeID()) {
+      CFNumberGetValue(static_cast<CFNumberRef>(vendor), kCFNumberIntType, &vendorId);
+      found = found || vendorId == 0x2c97;
+    }
+    if (vendor) CFRelease(vendor);
+    IOObjectRelease(device);
+  }
+  IOObjectRelease(devices);
+  return found;
+}
 
 dispatch_queue_t ledgerBleQueue() {
   static dispatch_queue_t queue;
@@ -52,6 +89,22 @@ NSArray<CBUUID *> *ledgerServiceUUIDs() {
     ];
   });
   return uuids;
+}
+
+NSString *const kRememberedLedgerPeripheralKey =
+    @"com.tex8.monerowallet.desktop.ledgerBlePeripheralIdentifier";
+
+NSUUID *rememberedLedgerPeripheralIdentifier() {
+  NSString *value = [[NSUserDefaults standardUserDefaults]
+      stringForKey:kRememberedLedgerPeripheralKey];
+  return value.length == 0 ? nil : [[NSUUID alloc] initWithUUIDString:value];
+}
+
+void rememberLedgerPeripheralIdentifier(CBPeripheral *peripheral) {
+  NSString *value = peripheral.identifier.UUIDString;
+  if (value.length == 0) return;
+  [[NSUserDefaults standardUserDefaults] setObject:value
+                                            forKey:kRememberedLedgerPeripheralKey];
 }
 
 // A Ledger device normally advertises one of these services.  Some firmware
@@ -293,13 +346,32 @@ NSArray<NSData *> *framesForCommand(NSData *command, NSUInteger frameSize) {
       return YES;
     }
     if (!timedOut) {
-      ledgerBleDiagnostic(@"connection.failed", @"reason=gatt-setup");
+      [_condition lock];
+      NSString *detail = _connectionError;
+      [_condition unlock];
+      ledgerBleDiagnostic(
+          @"connection.failed",
+          detail.length == 0
+              ? @"reason=gatt-setup"
+              : [NSString stringWithFormat:@"reason=gatt-setup detail=%@", detail]);
       return NO;
     }
     if (![self advanceToNextCandidate]) {
       [_condition lock];
+      CBCentralManager *timedOutCentral = _central;
+      CBPeripheral *timedOutPeripheral = _peripheral;
       _connectionError = @"Ledger Bluetooth connection timed out.";
       [_condition unlock];
+      // CoreBluetooth keeps a timed-out connect request alive until it is
+      // cancelled.  A later retry would otherwise race that stale request and
+      // can immediately fail its GATT setup.  End the old request before the
+      // next user operation is allowed to scan again.
+      if (timedOutCentral != nil && timedOutPeripheral != nil &&
+          timedOutPeripheral.state != CBPeripheralStateDisconnected) {
+        dispatch_async(ledgerBleQueue(), ^{
+          [timedOutCentral cancelPeripheralConnection:timedOutPeripheral];
+        });
+      }
       ledgerBleDiagnostic(@"connection.failed", @"reason=timeout");
       return NO;
     }
@@ -540,6 +612,10 @@ NSArray<NSData *> *framesForCommand(NSData *command, NSUInteger frameSize) {
     if (![self advanceToNextCandidate]) [self fail:@"Ledger Bluetooth service was not found."];
     return;
   }
+  // The exact Ledger service has now been verified. Remember only this opaque
+  // CoreBluetooth identifier so a later app launch can reconnect even when
+  // the already-known Ledger is no longer advertising.
+  rememberLedgerPeripheralIdentifier(peripheral);
   NSString *serviceUuid = service.UUID.UUIDString.lowercaseString;
   NSString *notifyUuid = [serviceUuid stringByReplacingOccurrencesOfString:@"-0000-" withString:@"-0001-"];
   NSString *writeUuid = [serviceUuid stringByReplacingOccurrencesOfString:@"-0000-" withString:@"-0002-"];
@@ -687,6 +763,7 @@ NSArray<NSData *> *framesForCommand(NSData *command, NSUInteger frameSize) {
 
 @interface DesktopLedgerBleProbe : NSObject <CBCentralManagerDelegate>
 - (std::string)scan;
+- (void)addTrustedCandidates:(NSArray<CBPeripheral *> *)candidates;
 @end
 
 @implementation DesktopLedgerBleProbe {
@@ -749,18 +826,53 @@ NSArray<NSData *> *framesForCommand(NSData *command, NSUInteger frameSize) {
   if (data == nil) return "{\"platform\":\"macos\",\"transport\":\"ble\",\"supported\":false,\"available\":false,\"permissionGranted\":false,\"requiresUserAction\":true,\"deviceCount\":0,\"message\":\"Bluetooth status unavailable.\"}";
   return std::string(static_cast<const char *>(data.bytes), data.length);
 }
+- (void)addTrustedCandidates:(NSArray<CBPeripheral *> *)candidates {
+  for (CBPeripheral *peripheral in candidates) {
+    if (peripheral.identifier == nil) continue;
+    if (![_candidateIdentifiers containsObject:peripheral.identifier]) {
+      [_candidateIdentifiers addObject:peripheral.identifier];
+      _count = static_cast<NSInteger>(_candidateIdentifiers.count);
+    }
+    if (![_serviceCandidateIdentifiers containsObject:peripheral.identifier]) {
+      [_serviceCandidateIdentifiers addObject:peripheral.identifier];
+      ++_serviceCandidateCount;
+      [_serviceCandidates addObject:peripheral];
+    }
+  }
+}
 - (void)centralManagerDidUpdateState:(CBCentralManager *)central {
   switch (central.state) {
     case CBManagerStateUnsupported: [self finish:NO available:NO action:NO message:@"Bluetooth LE is not available on this Mac."]; return;
     case CBManagerStateUnauthorized: [self finish:YES available:NO action:YES message:@"Allow Bluetooth access for Monero Fast Wallet in macOS Settings."]; return;
     case CBManagerStatePoweredOff: [self finish:YES available:NO action:YES message:@"Turn on Bluetooth to search for Ledger Nano X."]; return;
     case CBManagerStatePoweredOn: {
+      NSMutableArray<CBPeripheral *> *known = [NSMutableArray array];
+      [known addObjectsFromArray:
+          [central retrieveConnectedPeripheralsWithServices:ledgerServiceUUIDs()]];
+      NSUUID *remembered = rememberedLedgerPeripheralIdentifier();
+      if (remembered != nil) {
+        [known addObjectsFromArray:
+            [central retrievePeripheralsWithIdentifiers:@[ remembered ]]];
+      }
+      [self addTrustedCandidates:known];
+      if (_count > 0) {
+        ledgerBleDiagnostic(
+            @"scan.known-device",
+            [NSString stringWithFormat:@"candidateCount=%ld",
+                                       static_cast<long>(_count)]);
+        [self finish:YES
+           available:YES
+              action:NO
+             message:@"Known Ledger found. Keep it unlocked with the Monero app open."];
+        return;
+      }
       // Do not filter the scan itself: several Ledger firmware versions omit
       // their 128-bit service UUID from BLE advertisements.  didDiscover only
       // selects a known Ledger service or the generic Ledger local name.
       // A Ledger can first advertise only its local name and expose its
       // transport UUID in a later packet. Keep duplicate callbacks during
       // this short setup scan so that didDiscover can promote that candidate.
+      ledgerBleDiagnostic(@"scan.started");
       [_central scanForPeripheralsWithServices:nil options:@{ CBCentralManagerScanOptionAllowDuplicatesKey: @YES }];
       dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 4 * NSEC_PER_SEC), ledgerBleQueue(), ^{ if (!self->_finished) [self finish:YES available:self->_count > 0 action:self->_count == 0 message:self->_count > 0 ? @"Ledger found. Keep it unlocked with the Monero app open." : @"No compatible Ledger Bluetooth advertisement found. Unlock the Ledger, enable Bluetooth, and open the Monero app."]; });
       return;
@@ -821,6 +933,14 @@ NSArray<NSData *> *framesForCommand(NSData *command, NSUInteger frameSize) {
   _finished = YES; _supported = supported; _available = available; _requiresAction = action; _message = message;
   [_condition broadcast]; [_condition unlock];
   [_central stopScan];
+  ledgerBleDiagnostic(
+      @"scan.finished",
+      [NSString stringWithFormat:
+          @"candidateCount=%ld serviceCandidates=%ld nameCandidates=%ld available=%@",
+          static_cast<long>(_count),
+          static_cast<long>(_serviceCandidateCount),
+          static_cast<long>(_nameCandidateCount),
+          available ? @"true" : @"false"]);
 }
 @end
 
@@ -836,16 +956,55 @@ int desktopLedgerBleExchange(void *, const unsigned char *command, unsigned int 
 
 namespace tex8::desktop {
 
+void installLedgerBleTransportCallbacks() {
+  tex8::wallet::LedgerBleTransportCallbacks callbacks;
+  callbacks.connect = desktopLedgerBleConnect;
+  callbacks.disconnect = desktopLedgerBleDisconnect;
+  callbacks.connected = desktopLedgerBleConnected;
+  callbacks.exchange = desktopLedgerBleExchange;
+  tex8::wallet::WalletEngine::setLedgerBleTransportCallbacks(callbacks);
+}
+
 std::string ledgerBleTransportStatus() {
-  static dispatch_once_t once;
-  dispatch_once(&once, ^{
-    tex8::wallet::LedgerBleTransportCallbacks callbacks;
-    callbacks.connect = desktopLedgerBleConnect;
-    callbacks.disconnect = desktopLedgerBleDisconnect;
-    callbacks.connected = desktopLedgerBleConnected;
-    callbacks.exchange = desktopLedgerBleExchange;
-    tex8::wallet::WalletEngine::setLedgerBleTransportCallbacks(callbacks);
-  });
+  installLedgerBleTransportCallbacks();
+  DesktopLedgerBleTransport *transport = [DesktopLedgerBleTransport shared];
+  // Do not replace a working CoreBluetooth central/peripheral pair with a new
+  // scan.  The setup screen, the home-screen verification and the native
+  // wallet open are consecutive stages of the same Ledger operation.
+  if ([transport isConnected]) {
+    const std::string connectionStatus = [transport connectionStatus];
+    NSData *connectionData =
+        [NSData dataWithBytes:connectionStatus.data()
+                       length:connectionStatus.size()];
+    NSDictionary *connection =
+        [NSJSONSerialization JSONObjectWithData:connectionData
+                                         options:0
+                                           error:nil];
+    NSMutableDictionary *payload = [@{
+      @"platform": @"macos",
+      @"transport": @"ble",
+      @"supported": @YES,
+      @"available": @YES,
+      @"permissionGranted": @YES,
+      @"requiresUserAction": @NO,
+      @"deviceCount": @1,
+      @"serviceCandidateCount": @1,
+      @"nameCandidateCount": @0,
+      @"connected": @YES,
+      @"message": @"Ledger Nano is connected. Keep it unlocked with the Monero app open.",
+    } mutableCopy];
+    if ([connection isKindOfClass:[NSDictionary class]] &&
+        connection[@"frameSize"] != nil) {
+      payload[@"frameSize"] = connection[@"frameSize"];
+    }
+    NSData *payloadData =
+        [NSJSONSerialization dataWithJSONObject:payload options:0 error:nil];
+    if (payloadData != nil) {
+      ledgerBleDiagnostic(@"connection.reused");
+      return std::string(static_cast<const char *>(payloadData.bytes),
+                         payloadData.length);
+    }
+  }
   DesktopLedgerBleProbe *probe = [[DesktopLedgerBleProbe alloc] init];
   const std::string scanStatus = [probe scan];
   NSData *scanData = [NSData dataWithBytes:scanStatus.data()
@@ -863,7 +1022,6 @@ std::string ledgerBleTransportStatus() {
   // Match the working React Native flow: discovery alone is not readiness.
   // Establish GATT, enable notifications and finish Ledger's protocol-MTU
   // handshake before the UI is allowed to offer wallet creation.
-  DesktopLedgerBleTransport *transport = [DesktopLedgerBleTransport shared];
   const BOOL connected = [transport connect];
   const std::string connectionStatus = [transport connectionStatus];
   NSData *connectionData = [NSData dataWithBytes:connectionStatus.data()

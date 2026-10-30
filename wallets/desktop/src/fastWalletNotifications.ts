@@ -12,6 +12,7 @@ import { invoke } from '@tauri-apps/api/core';
  */
 export const FAST_WALLET_PUSH_CONTRACT = 'monero-fast-wallet-push.v3' as const;
 export const FAST_WALLET_PUSH_TYPE = 'monero.fast_wallet.incoming' as const;
+export const FAST_WALLET_TEST_PUSH_TYPE = 'monero.fast_wallet.test' as const;
 
 const PREFERENCES_KEY = 'monero-fast-wallet.desktop.notifications.v1';
 const LAST_EVENT_ID_KEY = 'monero-fast-wallet.desktop.notification-last-event.v1';
@@ -79,6 +80,7 @@ export type NotificationClient = {
   refreshInstallation(): Promise<void>;
   disable(): Promise<DesktopNotificationStatus>;
   consumePendingOpen(): Promise<NotificationEvent | null>;
+  consumePendingEvents(): Promise<NotificationEvent[]>;
 };
 
 function storageGet(key: string): string | null {
@@ -189,6 +191,7 @@ export function createDesktopNotificationClient(): NotificationClient {
     refreshInstallation: async () => { await desktopNotificationStatus(); },
     disable: disableDesktopFastWalletSignals,
     consumePendingOpen: () => invoke<NotificationEvent | null>('consume_pending_notification_open'),
+    consumePendingEvents: () => invoke<NotificationEvent[]>('consume_pending_notification_events'),
   };
 }
 
@@ -228,7 +231,7 @@ export async function showPrivacySafeFastWalletNotification(event: FastWalletPus
   return true;
 }
 
-/** Manual verification uses the exact same no-detail body as a real signal. */
+/** Local display check only; this does not test server, APNs or WSS delivery. */
 export async function sendPrivacySafeNotificationTest(): Promise<boolean> {
   const preferences = getDesktopNotificationPreferences();
   if (!preferences.fastWalletSignalsEnabled || !(await isPermissionGranted())) return false;

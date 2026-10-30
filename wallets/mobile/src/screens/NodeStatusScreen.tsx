@@ -33,6 +33,10 @@ import {
   type ConnectionDiagnosticsResult,
   type ConnectionRouteResult,
 } from '../services/ConnectionDiagnostics';
+import {
+  useConnectivityState,
+  type ConnectivityRouteState,
+} from '../services/ConnectivityState';
 import {walletService} from '../services/WalletService';
 
 const NETWORKS: ReadonlyArray<{value: MoneroNetwork; label: string}> = [
@@ -49,6 +53,42 @@ const NODE_MODES = [
   {value: 'custom', label: 'Custom RPC'},
 ] as const;
 
+function normalizedEndpoint(value: string): string {
+  return value
+    .trim()
+    .replace(/^[a-z][a-z0-9+.-]*:\/\//iu, '')
+    .split('/')[0]
+    .toLowerCase();
+}
+
+export function liveRouteResult(
+  live: ConnectivityRouteState,
+  fallback: ConnectionRouteResult | undefined,
+  expectedEndpoint: string,
+): ConnectionRouteResult | undefined {
+  if (
+    live.checkedAtMs <= 0 ||
+    normalizedEndpoint(live.endpoint) !== normalizedEndpoint(expectedEndpoint)
+  ) {
+    return fallback;
+  }
+  if (live.phase === 'connected' && live.connected) {
+    return {
+      status: 'connected',
+      endpoint: live.endpoint,
+      ...(live.elapsedMs === undefined ? undefined : {elapsedMs: live.elapsedMs}),
+    };
+  }
+  if (live.phase === 'error') {
+    return {
+      status: 'error',
+      endpoint: live.endpoint,
+      error: live.error || 'The connection route is unavailable.',
+    };
+  }
+  return fallback;
+}
+
 type SaveState = 'loading' | 'saved' | 'saving' | 'error';
 
 export default function NodeStatusScreen({navigation}: any) {
@@ -64,6 +104,7 @@ export default function NodeStatusScreen({navigation}: any) {
   const [diagnosticsRunning, setDiagnosticsRunning] = useState(false);
   const [spoolLimitMib, setSpoolLimitMib] = useState(1024);
   const [spoolPreferenceSaved, setSpoolPreferenceSaved] = useState(false);
+  const connectivity = useConnectivityState();
   const editRevision = useRef(0);
   const saveQueue = useRef(Promise.resolve());
 
@@ -79,6 +120,21 @@ export default function NodeStatusScreen({navigation}: any) {
     resolvedSettings.daemon.address.length > 0 &&
     (resolvedSettings.mode !== 'optimized-grpc' ||
       resolvedSettings.grpcEndpoint.length > 0);
+  const displayedDiagnostics = useMemo(
+    () => ({
+      tor: liveRouteResult(
+        connectivity.tor,
+        diagnostics?.tor,
+        resolvedSettings.daemon.address,
+      ),
+      clearnet: liveRouteResult(
+        connectivity.clearnet,
+        diagnostics?.clearnet,
+        resolvedSettings.grpcEndpoint,
+      ),
+    }),
+    [connectivity, diagnostics, resolvedSettings],
+  );
 
   const runDiagnostics = useCallback(async (settings = resolvedSettings) => {
     setDiagnosticsRunning(true);
@@ -313,7 +369,7 @@ export default function NodeStatusScreen({navigation}: any) {
                 ? t('nodeStatus.torHint')
                 : 'Standard Monero RPC. gRPC is disabled.'
             }
-            result={diagnostics?.tor}
+            result={displayedDiagnostics.tor}
             running={diagnosticsRunning}
             t={t}
           />
@@ -321,7 +377,7 @@ export default function NodeStatusScreen({navigation}: any) {
             icon="globe"
             label={t('nodeStatus.clearnetRoute')}
             hint={t('nodeStatus.clearnetHint')}
-            result={diagnostics?.clearnet}
+            result={displayedDiagnostics.clearnet}
             running={diagnosticsRunning}
             t={t}
           /> : null}

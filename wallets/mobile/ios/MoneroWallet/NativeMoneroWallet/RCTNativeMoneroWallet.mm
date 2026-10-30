@@ -1151,6 +1151,7 @@ void logNativeEvent(NSString *event, NSDictionary *fields) {
   static dispatch_once_t onceToken;
   dispatch_once(&onceToken, ^{
     allowedFields = [NSSet setWithArray:@[
+      @"balancePositive",
       @"count",
       @"elapsedMs",
       @"failedAttempts",
@@ -1164,8 +1165,9 @@ void logNativeEvent(NSString *event, NSDictionary *fields) {
   NSMutableDictionary *safeFields = [NSMutableDictionary dictionary];
   [fields enumerateKeysAndObjectsUsingBlock:
       ^(NSString *key, id value, __unused BOOL *stop) {
-    if ([allowedFields containsObject:key] &&
-        [value isKindOfClass:[NSNumber class]]) {
+    if (([allowedFields containsObject:key] && [value isKindOfClass:[NSNumber class]]) ||
+        ([key isEqualToString:@"eventId"] && [value isKindOfClass:NSString.class] &&
+         [value rangeOfString:@"^evt_[0-9a-f]{64}$" options:NSRegularExpressionSearch].location != NSNotFound)) {
       safeFields[key] = value;
     }
   }];
@@ -3266,6 +3268,13 @@ NSString *fastWalletAssignmentKey(NSString *identityId) {
       stringByAppendingString:sha256Hex(data)];
 }
 
+NSString *fastWalletPendingAssignmentKey(NSString *identityId) {
+  NSData *data = [checkedFastWalletIdentityId(identityId)
+      dataUsingEncoding:NSUTF8StringEncoding];
+  return [@"monero.fastwallet.assignment.pending.v1."
+      stringByAppendingString:sha256Hex(data)];
+}
+
 NSString *normalizeFastWalletOrigin(NSString *origin) {
   NSString *trimmed = [origin stringByTrimmingCharactersInSet:
       NSCharacterSet.whitespaceAndNewlineCharacterSet];
@@ -3282,16 +3291,15 @@ NSString *normalizeFastWalletOrigin(NSString *origin) {
       components.path.length == 0 || [components.path isEqualToString:@"/"];
   BOOL acceptedScheme =
       [components.scheme.lowercaseString isEqualToString:@"https"];
-#if DEBUG
-  BOOL loopback = [components.scheme.lowercaseString isEqualToString:@"http"] &&
-      ([components.host isEqualToString:@"127.0.0.1"] ||
-       [components.host isEqualToString:@"::1"] ||
-       [components.host isEqualToString:@"localhost"]);
-  acceptedScheme = acceptedScheme || loopback;
-#endif
+  const BOOL onion = [components.host.lowercaseString
+      rangeOfString:@"^[a-z2-7]{56}\\.onion$" options:NSRegularExpressionSearch].location != NSNotFound;
+  acceptedScheme = acceptedScheme ||
+      ([components.scheme.lowercaseString isEqualToString:@"http"] && onion);
   if (components == nil || !acceptedScheme || components.host.length == 0 ||
-      components.user.length > 0 || components.password.length > 0 ||
-      components.query.length > 0 || components.fragment.length > 0 ||
+      ([components.host.lowercaseString hasSuffix:@".onion"] && !onion) ||
+      components.user != nil || components.password != nil ||
+      components.query != nil || components.fragment != nil ||
+      (components.port != nil && (components.port.integerValue < 1 || components.port.integerValue > 65535)) ||
       !originPath) {
     throw WalletEngineError("Fast Wallet service origin is invalid");
   }
@@ -3306,6 +3314,39 @@ NSString *fastWalletBuildOrigin(NSString *key) {
         "Fast Wallet service is not configured in this signed app build");
   }
   return normalizeFastWalletOrigin((NSString *)configured);
+}
+
+NSURLSessionConfiguration *fastWalletHttpSessionConfiguration(NSURL *url,
+                                                             NSTimeInterval timeout) {
+  if (![url.host.lowercaseString hasSuffix:@".onion"]) {
+    return NSURLSessionConfiguration.ephemeralSessionConfiguration;
+  }
+  if ([url.scheme.lowercaseString isEqualToString:@"http"]) {
+    // Preserve the signed app's explicit ATS allowlist; a paired descriptor
+    // cannot broaden platform transport policy or enable arbitrary HTTP.
+    NSDictionary *ats = NSBundle.mainBundle.infoDictionary[@"NSAppTransportSecurity"];
+    NSDictionary *exceptions = [ats isKindOfClass:NSDictionary.class] ? ats[@"NSExceptionDomains"] : nil;
+    BOOL allowed = NO;
+    if ([exceptions isKindOfClass:NSDictionary.class]) {
+      for (id domain in exceptions) {
+        id policy = exceptions[domain];
+        if (![domain isKindOfClass:NSString.class] || ![policy isKindOfClass:NSDictionary.class] ||
+            ![policy[@"NSExceptionAllowsInsecureHTTPLoads"] respondsToSelector:@selector(boolValue)] ||
+            ![policy[@"NSExceptionAllowsInsecureHTTPLoads"] boolValue]) continue;
+        NSString *host = url.host.lowercaseString;
+        allowed = [host isEqualToString:[domain lowercaseString]] ||
+            ([policy[@"NSIncludesSubdomains"] respondsToSelector:@selector(boolValue)] &&
+             [policy[@"NSIncludesSubdomains"] boolValue] &&
+             [host hasSuffix:[@"." stringByAppendingString:[domain lowercaseString]]]);
+        if (allowed) break;
+      }
+    }
+    if (!allowed) throw WalletEngineError("Fast Wallet Onion origin is not supported by this signed build");
+  }
+  NSError *torError = nil;
+  NSURLSessionConfiguration *configuration = MFWEmbeddedTorSessionConfiguration(timeout, &torError);
+  if (configuration == nil) throw WalletEngineError("Embedded Tor HTTP transport is unavailable");
+  return configuration;
 }
 
 struct TrustedFastWalletDescriptor {
@@ -3386,7 +3427,12 @@ NSDictionary *fixedFastWalletJsonRequest(NSString *method,
                                          NSString *origin,
                                          NSString *route,
                                          NSDictionary<NSString *, NSString *> *headers,
-                                         NSDictionary *body) {
+                                         NSDictionary *body,
+                                         NSTimeInterval timeoutSeconds = 15.0) {
+  if (!std::isfinite(timeoutSeconds) || timeoutSeconds <= 0) {
+    throw WalletEngineError("Fast Wallet service request timed out");
+  }
+  const NSTimeInterval requestDeadline = NSProcessInfo.processInfo.systemUptime + timeoutSeconds;
   if (!([method isEqualToString:@"GET"] ||
         [method isEqualToString:@"POST"] ||
         [method isEqualToString:@"DELETE"]) ||
@@ -3403,7 +3449,7 @@ NSDictionary *fixedFastWalletJsonRequest(NSString *method,
   }
   NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url];
   request.HTTPMethod = method;
-  request.timeoutInterval = 12.0;
+  request.timeoutInterval = std::min(12.0, timeoutSeconds);
   request.cachePolicy = NSURLRequestReloadIgnoringLocalCacheData;
   [request setValue:@"application/json" forHTTPHeaderField:@"Accept"];
   NSSet<NSString *> *allowedHeaders = [NSSet setWithArray:@[
@@ -3437,8 +3483,11 @@ NSDictionary *fixedFastWalletJsonRequest(NSString *method,
     [request setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
   }
 
-  NSURLSessionConfiguration *configuration =
-      NSURLSessionConfiguration.ephemeralSessionConfiguration;
+  NSURLSessionConfiguration *configuration = fastWalletHttpSessionConfiguration(
+      url, std::max(0.0, requestDeadline - NSProcessInfo.processInfo.systemUptime));
+  const NSTimeInterval remaining = requestDeadline - NSProcessInfo.processInfo.systemUptime;
+  if (remaining <= 0) throw WalletEngineError("Fast Wallet service request timed out");
+  request.timeoutInterval = std::min(12.0, remaining);
   configuration.URLCache = nil;
   configuration.HTTPCookieStorage = nil;
   configuration.URLCredentialStorage = nil;
@@ -3456,7 +3505,7 @@ NSDictionary *fixedFastWalletJsonRequest(NSString *method,
   NSURLSessionDataTask *task = [session dataTaskWithRequest:request];
   [task resume];
   dispatch_time_t deadline =
-      dispatch_time(DISPATCH_TIME_NOW, 15 * NSEC_PER_SEC);
+      dispatch_time(DISPATCH_TIME_NOW, static_cast<int64_t>(remaining * NSEC_PER_SEC));
   if (dispatch_semaphore_wait(delegate.completion, deadline) != 0) {
     [task cancel];
     [session invalidateAndCancel];
@@ -3707,8 +3756,7 @@ NSData *privatePhoneBinaryRequest(NSString *method,
         forHTTPHeaderField:@"x-mfw-evaluation-permit"];
   }
 
-  NSURLSessionConfiguration *configuration =
-      NSURLSessionConfiguration.ephemeralSessionConfiguration;
+  NSURLSessionConfiguration *configuration = fastWalletHttpSessionConfiguration(url, 20.0);
   configuration.URLCache = nil;
   configuration.HTTPCookieStorage = nil;
   configuration.URLCredentialStorage = nil;
@@ -3777,8 +3825,7 @@ void privatePhoneMutationRequest(NSString *route, NSData *body) {
   [request setValue:@"application/octet-stream"
       forHTTPHeaderField:@"Content-Type"];
 
-  NSURLSessionConfiguration *configuration =
-      NSURLSessionConfiguration.ephemeralSessionConfiguration;
+  NSURLSessionConfiguration *configuration = fastWalletHttpSessionConfiguration(url, 20.0);
   configuration.URLCache = nil;
   configuration.HTTPCookieStorage = nil;
   configuration.URLCredentialStorage = nil;
@@ -4924,6 +4971,27 @@ void storeFastWalletAssignmentState(NSString *key, NSDictionary *state) {
   storeKeychainSecret(key, encoded);
 }
 
+NSString *fastWalletHostingViewJson(NSString *status, uint64_t attemptedAt,
+                                  NSString *errorCode = nil,
+                                  BOOL verified = NO, uint64_t checkedAt = 0,
+                                  NSDictionary *binding = nil) {
+  NSMutableDictionary *view = [@{
+    @"status": status, @"attemptedAt": @(attemptedAt),
+    @"verified": @(verified), @"repairAttempted": @NO,
+  } mutableCopy];
+  if (verified && binding != nil) {
+    view[@"checkedAt"] = @(checkedAt);
+    view[@"assignmentHandle"] = binding[@"assignmentHandle"];
+    view[@"assignmentEpoch"] = binding[@"assignmentEpoch"];
+    view[@"workerRootId"] = binding[@"workerRootId"];
+  }
+  if (errorCode != nil) view[@"errorCode"] = errorCode;
+  NSData *encoded = [NSJSONSerialization dataWithJSONObject:view options:0 error:nil];
+  NSString *result = [[NSString alloc] initWithData:encoded encoding:NSUTF8StringEncoding];
+  if (result == nil) throw WalletEngineError("Fast Wallet hosting result could not be encoded");
+  return result;
+}
+
 NSDictionary *watchRegistrationBody(const FastReceiveRegistrationPayload &payload,
                                     NSString *pushToken) {
   NSString *identityId =
@@ -5070,6 +5138,7 @@ typedef void (^SensitiveAuthorizationCompletion)(BOOL success, NSString *message
   std::string _engineInitError;
   dispatch_queue_t _walletQueue;
   dispatch_queue_t _privatePhoneNetworkQueue;
+  dispatch_queue_t _fastWalletHostingQueue;
   std::atomic_bool _appAuthorized;
   NSMutableDictionary<NSString *, NSDictionary *> *_pendingTransactionApprovals;
   NSMutableDictionary<NSString *, NSNumber *> *_systemUiInterruptionDeadlines;
@@ -5097,6 +5166,8 @@ typedef void (^SensitiveAuthorizationCompletion)(BOOL success, NSString *message
     _privatePhoneNetworkQueue =
         dispatch_queue_create("org.tex8.NativeMoneroWallet.PrivatePhone",
                               DISPATCH_QUEUE_SERIAL);
+    _fastWalletHostingQueue = dispatch_queue_create(
+        "org.tex8.NativeMoneroWallet.HostingStatus", DISPATCH_QUEUE_SERIAL);
     try {
       LedgerBleTransportCallbacks callbacks;
       callbacks.connect = iosLedgerBleConnect;
@@ -7168,7 +7239,7 @@ typedef void (^SensitiveAuthorizationCompletion)(BOOL success, NSString *message
                   fields:nil
                     work:^id(WalletEngine &engine) {
     (void)engine;
-    NSDictionary *installation = fastWalletInstallationCredentials(NO);
+    NSDictionary *installation = fastWalletInstallationCredentials(YES);
     NSDictionary *response = fixedFastWalletJsonRequest(
         @"POST",
         fastWalletBuildOrigin(@"FAST_WALLET_GATEWAY_ORIGIN"),
@@ -7179,7 +7250,22 @@ typedef void (^SensitiveAuthorizationCompletion)(BOOL success, NSString *message
     if (![accepted isKindOfClass:NSNumber.class] || !accepted.boolValue) {
       throw WalletEngineError("Test notification was not accepted");
     }
-    return [NSNull null];
+    NSString *eventId = response[@"eventId"];
+    NSNumber *scheduledAt = response[@"scheduledAt"];
+    NSNumber *deliverAfter = response[@"deliverAfter"];
+    if (![eventId isKindOfClass:NSString.class] ||
+        [eventId rangeOfString:@"^evt_[0-9a-f]{64}$" options:NSRegularExpressionSearch].location == NSNotFound ||
+        ![scheduledAt isKindOfClass:NSNumber.class] || ![deliverAfter isKindOfClass:NSNumber.class] ||
+        !std::isfinite(scheduledAt.doubleValue) || !std::isfinite(deliverAfter.doubleValue) ||
+        scheduledAt.doubleValue <= 0 || deliverAfter.doubleValue > 9007199254740991.0 ||
+        std::floor(scheduledAt.doubleValue) != scheduledAt.doubleValue ||
+        std::floor(deliverAfter.doubleValue) != deliverAfter.doubleValue ||
+        deliverAfter.doubleValue - scheduledAt.doubleValue != 10) {
+      throw WalletEngineError("Invalid scheduled test notification receipt");
+    }
+    logNativeEvent(@"testPush.scheduled", @{ @"eventId": eventId });
+    return @{ @"accepted": @YES, @"eventId": eventId,
+              @"scheduledAt": scheduledAt, @"deliverAfter": deliverAfter };
   }];
 }
 
@@ -7346,11 +7432,165 @@ typedef void (^SensitiveAuthorizationCompletion)(BOOL success, NSString *message
   }];
 }
 
+- (void)checkFastWalletHosting:(NSString *)identityId
+            workerDescriptorHex:(NSString *)workerDescriptorHex
+                        network:(NSString *)network
+                            now:(double)now
+                        resolve:(RCTPromiseResolveBlock)resolve
+                         reject:(RCTPromiseRejectBlock)reject
+{
+  (void)now; // Renderer time cannot authorize a fresh Worker proof.
+  if (![self requireAppAuthorized:reject]) return;
+  dispatch_async(_fastWalletHostingQueue, ^{
+    @autoreleasepool {
+      const uint64_t attemptedAt = static_cast<uint64_t>(NSDate.date.timeIntervalSince1970);
+      const NSTimeInterval deadline = NSProcessInfo.processInfo.systemUptime + 60.0;
+      NSString *failureCode = @"hosting_check_failed";
+      auto complete = [&](NSString *status, NSString *errorCode, BOOL verified = NO, uint64_t checkedAt = 0, NSDictionary *binding = nil) {
+        logNativeEvent(@"fastWalletHosting.check.complete", @{
+          @"status": status, @"errorCode": errorCode ?: @"", @"verified": @(verified),
+          @"elapsedMs": @((NSProcessInfo.processInfo.systemUptime - (deadline - 60.0)) * 1000),
+        });
+        resolve(fastWalletHostingViewJson(status, attemptedAt, errorCode, verified, checkedAt, binding));
+      };
+
+      try {
+        if (!_appAuthorized.load()) throw WalletEngineError("Native app session is locked");
+        NSString *checkedIdentity = checkedFastWalletIdentityId(identityId);
+        const auto checkedNetwork = toNetworkType(network);
+        logNativeEvent(@"fastWalletHosting.check.start", @{ @"identityId": maskIdentifier(checkedIdentity) });
+        NSString *stored = readKeychainSecret(fastWalletAssignmentKey(checkedIdentity));
+        if (stored == nil) stored = readKeychainSecret(fastWalletPendingAssignmentKey(checkedIdentity));
+        if (stored == nil) {
+          complete(@"missing", @"no_assignment");
+          return;
+        }
+        NSDictionary *assignment = parseFastWalletAssignmentState(stored);
+        failureCode = @"installation_missing";
+        NSDictionary *installation = fastWalletInstallationCredentials(YES);
+        failureCode = @"network_error";
+        NSString *descriptor = workerDescriptorHex;
+        if (descriptor.length == 0) {
+          NSString *officialRoot = NSBundle.mainBundle.infoDictionary[@"FAST_WALLET_OFFICIAL_WORKER_ROOT_ID"];
+          if (![officialRoot isKindOfClass:NSString.class] || !constantTimeEqualAscii(
+              toStdString(checkedFastWalletHex(officialRoot, @"officialWorkerRootId", 32, 0)),
+              toStdString(assignment[@"workerRootId"]))) {
+            complete(@"blocked", @"assignment_state_inconsistent");
+            return;
+          }
+          if (!fastWalletBuildFeatureEnabled(@"FAST_WALLET_OFFICIAL_WORKER_ENABLED")) {
+            complete(@"unsupported", @"unsupported_worker");
+            return;
+          }
+          NSDictionary *directory = fixedFastWalletJsonRequest(
+              @"GET", fastWalletBuildOrigin(@"FAST_WALLET_GATEWAY_ORIGIN"),
+              @"/api/v1/official-worker-descriptor", @{}, nil,
+              std::min(15.0, deadline - NSProcessInfo.processInfo.systemUptime));
+          descriptor = checkedFastWalletHex(directory[@"workerDescriptor"], @"workerDescriptor", 0, 512);
+        }
+        failureCode = @"invalid_proof";
+        const auto trusted = trustedFastWalletDescriptor(
+            descriptor, network, static_cast<uint64_t>(NSDate.date.timeIntervalSince1970));
+        if (!constantTimeEqualAscii(trusted.workerRootId, toStdString(assignment[@"workerRootId"]))) {
+          throw WalletEngineError("Hosting Worker does not match this assignment");
+        }
+        if ([assignment[@"expiresAt"] unsignedLongLongValue] <= attemptedAt) {
+          complete(@"missing", @"assignment_expired");
+          return;
+        }
+        NSString *nonce = fastWalletRandomHex(32);
+        NSString *handle = assignment[@"assignmentHandle"];
+        const uint64_t epoch = [assignment[@"assignmentEpoch"] unsignedLongLongValue];
+        NSDictionary *body = @{ @"assignmentEpoch": @(epoch), @"nonce": nonce, @"workerDescriptor": descriptor };
+        NSString *route = [NSString stringWithFormat:@"/api/v1/installations/assignments/%@/hosting-check", handle];
+        while (true) {
+          if (!_appAuthorized.load()) throw WalletEngineError("Native app session is locked");
+          const NSTimeInterval remaining = deadline - NSProcessInfo.processInfo.systemUptime;
+          if (remaining <= 0) throw WalletEngineError("Hosting status check timed out");
+          failureCode = @"network_error";
+          NSDictionary *response = fixedFastWalletJsonRequest(
+              @"POST", fastWalletBuildOrigin(@"FAST_WALLET_GATEWAY_ORIGIN"), route,
+              fastWalletInstallationHeaders(installation), body, std::min(15.0, remaining));
+          failureCode = @"invalid_proof";
+          id contract = response[@"contractVersion"];
+          id status = response[@"status"];
+          id returnedEpoch = response[@"assignmentEpoch"];
+          if (![contract isKindOfClass:NSString.class] || ![contract isEqualToString:@"monero-fast-wallet-hosting.v1"] ||
+              ![status isKindOfClass:NSString.class] || ![returnedEpoch isKindOfClass:NSNumber.class] ||
+              checkedFastWalletInteger([returnedEpoch doubleValue], "assignmentEpoch") != epoch ||
+              !constantTimeEqualAscii(toStdString(checkedFastWalletHex(response[@"assignmentHandle"], @"assignmentHandle", 32, 0)), toStdString(handle)) ||
+              !constantTimeEqualAscii(toStdString(checkedFastWalletHex(response[@"nonce"], @"nonce", 32, 0)), toStdString(nonce))) {
+            throw WalletEngineError("Hosting response binding is invalid");
+          }
+          const BOOL hasProof = response[@"proof"] != nil && response[@"proof"] != NSNull.null;
+          const BOOL hasCheckedAt = response[@"checkedAt"] != nil && response[@"checkedAt"] != NSNull.null;
+          if ([status isEqualToString:@"pending"] || [status isEqualToString:@"unsupported"]) {
+            if (hasProof || hasCheckedAt) throw WalletEngineError("Unverified hosting response contains a proof");
+            if ([status isEqualToString:@"unsupported"]) {
+              complete(@"unsupported", @"unsupported_worker");
+              return;
+            }
+            failureCode = @"network_error";
+            const NSTimeInterval untilDeadline = deadline - NSProcessInfo.processInfo.systemUptime;
+            if (untilDeadline <= 0) throw WalletEngineError("Hosting status check timed out");
+            [NSThread sleepForTimeInterval:std::min(1.0, untilDeadline)];
+            continue;
+          }
+          if (!([status isEqualToString:@"hosted"] || [status isEqualToString:@"missing"]) ||
+              !hasProof || ![response[@"checkedAt"] isKindOfClass:NSNumber.class]) {
+            throw WalletEngineError("Hosting proof is missing");
+          }
+          const uint64_t checkedAt = checkedFastWalletInteger([response[@"checkedAt"] doubleValue], "checkedAt");
+          const uint64_t nativeNow = static_cast<uint64_t>(NSDate.date.timeIntervalSince1970);
+          if (checkedAt < (attemptedAt > 5 ? attemptedAt - 5 : 0) || checkedAt > nativeNow + 5) {
+            throw WalletEngineError("Hosting proof is not fresh for this check");
+          }
+          NSString *proof = checkedFastWalletHex(response[@"proof"], @"hostingProof", kFastWalletWorkerReceiptBytes, 0);
+          tex8::wallet::fast_wallet_protocol_bridge::verifyHostingStatus(
+              toStdString(descriptor), checkedNetwork, nativeNow, toStdString(handle), epoch,
+              toStdString(nonce), [status isEqualToString:@"hosted"], checkedAt, toStdString(proof));
+          if (!_appAuthorized.load()) throw WalletEngineError("Native app session is locked");
+          NSString *latest = readKeychainSecret(fastWalletAssignmentKey(checkedIdentity));
+          if (latest == nil) latest = readKeychainSecret(fastWalletPendingAssignmentKey(checkedIdentity));
+          NSDictionary *current = latest == nil ? nil : parseFastWalletAssignmentState(latest);
+          if (current == nil || ![current[@"assignmentHandle"] isEqualToString:handle] ||
+              [current[@"assignmentEpoch"] unsignedLongLongValue] != epoch ||
+              ![current[@"workerRootId"] isEqualToString:assignment[@"workerRootId"]]) {
+            failureCode = @"assignment_changed";
+            throw WalletEngineError("Hosting assignment changed during the check");
+          }
+          logNativeEvent(@"fastWalletHosting.check.verified", @{
+            @"identityId": maskIdentifier(checkedIdentity), @"status": status,
+            @"elapsedSeconds": @(nativeNow - attemptedAt),
+          });
+          complete(status, nil, YES, checkedAt, current);
+          return;
+        }
+      } catch (const std::exception &error) {
+        NSString *status = @"unknown";
+        const std::string reason(error.what());
+        if (!_appAuthorized.load()) {
+          status = @"blocked"; failureCode = @"authorization_required";
+        } else if (reason.find("HTTP 401") != std::string::npos || reason.find("HTTP 403") != std::string::npos) {
+          status = @"blocked"; failureCode = @"authentication_failed";
+        } else if ([failureCode isEqualToString:@"installation_missing"]) {
+          status = @"blocked";
+        } else if (reason.find("Onion origin is not supported") != std::string::npos) {
+          status = @"unsupported"; failureCode = @"unsupported_worker";
+        }
+        logNativeEvent(@"fastWalletHosting.check.failed", @{ @"errorCode": failureCode, @"status": status });
+        complete(status, failureCode);
+      }
+    }
+  });
+}
+
 - (void)sponsorFastWalletAssignment:(NSString *)identityId
                 workerDescriptorHex:(NSString *)workerDescriptorHex
                             network:(NSString *)network
                 assignmentExpiresAt:(double)assignmentExpiresAt
                                 now:(double)now
+                 forceNewAssignment:(BOOL)forceNewAssignment
                             resolve:(RCTPromiseResolveBlock)resolve
                              reject:(RCTPromiseRejectBlock)reject
 {
@@ -7373,9 +7613,14 @@ typedef void (^SensitiveAuthorizationCompletion)(BOOL success, NSString *message
     const auto trustedDescriptor =
         trustedFastWalletDescriptor(checkedDescriptor, network, checkedNow);
     NSString *stateKey = fastWalletAssignmentKey(checkedIdentity);
+    NSString *pendingStateKey = fastWalletPendingAssignmentKey(checkedIdentity);
     NSString *stored = readKeychainSecret(stateKey);
     NSDictionary *existing =
         stored == nil ? nil : parseFastWalletAssignmentState(stored);
+    NSString *storedPending = readKeychainSecret(pendingStateKey);
+    NSDictionary *existingPending = storedPending == nil
+        ? nil
+        : parseFastWalletAssignmentState(storedPending);
     NSString *descriptorHash = sha256Hex(
         [checkedDescriptor dataUsingEncoding:NSASCIIStringEncoding]);
     if (existing != nil &&
@@ -7385,25 +7630,55 @@ typedef void (^SensitiveAuthorizationCompletion)(BOOL success, NSString *message
           "Changing a Fast Wallet Worker requires deleting the existing "
           "assignment first");
     }
-    uint64_t epoch =
-        existing == nil
-            ? 1
-            : [existing[@"assignmentEpoch"] unsignedLongLongValue] + 1;
-    if (epoch == 0 || epoch > static_cast<uint64_t>(kJavaScriptMaximumSafeInteger)) {
-      throw WalletEngineError("Fast Wallet assignment epoch is exhausted");
+    if (existingPending != nil && !constantTimeEqualAscii(
+        toStdString(existingPending[@"workerRootId"]), trustedDescriptor.workerRootId)) {
+      throw WalletEngineError("Changing a pending Fast Wallet Worker requires retiring its assignment first");
     }
-    NSString *handle =
-        existing == nil ? fastWalletRandomHex(32)
-                        : existing[@"assignmentHandle"];
-    NSDictionary *pending = @{
-      @"assignmentHandle": handle,
-      @"assignmentEpoch": @(epoch),
-      @"expiresAt": @(checkedExpiry),
-      @"descriptorHash": descriptorHash,
-      @"workerRootId": toNSString(trustedDescriptor.workerRootId),
-      @"status": @"pending",
-    };
-    storeFastWalletAssignmentState(stateKey, pending);
+    const uint64_t previousEpoch = std::max(
+        existing == nil ? uint64_t{0} : [existing[@"assignmentEpoch"] unsignedLongLongValue],
+        existingPending == nil ? uint64_t{0} : [existingPending[@"assignmentEpoch"] unsignedLongLongValue]);
+    if (forceNewAssignment && existingPending != nil) {
+      if (existing != nil && [existingPending[@"assignmentHandle"] isEqualToString:existing[@"assignmentHandle"]]) {
+        throw WalletEngineError("Pending Fast Wallet assignment conflicts with the active assignment");
+      }
+      if (previousEpoch >= static_cast<uint64_t>(kJavaScriptMaximumSafeInteger)) {
+        throw WalletEngineError("Fast Wallet assignment epoch is exhausted");
+      }
+      NSDictionary *installation = fastWalletInstallationCredentials(YES);
+      NSDictionary *retired = fixedFastWalletJsonRequest(
+          @"DELETE", fastWalletBuildOrigin(@"FAST_WALLET_GATEWAY_ORIGIN"),
+          [@"/api/v1/installations/assignments/" stringByAppendingString:existingPending[@"assignmentHandle"]],
+          fastWalletInstallationHeaders(installation), nil);
+      if (![retired[@"accepted"] isKindOfClass:NSNumber.class] || ![retired[@"accepted"] boolValue]) {
+        throw WalletEngineError("Pending Fast Wallet assignment retirement was not confirmed");
+      }
+      // Never forget a candidate until owner-authenticated retirement succeeded.
+      // The active handle is not touched by this repair path.
+      deleteKeychainSecret(pendingStateKey);
+      existingPending = nil;
+    }
+    const BOOL reusePending = !forceNewAssignment && existingPending != nil &&
+        [existingPending[@"status"] isEqualToString:@"pending"] &&
+        [existingPending[@"expiresAt"] unsignedLongLongValue] > checkedNow &&
+        [existingPending[@"workerRootId"]
+            isEqualToString:toNSString(trustedDescriptor.workerRootId)] &&
+        [existingPending[@"descriptorHash"] isEqualToString:descriptorHash];
+    NSDictionary *pending = existingPending;
+    if (!reusePending) {
+      if (previousEpoch >= static_cast<uint64_t>(kJavaScriptMaximumSafeInteger)) {
+        throw WalletEngineError("Fast Wallet assignment epoch is exhausted");
+      }
+      const uint64_t epoch = previousEpoch + 1;
+      pending = @{
+        @"assignmentHandle": fastWalletRandomHex(32),
+        @"assignmentEpoch": @(epoch),
+        @"expiresAt": @(checkedExpiry),
+        @"descriptorHash": descriptorHash,
+        @"workerRootId": toNSString(trustedDescriptor.workerRootId),
+        @"status": @"pending",
+      };
+    }
+    storeFastWalletAssignmentState(pendingStateKey, pending);
     NSDictionary *installation = fastWalletInstallationCredentials(YES);
     NSDictionary *sponsorResponse = fixedFastWalletJsonRequest(
         @"POST",
@@ -7412,8 +7687,8 @@ typedef void (^SensitiveAuthorizationCompletion)(BOOL success, NSString *message
         fastWalletInstallationHeaders(installation),
         @{
           @"workerDescriptor": checkedDescriptor,
-          @"assignmentHandle": handle,
-          @"assignmentEpoch": @(epoch),
+          @"assignmentHandle": pending[@"assignmentHandle"],
+          @"assignmentEpoch": pending[@"assignmentEpoch"],
           @"expiresAt": @(checkedExpiry),
         });
     id effectiveExpiryValue = sponsorResponse[@"expiresAt"];
@@ -7434,26 +7709,24 @@ typedef void (^SensitiveAuthorizationCompletion)(BOOL success, NSString *message
         @"/api/v1/installations/provider/delivery",
         fastWalletInstallationHeaders(installation),
         nil);
-    NSDictionary *active = @{
-      @"assignmentHandle": handle,
-      @"assignmentEpoch": @(epoch),
+    NSDictionary *acceptedPending = @{
+      @"assignmentHandle": pending[@"assignmentHandle"],
+      @"assignmentEpoch": pending[@"assignmentEpoch"],
       @"expiresAt": @(effectiveExpiry),
       @"descriptorHash": descriptorHash,
       @"workerRootId": toNSString(trustedDescriptor.workerRootId),
-      @"status": @"active",
+      @"status": @"pending",
     };
-    storeFastWalletAssignmentState(stateKey, active);
-    return @{
-      @"assignmentHandle": handle,
-      @"assignmentEpoch": @(epoch),
-      @"expiresAt": @(effectiveExpiry),
-      @"status": @"active",
-    };
+    storeFastWalletAssignmentState(pendingStateKey, acceptedPending);
+    return acceptedPending;
   }];
 }
 
-- (void)submitFastWalletWatch:(NSString *)workerDescriptorHex
+- (void)submitFastWalletWatch:(NSString *)identityId
+           workerDescriptorHex:(NSString *)workerDescriptorHex
                        network:(NSString *)network
+           assignmentHandleHex:(NSString *)assignmentHandleHex
+           assignmentEpoch:(double)assignmentEpoch
                            now:(double)now
                    envelopeHex:(NSString *)envelopeHex
                        resolve:(RCTPromiseResolveBlock)resolve
@@ -7465,12 +7738,20 @@ typedef void (^SensitiveAuthorizationCompletion)(BOOL success, NSString *message
                   fields:nil
                     work:^id(WalletEngine &engine) {
     (void)engine;
+    NSString *checkedIdentity = checkedFastWalletIdentityId(identityId);
+    NSString *checkedAssignmentHandle = checkedFastWalletHex(
+        assignmentHandleHex, @"assignmentHandle", 32, 0);
+    uint64_t checkedAssignmentEpoch = checkedFastWalletInteger(
+        assignmentEpoch, "assignmentEpoch");
+    if (checkedAssignmentEpoch == 0) {
+      throw WalletEngineError("Fast Wallet assignment epoch is invalid");
+    }
     uint64_t checkedNow = checkedFastWalletInteger(now, "now");
     NSString *checkedDescriptor = checkedFastWalletHex(
         workerDescriptorHex, @"workerDescriptor", 0, 512);
-    std::string relay =
-        trustedFastWalletDescriptor(checkedDescriptor, network, checkedNow)
-            .relayOrigin;
+    const auto trustedDescriptor =
+        trustedFastWalletDescriptor(checkedDescriptor, network, checkedNow);
+    std::string relay = trustedDescriptor.relayOrigin;
     NSString *checkedEnvelope = checkedFastWalletHex(
         envelopeHex, @"envelope", kFastWalletWatchEnvelopeBytes, 0);
     NSDictionary *response = fixedFastWalletJsonRequest(
@@ -7500,6 +7781,59 @@ typedef void (^SensitiveAuthorizationCompletion)(BOOL success, NSString *message
             toStdString(checkedDescriptor), toNetworkType(network),
             static_cast<uint64_t>(NSDate.date.timeIntervalSince1970),
             toStdString(messageId), toStdString(receipt));
+        NSString *stateKey = fastWalletAssignmentKey(checkedIdentity);
+        NSString *pendingStateKey =
+            fastWalletPendingAssignmentKey(checkedIdentity);
+        NSString *storedPending = readKeychainSecret(pendingStateKey);
+        if (storedPending == nil) {
+          throw WalletEngineError(
+              "Pending Fast Wallet assignment does not exist");
+        }
+        NSDictionary *pending =
+            parseFastWalletAssignmentState(storedPending);
+        NSString *descriptorHash = sha256Hex(
+            [checkedDescriptor dataUsingEncoding:NSASCIIStringEncoding]);
+        if (![pending[@"status"] isEqualToString:@"pending"] ||
+            ![pending[@"assignmentHandle"]
+                isEqualToString:checkedAssignmentHandle] ||
+            [pending[@"assignmentEpoch"] unsignedLongLongValue] !=
+                checkedAssignmentEpoch ||
+            ![pending[@"workerRootId"]
+                isEqualToString:toNSString(trustedDescriptor.workerRootId)] ||
+            ![pending[@"descriptorHash"] isEqualToString:descriptorHash]) {
+          throw WalletEngineError(
+              "Acknowledged Fast Wallet assignment is no longer current");
+        }
+        NSString *storedActive = readKeychainSecret(stateKey);
+        NSDictionary *previous = storedActive == nil
+            ? nil
+            : parseFastWalletAssignmentState(storedActive);
+        NSDictionary *active = @{
+          @"assignmentHandle": pending[@"assignmentHandle"],
+          @"assignmentEpoch": pending[@"assignmentEpoch"],
+          @"expiresAt": pending[@"expiresAt"],
+          @"descriptorHash": pending[@"descriptorHash"],
+          @"workerRootId": pending[@"workerRootId"],
+          @"status": @"active",
+        };
+        storeFastWalletAssignmentState(stateKey, active);
+        deleteKeychainSecret(pendingStateKey);
+        if (previous != nil &&
+            ![previous[@"assignmentHandle"]
+                isEqualToString:active[@"assignmentHandle"]]) {
+          try {
+            NSDictionary *installation =
+                fastWalletInstallationCredentials(YES);
+            fixedFastWalletJsonRequest(
+                @"DELETE",
+                fastWalletBuildOrigin(@"FAST_WALLET_GATEWAY_ORIGIN"),
+                [@"/api/v1/installations/assignments/"
+                    stringByAppendingString:previous[@"assignmentHandle"]],
+                fastWalletInstallationHeaders(installation),
+                nil);
+          } catch (...) {
+          }
+        }
         return messageId;
       }
       if (![status isEqualToString:@"pending"] ||
@@ -7549,11 +7883,18 @@ typedef void (^SensitiveAuthorizationCompletion)(BOOL success, NSString *message
     (void)engine;
     NSString *stateKey =
         fastWalletAssignmentKey(checkedFastWalletIdentityId(identityId));
+    NSString *pendingStateKey =
+        fastWalletPendingAssignmentKey(checkedFastWalletIdentityId(identityId));
     NSString *stored = readKeychainSecret(stateKey);
-    if (stored == nil) {
+    NSString *storedPending = readKeychainSecret(pendingStateKey);
+    if (stored == nil && storedPending == nil) {
       throw WalletEngineError("Fast Wallet assignment does not exist");
     }
-    NSDictionary *state = parseFastWalletAssignmentState(stored);
+    NSDictionary *state = parseFastWalletAssignmentState(
+        stored == nil ? storedPending : stored);
+    NSDictionary *pending = storedPending == nil
+        ? nil
+        : parseFastWalletAssignmentState(storedPending);
     NSString *checkedHandle = checkedFastWalletHex(
         assignmentHandleHex, @"assignmentHandle", 32, 0);
     NSData *storedHandle = fastWalletDataFromHex(state[@"assignmentHandle"]);
@@ -7578,6 +7919,20 @@ typedef void (^SensitiveAuthorizationCompletion)(BOOL success, NSString *message
             stringByAppendingString:checkedHandle],
         fastWalletInstallationHeaders(installation),
         nil);
+    if (pending != nil &&
+        ![pending[@"assignmentHandle"] isEqualToString:checkedHandle]) {
+      try {
+        fixedFastWalletJsonRequest(
+            @"DELETE",
+            fastWalletBuildOrigin(@"FAST_WALLET_GATEWAY_ORIGIN"),
+            [@"/api/v1/installations/assignments/"
+                stringByAppendingString:pending[@"assignmentHandle"]],
+            fastWalletInstallationHeaders(installation),
+            nil);
+      } catch (...) {
+      }
+    }
+    deleteKeychainSecret(pendingStateKey);
     deleteKeychainSecret(stateKey);
     return [NSNull null];
   }];
@@ -9471,6 +9826,7 @@ typedef void (^SensitiveAuthorizationCompletion)(BOOL success, NSString *message
     const auto balance = engine.getBalance(
         toStdString(walletId),
         toIndex(accountIndex, "accountIndex"));
+    logNativeEvent(@"getBalance.balanceState", @{ @"balancePositive": @(balance > 0) });
     return toNSString(std::to_string(balance));
   }];
 }

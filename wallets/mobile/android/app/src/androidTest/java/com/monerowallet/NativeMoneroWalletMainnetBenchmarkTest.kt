@@ -30,6 +30,128 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 class NativeMoneroWalletMainnetBenchmarkTest {
   @Test
+  fun freshWalletRebasesAtAuthenticatedTipWithoutReconnectLoop() {
+    val arguments = InstrumentationRegistry.getArguments()
+    assumeTrue(arguments.getString(ARG_RUN_FRESH_WALLET) == "true")
+
+    val daemonAddress = arguments.getString(ARG_DAEMON) ?: DEFAULT_DAEMON
+    val grpcEndpoint = arguments.getString(ARG_GRPC) ?: DEFAULT_GRPC
+    val timeoutSeconds =
+      arguments
+        .getString(ARG_TIMEOUT_SECONDS)
+        ?.toLongOrNull()
+        ?.coerceIn(60L, FRESH_WALLET_MAX_TIMEOUT_SECONDS)
+        ?: FRESH_WALLET_TIMEOUT_SECONDS
+
+    assertTrue(
+      "Native Monero wallet backend is not linked into the Android JNI library",
+      NativeMoneroWalletJni.linkedWithMonero(),
+    )
+
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val walletRoot = File(context.noBackupFilesDir, "monero-wallet-fresh-regression")
+    walletRoot.deleteRecursively()
+    assertTrue(walletRoot.mkdirs())
+    NativeMoneroWalletJni.drainEngineDiagnostics()
+
+    var walletId: String? = null
+    try {
+      walletId =
+        NativeMoneroWalletJni.createWallet(
+          File(walletRoot, "fresh").absolutePath,
+          TEST_PASSWORD,
+          "English",
+          "mainnet",
+        )
+      NativeMoneroWalletJni.setDaemon(
+        walletId,
+        daemonAddress,
+        true,
+        false,
+        "",
+        "",
+        "",
+      )
+      NativeMoneroWalletJni.setGrpcEndpoint(walletId, grpcEndpoint)
+
+      val startedAtMs = SystemClock.elapsedRealtime()
+      NativeMoneroWalletJni.startRefresh(walletId)
+      val deadlineMs = startedAtMs + timeoutSeconds * 1_000L
+      var snapshot = NativeMoneroWalletJni.snapshot(walletId)
+      var status = NativeMoneroWalletJni.networkSyncStatus("mainnet")
+      while (SystemClock.elapsedRealtime() < deadlineMs) {
+        snapshot = NativeMoneroWalletJni.snapshot(walletId)
+        status = NativeMoneroWalletJni.networkSyncStatus("mainnet")
+        val walletHeight = mapLong(snapshot, "walletHeight")
+        val daemonHeight = mapLong(snapshot, "daemonHeight")
+        val synchronized = snapshot["synchronized"] as? Boolean ?: false
+        if (synchronized && daemonHeight > 0L && walletHeight >= daemonHeight) {
+          break
+        }
+        SystemClock.sleep(FRESH_WALLET_SAMPLE_INTERVAL_MS)
+      }
+
+      val diagnostics = NativeMoneroWalletJni.drainEngineDiagnostics()
+      val completion = diagnostics.lastOrNull {
+        it.contains("event=networkSync.freshWalletRebaseCompleted")
+      }
+      val walletHeight = mapLong(snapshot, "walletHeight")
+      val daemonHeight = mapLong(snapshot, "daemonHeight")
+      val transportStarts = mapLong(status, "transportStarts")
+      val consecutiveFailures = mapLong(status, "consecutiveFailures")
+      val elapsedMs = SystemClock.elapsedRealtime() - startedAtMs
+
+      emit(
+        "fresh-wallet-complete",
+        mapOf(
+          "consecutiveFailures" to consecutiveFailures,
+          "daemonHeight" to daemonHeight,
+          "diagnosticCount" to diagnostics.size,
+          "elapsedMs" to elapsedMs,
+          "transportStarts" to transportStarts,
+          "walletHeight" to walletHeight,
+        ),
+      )
+
+      assertTrue(
+        "Fresh wallet did not synchronize at the authenticated tip: wallet=$walletHeight daemon=$daemonHeight",
+        (snapshot["synchronized"] as? Boolean ?: false) &&
+          daemonHeight > 0L && walletHeight >= daemonHeight,
+      )
+      assertTrue(
+        "Fresh-wallet rebase completion was not logged: ${diagnostics.takeLast(20)}",
+        completion != null,
+      )
+      assertTrue(
+        "Fresh-wallet rebase was not exactly tip minus one: $completion",
+        completionHasTipMinusOne(completion!!),
+      )
+      assertTrue(
+        "Fresh wallet restarted the public transport $transportStarts times",
+        transportStarts == 1L,
+      )
+      assertTrue(
+        "Fresh wallet recorded $consecutiveFailures coordinator failures",
+        consecutiveFailures == 0L,
+      )
+      assertTrue(
+        "Fresh wallet still hit the old uninitialized-wallet failure",
+        diagnostics.none { it.contains("errorReason=wallet-not-initialized") },
+      )
+      assertTrue(
+        "Fresh wallet discarded a healthy public transport",
+        diagnostics.none { it.contains("event=networkSync.transportDiscarded") },
+      )
+    } finally {
+      walletId?.let { id ->
+        runCatching { NativeMoneroWalletJni.stopRefresh(id) }
+        runCatching { NativeMoneroWalletJni.closeWallet(id, false) }
+      }
+      walletRoot.deleteRecursively()
+    }
+  }
+
+  @Test
   fun scansMainnetThroughGrpcFromConfiguredRestoreHeight() {
     val arguments = InstrumentationRegistry.getArguments()
     assumeTrue(arguments.getString(ARG_RUN) == "true")
@@ -219,6 +341,24 @@ class NativeMoneroWalletMainnetBenchmarkTest {
   private fun mapLong(values: Map<String, Any>, key: String): Long =
     (values[key] as? Number)?.toLong() ?: 0L
 
+  private fun completionHasTipMinusOne(line: String): Boolean {
+    val restoreHeight =
+      Regex("(?:^|[, {])restoreHeight=([0-9]+)")
+        .find(line)
+        ?.groupValues
+        ?.getOrNull(1)
+        ?.toLongOrNull()
+        ?: return false
+    val targetHeight =
+      Regex("(?:^|[, {])targetHeight=([0-9]+)")
+        .find(line)
+        ?.groupValues
+        ?.getOrNull(1)
+        ?.toLongOrNull()
+        ?: return false
+    return restoreHeight + 1L == targetHeight
+  }
+
   private fun countDerivationWorkers(): Int =
     runCatching {
         File("/proc/self/task")
@@ -279,6 +419,7 @@ class NativeMoneroWalletMainnetBenchmarkTest {
     const val ARG_GRPC = "grpc"
     const val ARG_RESTORE_HEIGHT = "restoreHeight"
     const val ARG_RUN = "runMainnetBenchmark"
+    const val ARG_RUN_FRESH_WALLET = "runFreshWalletRegression"
     const val ARG_TIMEOUT_SECONDS = "timeoutSeconds"
     const val DEFAULT_DAEMON = "152.53.133.188:18089"
     const val DEFAULT_GRPC = "152.53.133.188:18091"
@@ -287,6 +428,9 @@ class NativeMoneroWalletMainnetBenchmarkTest {
     const val DERIVATION_THREAD_PREFIX = "monero-deriv"
     const val LOG_PREFIX = "MONERO_WALLET_MAINNET_BENCHMARK"
     const val LOG_TAG = "NativeMoneroWallet"
+    const val FRESH_WALLET_MAX_TIMEOUT_SECONDS = 300L
+    const val FRESH_WALLET_SAMPLE_INTERVAL_MS = 250L
+    const val FRESH_WALLET_TIMEOUT_SECONDS = 180L
     const val MAX_TIMEOUT_SECONDS = 3_600L
     const val PROGRESS_INTERVAL_MS = 10_000L
     const val SAMPLE_INTERVAL_MS = 1_000L

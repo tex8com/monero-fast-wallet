@@ -42,8 +42,10 @@ import {
 import MoneroCoinBg from '../components/MoneroCoinBg';
 import { useLocalAdvertisement } from '../data/advertisements';
 import { v1ReleaseFeatures } from '../../../../packages/wallet-shared/src/v1ReleaseFeatures';
+import { ledgerBalanceIsVerified } from '../../../../packages/wallet-shared/src/walletSync';
 import { useI18n } from '../i18n';
 import { useWalletState } from '../services/WalletState';
+import { logWalletEvent } from '../services/WalletLogger';
 import { useConnectivityState } from '../services/ConnectivityState';
 import {
   ledgerBalanceNeedsVerification,
@@ -400,6 +402,15 @@ export default function HomeScreen({ navigation }: any) {
   });
   const showLocked = lockedAtomic > 0n;
   const hasUnverifiedLedgerBalance = activeLedgerNeedsVerification;
+  const hasProvisionalLedgerBalance = Boolean(
+    registeredWallet?.kind === 'hardware' &&
+      registeredWallet.role !== 'fast' &&
+      activeWalletSnapshot &&
+      !ledgerBalanceIsVerified(
+        activeWalletSnapshot,
+        Boolean(registeredWallet.ledgerKeyImagesVerifiedAt),
+      ),
+  );
   // A view wallet sees received outputs before Ledger-derived key images tell
   // it which ones were spent. Showing that intermediate sum as real balance
   // is financially misleading, so hide it until reconciliation completes.
@@ -413,6 +424,21 @@ export default function HomeScreen({ navigation }: any) {
     !hasUnverifiedLedgerBalance && price > 0
       ? xmrToUsd(atomicXmrToNumber(totalBalanceAtomic), price)
       : '—';
+  useEffect(() => {
+    logWalletEvent('HomeScreen', 'balance.displayState', {
+      available: Boolean(activeWalletSnapshot),
+      displayedBalancePositive:
+        !hasUnverifiedLedgerBalance && totalBalanceAtomic > 0n,
+      workingBalancePositive:
+        toAtomicBigInt(workingSnapshot?.balanceAtomic) > 0n,
+      snapshotRevision: Number(activeWalletSnapshot?.snapshotRevision ?? 0),
+    });
+  }, [
+    activeWalletSnapshot,
+    hasUnverifiedLedgerBalance,
+    totalBalanceAtomic,
+    workingSnapshot,
+  ]);
   const visibleNews = useMemo(
     () =>
       newsCategory === 'all'
@@ -600,14 +626,23 @@ export default function HomeScreen({ navigation }: any) {
               {registeredWallets.length > 0 ? `$${totalBalanceUsd}` : ''}
             </Text>
           </View>
-          {showLocked && !hasUnverifiedLedgerBalance && (
+          {hasProvisionalLedgerBalance && !hasUnverifiedLedgerBalance && (
             <View style={s.pendRow}>
-              <View style={s.pendDot} />
               <Text style={s.pendTxt}>
-                {t('home.lockedBalance', { amount: lockedXmr })}
+                {t('home.ledgerBalanceProvisional')}
               </Text>
             </View>
           )}
+          {showLocked &&
+            !hasUnverifiedLedgerBalance &&
+            !hasProvisionalLedgerBalance && (
+              <View style={s.pendRow}>
+                <View style={s.pendDot} />
+                <Text style={s.pendTxt}>
+                  {t('home.lockedBalance', { amount: lockedXmr })}
+                </Text>
+              </View>
+            )}
           {registeredWallets.length === 0 ? (
             <TouchableOpacity style={s.balOpenButton} onPress={openWalletSetup}>
               <Text style={s.balOpenButtonText}>

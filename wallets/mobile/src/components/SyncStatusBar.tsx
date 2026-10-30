@@ -84,22 +84,25 @@ export default function SyncStatusBar({
   const connectionElapsedSeconds = useElapsedSeconds(
     Boolean(networkStatus && !network.ready && !network.failed && network.busy),
   );
-  const hasSyncError = status === 'error' || Boolean(error) || network.failed;
-  const walletHeightProgress = blockHeightProgress(
-    presentation.walletHeight,
-    presentation.targetHeight,
-  );
+  const hasSyncError =
+    status === 'error' || Boolean(error) || network.failed ||
+    readinessPhase === 'recoverable-error';
+  // The live Core snapshot can finish before the matching snapshot/history
+  // publication. Use the same completion gate for text, percentage and LED.
+  const walletConfirmed =
+    presentation.coreConfirmed &&
+    (readinessPhase === undefined || readinessPhase === 'ready');
   const spendOutputPhase =
     readinessPhase === 'scanning-spend-outputs' ||
     readinessPhase === 'retrying-spent-output-node';
   const walletProgress = spendOutputPhase
     ? undefined
-    : presentation.coreConfirmed
+    : walletConfirmed
     ? 100
-    : presentation.phase === 'finalizing'
+    : presentation.coreConfirmed || presentation.phase === 'finalizing'
     ? undefined
     : snapshot
-    ? walletHeightProgress ?? presentation.progress ?? 0
+    ? presentation.progress ?? 0
     : progress ?? 0;
   // A wallet cache at the tip does not prove that the one process-wide
   // downloader has finished an older shared range. Keep these two progress
@@ -110,9 +113,7 @@ export default function SyncStatusBar({
       : network.chainHeight;
   const blockchainProgress = network.ready
     ? 100
-    : blockHeightProgress(blockchainCurrent, network.targetHeight) ??
-      network.progress ??
-      0;
+    : network.progress ?? 0;
   const blockchainConnected = network.ready || network.connected;
   const torReady = !torStatus || torStatus.connected;
   const torConnecting = Boolean(
@@ -123,7 +124,13 @@ export default function SyncStatusBar({
     torConnecting || (!blockchainConnected && !network.failed && network.busy);
   const walletOpened =
     Boolean(snapshot) && (status === 'open' || status === 'syncing');
-  const showWalletSync = blockchainConnected && walletOpened;
+  // A brand-new wallet initially carries Monero Core's deliberately old
+  // offline safety cursor. It is replaced as soon as the shared downloader
+  // authenticates the real node tip. Do not present that private bootstrap
+  // value as thousands of blocks of real wallet history while the tip is
+  // still unknown.
+  const showWalletSync =
+    blockchainConnected && walletOpened && network.targetHeight !== undefined;
   const walletDetail =
     readinessPhase === 'retrying-spent-output-node'
       ? t('sync.spendOutputsNodeRetry')
@@ -137,16 +144,18 @@ export default function SyncStatusBar({
       ? t('sync.persistingWallet')
       : readinessPhase === 'recovering-session'
       ? t('sync.recoveringSession')
+      : presentation.coreConfirmed && !walletConfirmed
+      ? t('sync.verifyingRecent')
       : resolveDetail(
           status,
-          snapshot,
+          presentationSnapshot,
           hasSyncError,
           presentation.phase,
           walletProgress,
           t,
         );
   const blockchainDetail =
-    blockchainProgress === 100
+    network.ready
       ? t('sync.synced')
       : resolveNetworkDetail(network.phase, network.failed, networkFailure, t);
   const blockchainExtra =
@@ -164,8 +173,7 @@ export default function SyncStatusBar({
     presentation.phase === 'syncing' ? formatSyncEta(etaSeconds, t) : undefined;
   const fullySynced =
     showWalletSync &&
-    (readinessPhase === undefined || readinessPhase === 'ready') &&
-    presentation.coreConfirmed &&
+    walletConfirmed &&
     (networkStatus ? network.ready : true) &&
     torReady &&
     !hasSyncError;
@@ -183,25 +191,28 @@ export default function SyncStatusBar({
     },
     [controlledExpanded, onExpandedChange],
   );
-  const previousSyncState = React.useRef({ fullySynced, walletIdentity });
+  const previousSyncState = React.useRef<{
+    fullySynced: boolean;
+    walletIdentity: string;
+  } | undefined>(undefined);
   const compactStatus = hasSyncError
     ? networkFailure
       ? networkFailure === 'server-response'
         ? t('sync.failureServerResponseShort')
         : t(networkSyncFailureTranslationKey(networkFailure))
       : t('sync.error')
-    : torConnecting
-    ? t('topBar.connectingTor')
-    : spendOutputPhase
-    ? walletDetail
+    : !torReady
+    ? torConnecting ? t('topBar.connectingTor') : t('sync.torUnavailable')
     : fullySynced
     ? t('sync.synced')
-    : !networkStatus || network.ready
+    : networkStatus && !network.ready && !showWalletSync
+    ? blockchainDetail
+    : !walletConfirmed
     ? walletDetail
     : blockchainDetail;
   React.useEffect(() => {
     const previous = previousSyncState.current;
-    if (previous.walletIdentity !== walletIdentity) {
+    if (!previous || previous.walletIdentity !== walletIdentity) {
       updateExpanded(!fullySynced);
     } else if (!previous.fullySynced && fullySynced) {
       // Collapse once after completion. A user who opens it again remains in
@@ -248,6 +259,8 @@ export default function SyncStatusBar({
             accessibilityLabel={
               torConnecting
                 ? t('topBar.connectingTor')
+                : !torReady
+                ? t('sync.torUnavailable')
                 : fullySynced
                 ? t('sync.synced')
                 : connected
@@ -291,7 +304,7 @@ export default function SyncStatusBar({
               <View style={s.divider} />
               <SyncProgressRow
                 current={presentation.walletHeight}
-                confirmedComplete={presentation.coreConfirmed}
+                confirmedComplete={walletConfirmed}
                 detail={walletDetail}
                 extra={
                   presentation.phase === 'finalizing'
@@ -515,12 +528,16 @@ function useSyncEta(
       sampleRef.current,
       presentation.remainingBlocks,
       Date.now(),
-      { active: etaActive },
+      {
+        active: etaActive,
+        providerGeneration: networkStatus?.providerGeneration,
+      },
     );
     sampleRef.current = estimate.state;
     setEtaSeconds(estimate.etaSeconds);
   }, [
     etaActive,
+    networkStatus?.providerGeneration,
     presentation.phase,
     presentation.remainingBlocks,
     presentation.scannedBlocks,

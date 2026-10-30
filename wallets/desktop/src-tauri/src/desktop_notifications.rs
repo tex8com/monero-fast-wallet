@@ -12,13 +12,16 @@ use std::{
     path::PathBuf,
     time::{SystemTime, UNIX_EPOCH},
 };
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 const NOTIFICATION_DIR: &str = "notifications";
 const INSTALLATION_FILE: &str = "desktop-installation.json";
 const BACKGROUND_AGENT_FILE: &str = "background-agent.json";
 const PENDING_OPEN_FILE: &str = "pending-open-event.json";
 const CONTRACT_VERSION: u8 = 5;
+static INSTALLATION_STATE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+static REGISTRATION_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+const PREFERENCE_CHANGED: &str = "Notification preferences changed during registration. Try again.";
 
 // These symbols are implemented by the AppKit bridge.  Keep the declaration
 // macOS uses APNs. Windows and Linux use the private background agent and
@@ -26,10 +29,15 @@ const CONTRACT_VERSION: u8 = 5;
 #[cfg(target_os = "macos")]
 unsafe extern "C" {
     fn tex8_desktop_apns_register() -> c_int;
+    fn tex8_desktop_apns_resume(retry: c_int) -> c_int;
+    fn tex8_desktop_apns_attempt_elapsed_millis() -> u64;
+    fn tex8_desktop_apns_refresh_authorization() -> u64;
+    fn tex8_desktop_apns_authorization_status(query: u64) -> *const c_char;
     fn tex8_desktop_apns_install_handler() -> c_int;
     fn tex8_desktop_apns_device_token() -> *const c_char;
     fn tex8_desktop_apns_status() -> *const c_char;
     fn tex8_desktop_apns_take_pending_event() -> *const c_char;
+    fn tex8_desktop_apns_take_received_event() -> *const c_char;
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -47,6 +55,8 @@ pub struct NotificationInstallation {
     pub locale: Option<String>,
     pub app_version: Option<String>,
     pub enabled: bool,
+    #[serde(default)]
+    pub preference_generation: u64,
     pub background_mode_enabled: bool,
     pub provider_status: String,
     #[serde(default)]
@@ -136,12 +146,9 @@ struct BackgroundAgentConfig {
 
 pub fn status(app: &AppHandle) -> Result<NotificationInstallationStatus, String> {
     let mut installation = load_or_create(app)?;
-    let previous_endpoint = installation.endpoint.clone();
+    let expected = installation.clone();
     refresh_platform_endpoint(&mut installation);
-    if installation.endpoint != previous_endpoint {
-        installation.updated_at = now();
-        write_installation(app, &installation)?;
-    }
+    installation = persist_provider_status(app, &expected, &installation)?;
     status_for_installation(app, installation)
 }
 
@@ -151,7 +158,9 @@ pub fn request_installation(
 ) -> Result<NotificationInstallationStatus, String> {
     validate_permission(&input.permission_status)?;
     let now = now();
-    let mut installation = load_or_create(app)?;
+    let _record = installation_lock()?;
+    let mut installation = load_or_create_locked(app)?;
+    installation.preference_generation = next_preference_generation(installation.preference_generation)?;
     installation.permission_status = input.permission_status;
     installation.locale = input.locale.filter(|value| !value.trim().is_empty());
     installation.app_version = input.app_version.filter(|value| !value.trim().is_empty());
@@ -173,19 +182,40 @@ pub fn request_installation(
 }
 
 pub async fn reconcile_gateway(app: &AppHandle) -> Result<NotificationInstallationStatus, String> {
+    let _registration = REGISTRATION_LOCK.lock().await;
+    reconcile_gateway_locked(app, false).await
+}
+
+pub async fn disable_delivery(app: &AppHandle) -> Result<NotificationInstallationStatus, String> {
+    // Finish any provider POST before removing delivery. Persist the user's
+    // off choice before awaiting the network, even if the remote call fails.
+    let _registration = REGISTRATION_LOCK.lock().await;
+    let had_gateway_registration = load_or_create(app)?.gateway_status == "active";
+    let status = disable_installation(app)?;
+    if had_gateway_registration {
+        crate::fast_wallet_enrollment::disable_delivery(app).await?;
+    }
+    Ok(status)
+}
+
+async fn reconcile_gateway_locked(app: &AppHandle, retry: bool) -> Result<NotificationInstallationStatus, String> {
     let mut installation = load_or_create(app)?;
+    let expected = installation.clone();
     refresh_platform_endpoint(&mut installation);
     if !installation.enabled {
         return status_for_installation(app, installation);
     }
+    resume_macos_apns_registration(app, &expected, &mut installation, retry).await?;
+    refresh_platform_endpoint(&mut installation);
+    write_installation_if_current(app, &expected, &installation)?;
     let (provider, token) = match installation.provider.as_str() {
-        "apns" if is_apns_device_token(&installation.endpoint) => {
+        "apns" if installation.provider_status == "ready" && is_apns_device_token(&installation.endpoint) => {
             ("apns", installation.endpoint.trim())
         }
         "apns" => {
             installation.gateway_status = "provider-pending".to_owned();
             installation.gateway_checked_at = Some(now());
-            write_installation(app, &installation)?;
+            write_installation_if_current(app, &expected, &installation)?;
             return status_for_installation(app, installation);
         }
         "windows-agent" | "linux-agent" if installation.background_mode_enabled => {
@@ -246,7 +276,7 @@ pub async fn reconcile_gateway(app: &AppHandle) -> Result<NotificationInstallati
                             if confirmed {
                                 installation.gateway_lease_expires_at = status.lease_expires_at;
                                 installation.gateway_checked_at = Some(current_time);
-                                write_installation(app, &installation)?;
+                                write_installation_if_current(app, &expected, &installation)?;
                                 zeroize::Zeroize::zeroize(&mut auth);
                                 return status_for_installation(app, installation);
                             }
@@ -282,13 +312,13 @@ pub async fn reconcile_gateway(app: &AppHandle) -> Result<NotificationInstallati
         Ok(_) => {
             installation.gateway_status = "needs-refresh".to_owned();
             installation.gateway_checked_at = Some(current_time);
-            write_installation(app, &installation)?;
+            write_installation_if_current(app, &expected, &installation)?;
             return Err("The desktop notification service rejected this installation.".to_owned());
         }
         Err(_) => {
             installation.gateway_status = "needs-refresh".to_owned();
             installation.gateway_checked_at = Some(current_time);
-            write_installation(app, &installation)?;
+            write_installation_if_current(app, &expected, &installation)?;
             return Err("The desktop notification service is unavailable.".to_owned());
         }
     };
@@ -317,12 +347,14 @@ pub async fn reconcile_gateway(app: &AppHandle) -> Result<NotificationInstallati
     installation.gateway_lease_expires_at = Some(accepted.lease_expires_at);
     installation.gateway_checked_at = Some(current_time);
     installation.updated_at = current_time;
-    write_installation(app, &installation)?;
+    write_installation_if_current(app, &expected, &installation)?;
     status_for_installation(app, installation)
 }
 
 pub fn disable_installation(app: &AppHandle) -> Result<NotificationInstallationStatus, String> {
-    let mut installation = load_or_create(app)?;
+    let _record = installation_lock()?;
+    let mut installation = load_or_create_locked(app)?;
+    installation.preference_generation = next_preference_generation(installation.preference_generation)?;
     installation.enabled = false;
     installation.background_mode_enabled = false;
     installation.permission_status = "denied".to_owned();
@@ -380,6 +412,9 @@ fn valid_open_event(event: &NotificationEvent) -> bool {
     if !opaque_id {
         return false;
     }
+    if event.category == crate::notification_test::CATEGORY {
+        return event.deep_link == crate::notification_test::DEEP_LINK;
+    }
     if event.category == "monero.fast_wallet.incoming" {
         return event.deep_link == "tex8://notification/incoming";
     }
@@ -427,6 +462,13 @@ fn status_for_installation(
     mut installation: NotificationInstallation,
 ) -> Result<NotificationInstallationStatus, String> {
     installation.provider_status = provider_status(&installation);
+    if installation.gateway_status == "active" && !gateway_current(&installation, now()) {
+        installation.gateway_status = if installation.gateway_lease_expires_at.is_none_or(|expires| expires <= now()) {
+            "expired"
+        } else {
+            "needs-refresh"
+        }.to_owned();
+    }
     Ok(NotificationInstallationStatus {
         delivery: delivery(&installation),
         // APNs owns closed-app delivery on macOS. The optional local agent is
@@ -438,6 +480,11 @@ fn status_for_installation(
 }
 
 fn load_or_create(app: &AppHandle) -> Result<NotificationInstallation, String> {
+    let _record = installation_lock()?;
+    load_or_create_locked(app)
+}
+
+fn load_or_create_locked(app: &AppHandle) -> Result<NotificationInstallation, String> {
     let (mut installation, created) = match load(app)? {
         Some(installation) => (installation, false),
         None => (default_installation()?, true),
@@ -470,6 +517,7 @@ fn default_installation() -> Result<NotificationInstallation, String> {
         locale: None,
         app_version: None,
         enabled: false,
+        preference_generation: 0,
         background_mode_enabled: false,
         provider_status: "not-configured".to_owned(),
         gateway_status: "unregistered".to_owned(),
@@ -526,6 +574,48 @@ fn write_installation(
         installation,
         "Desktop notification installation could not be saved.",
     )
+}
+
+fn installation_lock() -> Result<std::sync::MutexGuard<'static, ()>, String> {
+    INSTALLATION_STATE_LOCK.lock().map_err(|_| "Notification installation state is busy.".to_owned())
+}
+
+fn next_preference_generation(current: u64) -> Result<u64, String> {
+    current.checked_add(1).ok_or_else(|| "Notification preference generation is invalid.".to_owned())
+}
+
+fn preference_current(expected: &NotificationInstallation, current: &NotificationInstallation) -> bool {
+    expected.installation_id == current.installation_id && crate::apns_registration::preference_matches(
+        (expected.preference_generation, expected.enabled, &expected.permission_status),
+        (current.preference_generation, current.enabled, &current.permission_status))
+}
+
+fn write_installation_if_current(
+    app: &AppHandle,
+    expected: &NotificationInstallation,
+    installation: &NotificationInstallation,
+) -> Result<(), String> {
+    let _record = installation_lock()?;
+    let current = load(app)?.ok_or_else(|| PREFERENCE_CHANGED.to_owned())?;
+    if !preference_current(expected, &current) { return Err(PREFERENCE_CHANGED.to_owned()); }
+    write_installation(app, installation)
+}
+
+fn persist_provider_status(
+    app: &AppHandle,
+    expected: &NotificationInstallation,
+    observed: &NotificationInstallation,
+) -> Result<NotificationInstallation, String> {
+    let _record = installation_lock()?;
+    let mut current = load(app)?.ok_or_else(|| PREFERENCE_CHANGED.to_owned())?;
+    if !preference_current(expected, &current) { return Ok(current); }
+    if current.endpoint != observed.endpoint || current.provider_status != observed.provider_status {
+        current.endpoint = observed.endpoint.clone();
+        current.provider_status = observed.provider_status.clone();
+        current.updated_at = now();
+        write_installation(app, &current)?;
+    }
+    Ok(current)
 }
 
 fn write_background_agent_config(
@@ -604,17 +694,23 @@ fn provider_status(installation: &NotificationInstallation) -> String {
             "ready".to_owned()
         }
         "linux-agent" | "windows-agent" => "local-fallback".to_owned(),
+        "apns" if installation.provider_status.starts_with("apns-") => installation.provider_status.clone(),
         "apns" if is_apns_device_token(&installation.endpoint) => "ready".to_owned(),
         "tauri-local" => "local-fallback".to_owned(),
         _ => "not-configured".to_owned(),
     }
 }
 
+fn gateway_current(installation: &NotificationInstallation, current_time: u64) -> bool {
+    crate::apns_registration::gateway_current(&installation.gateway_status,
+        installation.gateway_lease_expires_at, installation.gateway_checked_at, current_time)
+}
+
 fn delivery(installation: &NotificationInstallation) -> String {
     if !installation.enabled {
         return "disabled".to_owned();
     }
-    if installation.gateway_status != "active" {
+    if !gateway_current(installation, now()) {
         return "local-while-open".to_owned();
     }
     match installation.provider_status.as_str() {
@@ -659,12 +755,16 @@ fn default_endpoint() -> String {
 
 #[cfg(target_os = "macos")]
 fn refresh_platform_endpoint(installation: &mut NotificationInstallation) {
-    if let Some(token) = macos_apns_device_token() {
+    if !installation.enabled {
+        installation.provider_status = "disabled".to_owned();
+        return;
+    }
+    let status = macos_apns_status().unwrap_or_else(|| "not-requested".to_owned());
+    if let Some(token) = macos_apns_device_token().filter(|_| status == "registered") {
         installation.endpoint = token;
         installation.provider_status = "ready".to_owned();
     } else if installation.enabled {
-        let status = macos_apns_status().unwrap_or_else(|| "not-registered".to_owned());
-        installation.provider_status = format!("apns-{status}");
+        installation.provider_status = format!("apns-{}", crate::apns_registration::status_kind(&status));
     }
 }
 
@@ -680,6 +780,114 @@ fn request_macos_apns_registration() {
 
 #[cfg(not(target_os = "macos"))]
 fn request_macos_apns_registration() {}
+
+#[cfg(target_os = "macos")]
+async fn resume_macos_apns_registration(
+    app: &AppHandle,
+    expected: &NotificationInstallation,
+    installation: &mut NotificationInstallation,
+    retry: bool,
+) -> Result<(), String> {
+    use crate::apns_registration::resume_allowed;
+    if !resume_allowed(installation.enabled, &installation.permission_status) { return Ok(()); }
+    ensure_preference_current(app, expected)?;
+    // One click may replace a failed/expired attempt once. Never start a
+    // second 45-second round when that fresh attempt times out.
+    let resumed = unsafe { tex8_desktop_apns_resume(if retry { 1 } else { 0 }) };
+    if resumed != 0 {
+        crate::diagnostics::record(app, "notifications.apns-resume", &[
+            ("phase", if retry { "explicit-test" } else { "resume" }.to_owned()),
+            ("result", if resumed == 1 { "started" } else { "existing-attempt" }.to_owned())]);
+    }
+    let result = wait_for_macos_apns_callback(app, expected, installation).await;
+    if resumed != 0 {
+        let _ = app.emit("mfw-notification-registration-changed", serde_json::json!({
+            "result": if result.is_ok() { "completed" } else { "unavailable" }
+        }));
+    }
+    result
+}
+
+#[cfg(not(target_os = "macos"))]
+async fn resume_macos_apns_registration(
+    _: &AppHandle, _: &NotificationInstallation, _: &mut NotificationInstallation, _: bool,
+) -> Result<(), String> { Ok(()) }
+
+fn ensure_preference_current(app: &AppHandle, expected: &NotificationInstallation) -> Result<(), String> {
+    let _record = installation_lock()?;
+    let current = load(app)?.ok_or_else(|| PREFERENCE_CHANGED.to_owned())?;
+    if preference_current(expected, &current) { Ok(()) } else { Err(PREFERENCE_CHANGED.to_owned()) }
+}
+
+#[cfg(target_os = "macos")]
+async fn wait_for_macos_apns_callback(
+    app: &AppHandle,
+    expected: &NotificationInstallation,
+    installation: &mut NotificationInstallation,
+) -> Result<(), String> {
+    use crate::apns_registration::{wait_for_callback, Progress};
+    let started = std::time::Instant::now();
+    let mut previous_status: Option<String> = None;
+    let outcome = wait_for_callback(
+        || {
+            let status = macos_apns_status().unwrap_or_else(|| "not-requested".to_owned());
+            if previous_status.as_deref() != Some(status.as_str()) {
+                let kind = crate::apns_registration::status_kind(&status);
+                let mut fields = vec![("phase", kind.to_owned()), ("providerStatus", kind.to_owned())];
+                if let Some((domain, code)) = crate::apns_registration::error_metadata(&status) {
+                    fields.push(("nsErrorDomain", domain.to_owned()));
+                    fields.push(("nsErrorCode", code.to_string()));
+                }
+                crate::diagnostics::record(app, "notifications.apns-registration", &fields);
+                previous_status = Some(status.clone());
+            }
+            (
+                status,
+                macos_apns_device_token().is_some(),
+                // Lifetime belongs to the native attempt, not this observer.
+                unsafe { tex8_desktop_apns_attempt_elapsed_millis() }.into(),
+            )
+        },
+        || tokio::time::sleep(std::time::Duration::from_millis(200)),
+    )
+    .await;
+    ensure_preference_current(app, expected)?;
+    let failure_code = match outcome {
+        Progress::Denied => Some("apns-authorization-denied"),
+        Progress::AuthorizationRequired => Some("apns-authorization-required"),
+        Progress::AuthorizationError => Some("apns-authorization-error"),
+        Progress::RegistrationError => Some("apns-registration-error"),
+        Progress::TimedOut => Some("apns-registration-timeout"),
+        Progress::Failed => Some("apns-registration-failed"),
+        _ => None,
+    };
+    if let Some(code) = failure_code {
+        crate::diagnostics::record(app, "notifications.apns-registration-stopped", &[
+            ("safeErrorCode", code.to_owned()), ("elapsedMs", started.elapsed().as_millis().to_string())]);
+        installation.provider_status = code.to_owned();
+        installation.updated_at = now();
+        write_installation_if_current(app, expected, installation)?;
+    }
+    match outcome {
+        Progress::NotRequested | Progress::Ready => Ok(()),
+        Progress::Pending => unreachable!("wait_for_callback returns only terminal states"),
+        Progress::Denied => {
+            installation.permission_status = "denied".to_owned();
+            installation.enabled = false;
+            installation.preference_generation = next_preference_generation(expected.preference_generation)?;
+            installation.provider_status = "apns-authorization-denied".to_owned();
+            installation.updated_at = now();
+            write_installation_if_current(app, expected, installation)?;
+            Err("apns-authorization-denied: Allow notifications for Monero Fast Wallet in macOS System Settings, then try again.".to_owned())
+        }
+        Progress::AuthorizationError => Err("apns-authorization-error: macOS could not complete notification authorization. Try again.".to_owned()),
+        Progress::AuthorizationRequired => Err("apns-authorization-required: Enable notifications for this device before testing push notifications.".to_owned()),
+        Progress::RegistrationError => Err("apns-registration-error: macOS could not register remote notifications. Try again.".to_owned()),
+        Progress::BundleRequired => Err("Open the installed Monero Fast Wallet.app to enable remote notifications.".to_owned()),
+        Progress::TimedOut => Err("apns-registration-timeout: macOS notification registration is still pending. Try again.".to_owned()),
+        Progress::Failed => Err("apns-registration-failed: macOS could not register remote notifications. Try again.".to_owned()),
+    }
+}
 
 #[cfg(target_os = "macos")]
 fn macos_apns_device_token() -> Option<String> {
@@ -814,6 +1022,7 @@ mod tests {
             locale: None,
             app_version: None,
             enabled: true,
+            preference_generation: 0,
             background_mode_enabled: background,
             provider_status: "disabled".to_owned(),
             gateway_status: "unregistered".to_owned(),
@@ -838,6 +1047,8 @@ mod tests {
         assert_eq!(background.provider_status, "ready");
         assert_eq!(delivery(&background), "local-while-open");
         background.gateway_status = "active".to_owned();
+        background.gateway_lease_expires_at = Some(super::now() + 60);
+        background.gateway_checked_at = Some(super::now());
         assert_eq!(delivery(&background), "background-linux-agent");
 
         let mut windows = installation("windows-agent", "", true);
@@ -845,6 +1056,8 @@ mod tests {
         windows.provider_status = provider_status(&windows);
         assert_eq!(windows.provider_status, "ready");
         windows.gateway_status = "active".to_owned();
+        windows.gateway_lease_expires_at = Some(super::now() + 60);
+        windows.gateway_checked_at = Some(super::now());
         assert_eq!(delivery(&windows), "background-windows-agent");
     }
 
@@ -888,4 +1101,268 @@ mod tests {
             }));
         }
     }
+}
+
+
+const TEST_PUSH_STATE_FILE: &str = "push-test-state.json";
+static TEST_PUSH_STATE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+static TEST_PUSH_REQUEST_RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TestPushReceipt {
+    pub accepted: bool,
+    pub event_id: String,
+    pub scheduled_at: u64,
+    pub deliver_after: u64,
+}
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TestPushState {
+    receipt: Option<TestPushReceipt>,
+    #[serde(default)]
+    received: Vec<TestPushReceived>,
+}
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TestPushReceived { event_id: String, received_at: u64 }
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TestPushStatus {
+    pub platform: String,
+    pub available: bool,
+    pub reason: String,
+    pub phase: String,
+    pub receipt: Option<TestPushReceipt>,
+    pub received_at: Option<u64>,
+    pub permission_settings_available: bool,
+}
+fn read_test_push_state(app: &AppHandle) -> Result<TestPushState, String> {
+    let path = notification_path(app, TEST_PUSH_STATE_FILE)?;
+    let bytes = match fs::read(&path) {
+        Ok(bytes) if bytes.len() <= 32 * 1024 => bytes,
+        Ok(_) => return Err("Push test state exceeds its limit.".to_owned()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(TestPushState::default()),
+        Err(_) => return Err("Push test state is unavailable.".to_owned()),
+    };
+    serde_json::from_slice(&bytes).map_err(|_| "Push test state is invalid.".to_owned())
+}
+fn test_setup_gate(app: &AppHandle) -> Result<String, String> {
+    let wallets = crate::fast_wallet::list(app)?;
+    let has_fast = !wallets.is_empty();
+    let has_alerts = wallets.iter().any(|wallet| crate::notification_test::alerts_ready(
+        wallet.notifications_enabled, &wallet.alert_status, wallet.worker_receipt_verified,
+        wallet.assignment_handle.is_some(), wallet.assignment_expires_at, now()));
+    let status = status(app)?;
+    let installation = status.installation;
+    let provider_ready = installation.provider_status == "ready" && match installation.provider.as_str() {
+        "apns" => is_apns_device_token(&installation.endpoint),
+        "windows-agent" | "linux-agent" => installation.background_mode_enabled,
+        _ => false,
+    };
+    Ok(crate::notification_test::setup_gate(has_fast, has_alerts,
+        installation.enabled && installation.permission_status == "authorized", provider_ready,
+        installation.gateway_status == "active" && installation.gateway_lease_expires_at.is_some_and(|expires| expires > now())).to_owned())
+}
+#[cfg(target_os = "macos")]
+async fn macos_permission_settings_available(app: &AppHandle) -> bool {
+    let query = unsafe { tex8_desktop_apns_refresh_authorization() };
+    let started = std::time::Instant::now();
+    let observed = loop {
+        let status = unsafe { c_string(tex8_desktop_apns_authorization_status(query)) }
+            .unwrap_or_else(|| "unknown".to_owned());
+        if status != "checking" { break status; }
+        if started.elapsed() >= std::time::Duration::from_millis(1000) { break "unknown".to_owned(); }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    };
+    crate::diagnostics::record(app, "notifications.permission-status", &[
+        ("phase", "os-settings".to_owned()), ("result", observed.clone())]);
+    crate::apns_registration::permission_settings_available(&observed)
+}
+
+#[cfg(not(target_os = "macos"))]
+async fn macos_permission_settings_available(_: &AppHandle) -> bool { false }
+
+pub async fn open_notification_settings(app: &AppHandle) -> Result<(), String> {
+    open_macos_settings(app, false).await
+}
+
+pub async fn open_focus_settings(app: &AppHandle) -> Result<(), String> {
+    open_macos_settings(app, true).await
+}
+
+async fn open_macos_settings(app: &AppHandle, focus: bool) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        // Fixed OS-owned route; no shell, arbitrary URLs or preference writes.
+        let opened = tauri::async_runtime::spawn_blocking(move || {
+            std::process::Command::new("/usr/bin/open")
+                .arg(crate::apns_registration::fixed_settings_url(focus))
+                .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null())
+                .status().is_ok_and(|status| status.success())
+        }).await.unwrap_or(false);
+        crate::diagnostics::record(app, "notifications.open-settings", &[
+            ("phase", if focus { "focus-settings" } else { "notification-settings" }.to_owned()),
+            ("result", if opened { "opened" } else { "failed" }.to_owned())]);
+        if opened { Ok(()) } else { Err("Notification settings could not be opened.".to_owned()) }
+    }
+    #[cfg(not(target_os = "macos"))]
+    { let _ = (app, focus); Err("Notification settings are only available on macOS.".to_owned()) }
+}
+
+pub async fn test_push_status(app: &AppHandle) -> Result<TestPushStatus, String> {
+    let permission_settings_available = macos_permission_settings_available(app).await;
+    let reason = if permission_settings_available { "permission-required".to_owned() } else { test_setup_gate(app)? };
+    let _lock = TEST_PUSH_STATE_LOCK.lock().map_err(|_| "Push test state is busy.".to_owned())?;
+    let state = read_test_push_state(app)?;
+    let received = state.receipt.as_ref().and_then(|receipt|
+        state.received.iter().find(|event| event.event_id == receipt.event_id));
+    Ok(TestPushStatus {
+        platform: platform().to_owned(),
+        available: reason == "ready", reason,
+        phase: crate::notification_test::phase(state.receipt.as_ref().map(|receipt| receipt.event_id.as_str()),
+            received.map(|event| event.event_id.as_str()), state.receipt.as_ref().map_or(0, |receipt| receipt.deliver_after), now()).to_owned(),
+        received_at: received.map(|event| event.received_at), receipt: state.receipt,
+        permission_settings_available,
+    })
+}
+pub async fn request_test_push(app: &AppHandle) -> Result<TestPushStatus, String> {
+    use std::sync::atomic::Ordering;
+    if TEST_PUSH_REQUEST_RUNNING.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+        return Err("A push test request is already running.".to_owned());
+    }
+    struct RequestGuard;
+    impl Drop for RequestGuard { fn drop(&mut self) { TEST_PUSH_REQUEST_RUNNING.store(false, Ordering::SeqCst); } }
+    let _request = RequestGuard;
+    let _registration = REGISTRATION_LOCK.lock().await;
+    let preflight = test_push_status(app).await?;
+    let mut gate = preflight.reason;
+    crate::diagnostics::record(app, "notifications.test-push-preflight", &[
+        ("phase", "preflight".to_owned()), ("reason", gate.clone())]);
+    if matches!(gate.as_str(), "provider-required" | "gateway-required") {
+        if let Err(error) = reconcile_gateway_locked(app, true).await {
+            crate::diagnostics::record(app, "notifications.test-push-resume-stopped", &[
+                ("phase", "resume".to_owned()), ("safeErrorCode", registration_error_code(&error).to_owned())]);
+            return Err(error);
+        }
+        gate = test_setup_gate(app)?;
+    }
+    if gate != "ready" {
+        crate::diagnostics::record(app, "notifications.test-push-gated", &[
+            ("phase", "gated".to_owned()), ("reason", gate.clone())]);
+        return Err(format!("Push test setup is incomplete: {gate}"));
+    }
+    if preflight.phase == "scheduled" {
+        return Err("A server push test is already awaiting receipt.".to_owned());
+    }
+    let installation = status(app)?.installation;
+    ensure_preference_current(app, &installation)?;
+    let auth = zeroize::Zeroizing::new(
+        crate::secure_store::load_notification_installation_auth(&installation.installation_id)?
+            .ok_or_else(|| "The notification installation credential is missing.".to_owned())?,
+    );
+    crate::diagnostics::record(app, "notifications.test-push-requested", &[("phase", "requesting".to_owned())]);
+    let result = desktop_http_client()?.post(format!("{}/api/v1/installations/test-push", gateway_origin()?))
+        .header(header::ACCEPT, "application/json")
+        .header("x-fast-wallet-installation-id", &installation.installation_id)
+        .header("x-fast-wallet-installation-auth", auth.as_str())
+        .json(&serde_json::json!({})).send().await;
+    let mut response = result.map_err(|_| "The server push test request could not be sent.".to_owned())?;
+    let response_status = response.status();
+    if response_status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        crate::diagnostics::record(app, "notifications.test-push-rejected", &[
+            ("phase", "rate-limited".to_owned()), ("httpStatus", "429".to_owned()),
+            ("safeErrorCode", "push-test-rate-limited".to_owned())]);
+        return Err("push-test-rate-limited".to_owned());
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|_| "The push test receipt could not be read.".to_owned())? {
+        if bytes.len() + chunk.len() > 8192 { return Err("The push test receipt exceeds its limit.".to_owned()); }
+        bytes.extend_from_slice(&chunk);
+    }
+    if response_status != reqwest::StatusCode::ACCEPTED {
+        crate::diagnostics::record(app, "notifications.test-push-rejected", &[("phase", "rejected".to_owned())]);
+        let code = serde_json::from_slice::<serde_json::Value>(&bytes).ok()
+            .and_then(|value| value.get("error").and_then(serde_json::Value::as_str).map(str::to_owned));
+        return Err(match code.as_deref() {
+            Some("self_test_worker_unsupported") => "push-test-worker-unsupported",
+            Some("self_test_requires_fast_wallet") => "push-test-fast-wallet-required",
+            Some("self_test_provider_required") => "push-test-provider-required",
+            Some("self_test_unavailable") => "push-test-unavailable",
+            _ => "The server did not accept the push test. Check Fast Wallet alerts and notification setup.",
+        }.to_owned());
+    }
+    let receipt: TestPushReceipt = serde_json::from_slice(&bytes).map_err(|_| "The server push test receipt is invalid.".to_owned())?;
+    if !crate::notification_test::valid_schedule(receipt.accepted, &receipt.event_id, receipt.scheduled_at, receipt.deliver_after, now()) {
+        return Err("The server push test receipt is invalid.".to_owned());
+    }
+    {
+        let _lock = TEST_PUSH_STATE_LOCK.lock().map_err(|_| "Push test state is busy.".to_owned())?;
+        let mut state = read_test_push_state(app)?;
+        state.receipt = Some(receipt.clone());
+        write_json(notification_path(app, TEST_PUSH_STATE_FILE)?, &state, "Push test receipt could not be saved.")?;
+    }
+    crate::diagnostics::record(app, "notifications.test-push-scheduled", &[
+        ("pushTestEventId", receipt.event_id), ("scheduledAt", receipt.scheduled_at.to_string()),
+        ("deliverAfter", receipt.deliver_after.to_string()), ("phase", "scheduled".to_owned())]);
+    test_push_status(app).await
+}
+
+fn registration_error_code(error: &str) -> &'static str {
+    if error == PREFERENCE_CHANGED { return "notification-preference-changed"; }
+    match error.split(':').next().unwrap_or_default() {
+        "apns-authorization-denied" => "apns-authorization-denied",
+        "apns-authorization-required" => "apns-authorization-required",
+        "apns-authorization-error" => "apns-authorization-error",
+        "apns-registration-error" => "apns-registration-error",
+        "apns-registration-timeout" => "apns-registration-timeout",
+        "apns-registration-failed" => "apns-registration-failed",
+        _ => "notification-registration-unavailable",
+    }
+}
+fn valid_received_event(event: &NotificationEvent) -> bool {
+    let mut opened = event.clone(); opened.opened = true;
+    crate::notification_test::opaque_event_id(&event.id) && valid_open_event(&opened)
+}
+fn record_notification_received(app: &AppHandle, event: &NotificationEvent) -> Result<(), String> {
+    if event.category != crate::notification_test::CATEGORY { return Ok(()); }
+    let _lock = TEST_PUSH_STATE_LOCK.lock().map_err(|_| "Push test state is busy.".to_owned())?;
+    let mut state = read_test_push_state(app)?;
+    if state.received.iter().any(|received| received.event_id == event.id) { return Ok(()); }
+    state.received.push(TestPushReceived { event_id: event.id.clone(), received_at: now() });
+    if state.received.len() > 32 { state.received.remove(0); }
+    write_json(notification_path(app, TEST_PUSH_STATE_FILE)?, &state, "Push test receipt could not be saved.")?;
+    crate::diagnostics::record(app, "notifications.test-push-received", &[
+        ("pushTestEventId", event.id.clone()), ("opened", event.opened.to_string()), ("phase", "received".to_owned())]);
+    Ok(())
+}
+pub fn consume_pending_events(app: &AppHandle) -> Result<Vec<NotificationEvent>, String> {
+    let mut events = Vec::new();
+    #[cfg(target_os = "macos")]
+    for _ in 0..64 {
+        let raw = unsafe { c_string(tex8_desktop_apns_take_received_event()) }.filter(|raw| !raw.trim().is_empty());
+        let Some(raw) = raw else { break; };
+        if let Ok(event) = serde_json::from_str::<NotificationEvent>(&raw) {
+            if valid_received_event(&event) { events.push(event); }
+        }
+    }
+    if let Some(opened) = consume_pending_open(app)? { events.push(opened); }
+    let directory = notification_path(app, "received-events")?;
+    if let Ok(files) = fs::read_dir(directory) {
+        for file in files.flatten().take(64) {
+            let path = file.path();
+            if path.extension().is_none_or(|extension| extension != "json") { continue; }
+            if let Ok(metadata) = fs::symlink_metadata(&path) {
+                if !metadata.is_file() || metadata.len() > 4096 { continue; }
+            } else { continue; }
+            if let Ok(bytes) = fs::read(&path) {
+                if let Ok(event) = serde_json::from_slice::<NotificationEvent>(&bytes) {
+                    if valid_received_event(&event) { events.push(event); }
+                }
+            }
+            let _ = fs::remove_file(path);
+        }
+    }
+    for event in &events { record_notification_received(app, event)?; }
+    Ok(events)
 }

@@ -18,11 +18,15 @@ const MAX_REQUEST_BYTES: usize = 256;
 
 pub trait DebugWakeSink: Send + Sync {
     fn send_test(&self, watch: &WatchRegistration) -> anyhow::Result<()>;
+    fn send_test_event(&self, watch: &WatchRegistration, event_id: &str) -> anyhow::Result<()>;
 }
 
 impl DebugWakeSink for GatewayWakeNotificationSink {
     fn send_test(&self, watch: &WatchRegistration) -> anyhow::Result<()> {
         GatewayWakeNotificationSink::send_test(self, watch)
+    }
+    fn send_test_event(&self, watch: &WatchRegistration, event_id: &str) -> anyhow::Result<()> {
+        GatewayWakeNotificationSink::send_test_with_event_id(self, watch, event_id)
     }
 }
 
@@ -34,9 +38,24 @@ struct DebugState {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum TestPushRequest {
+    Address(AddressTestRequest),
+    Assignment(AssignmentTestRequest),
+}
+
+#[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct TestPushRequest {
+struct AddressTestRequest {
     address: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct AssignmentTestRequest {
+    assignment_handle: String,
+    assignment_epoch: u64,
+    event_id: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -47,6 +66,8 @@ struct TestPushResponse {
     accepted_wakes: usize,
     failed_wakes: usize,
     signal: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    event_id: Option<String>,
 }
 
 pub fn router(store: Arc<dyn WatchStore>, sink: Arc<dyn DebugWakeSink>, token: [u8; 32]) -> Router {
@@ -79,37 +100,92 @@ async fn test_push(
     if !authorized(&headers, &state.token) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    let address = input.address.trim();
-    if !(90..=120).contains(&address.len())
-        || !address.bytes().all(|byte| byte.is_ascii_alphanumeric())
-    {
-        return StatusCode::BAD_REQUEST.into_response();
-    }
     let watches = match state.store.list() {
         Ok(watches) => watches,
         Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
     };
-    let matches = watches
-        .into_iter()
-        .filter(|watch| watch.address == address)
-        .collect::<Vec<_>>();
+    let (matches, event_id) = match input {
+        TestPushRequest::Address(input) => {
+            let address = input.address.trim();
+            if !(90..=120).contains(&address.len())
+                || !address.bytes().all(|byte| byte.is_ascii_alphanumeric())
+            {
+                return StatusCode::BAD_REQUEST.into_response();
+            }
+            (
+                watches
+                    .into_iter()
+                    .filter(|watch| watch.address == address)
+                    .collect::<Vec<_>>(),
+                None,
+            )
+        }
+        TestPushRequest::Assignment(input) => {
+            let lower_hex = |value: &str| {
+                value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+            };
+            if input.assignment_handle.len() != 64
+                || !lower_hex(&input.assignment_handle)
+                || input.assignment_epoch == 0
+                || input.event_id.len() != 68
+                || !input.event_id.starts_with("evt_")
+                || !lower_hex(&input.event_id[4..])
+            {
+                return StatusCode::BAD_REQUEST.into_response();
+            }
+            let identity = format!("fw1:{}", input.assignment_handle);
+            (
+                watches
+                    .into_iter()
+                    .filter(|watch| {
+                        watch.identity_id == identity
+                            && watch.worker_assignment_epoch == Some(input.assignment_epoch)
+                    })
+                    .collect::<Vec<_>>(),
+                Some(input.event_id),
+            )
+        }
+    };
     if matches.is_empty() {
         return StatusCode::NOT_FOUND.into_response();
     }
 
-    let mut accepted_wakes = 0;
-    for watch in &matches {
-        if state.sink.send_test(watch).is_ok() {
-            accepted_wakes += 1;
+    let matched_registrations = matches.len();
+    let sink = state.sink.clone();
+    // A Gateway callback performs blocking HTTP. It must not occupy the
+    // async listener/IO runtime while waiting for the signed wake response.
+    let accepted_wakes = match tokio::task::spawn_blocking({
+        let event_id = event_id.clone();
+        move || {
+            matches
+                .iter()
+                .filter(|watch| {
+                    match &event_id {
+                        Some(id) => sink.send_test_event(watch, id),
+                        None => sink.send_test(watch),
+                    }
+                    .is_ok()
+                })
+                .count()
         }
-    }
-    let failed_wakes = matches.len().saturating_sub(accepted_wakes);
+    })
+    .await
+    {
+        Ok(accepted) => accepted,
+        Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
+    };
+    let failed_wakes = matched_registrations.saturating_sub(accepted_wakes);
     eprintln!(
         "FAST_WALLET_DIAGNOSTICS service=fast-wallet-worker event=debug-test.complete matched={} accepted={} failed={}",
-        matches.len(),
+        matched_registrations,
         accepted_wakes,
         failed_wakes
     );
+    if let Some(id) = &event_id {
+        eprintln!("FAST_WALLET_DIAGNOSTICS service=fast-wallet-worker event=debug-test.correlated eventId={} accepted={} failed={}", id, accepted_wakes, failed_wakes);
+    }
     let status = if failed_wakes == 0 {
         StatusCode::ACCEPTED
     } else {
@@ -119,10 +195,11 @@ async fn test_push(
         status,
         Json(TestPushResponse {
             accepted: failed_wakes == 0,
-            matched_registrations: matches.len(),
+            matched_registrations,
             accepted_wakes,
             failed_wakes,
             signal: "test",
+            event_id,
         }),
     )
         .into_response()
@@ -161,6 +238,14 @@ mod tests {
 
     impl DebugWakeSink for RecordingSink {
         fn send_test(&self, _watch: &WatchRegistration) -> anyhow::Result<()> {
+            self.0.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+        fn send_test_event(
+            &self,
+            _watch: &WatchRegistration,
+            _event_id: &str,
+        ) -> anyhow::Result<()> {
             self.0.fetch_add(1, Ordering::Relaxed);
             Ok(())
         }
@@ -225,5 +310,44 @@ mod tests {
         let response = app.oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         assert_eq!(sink.0.load(Ordering::Relaxed), 0);
+    }
+    #[tokio::test]
+    async fn opaque_assignment_test_requires_exact_epoch_canonical_id_and_token() {
+        let handle = "44".repeat(32);
+        let event = format!("evt_{}", "55".repeat(32));
+        let store = Arc::new(InMemoryWatchStore::default());
+        store.upsert(watch(&format!("fw1:{handle}"))).unwrap();
+        let sink = Arc::new(RecordingSink(AtomicUsize::new(0)));
+        for (epoch, id, token, expected) in [
+            (1, event.clone(), true, StatusCode::ACCEPTED),
+            (2, event.clone(), true, StatusCode::NOT_FOUND),
+            (
+                1,
+                format!("evt_{}", "AA".repeat(32)),
+                true,
+                StatusCode::BAD_REQUEST,
+            ),
+            (0, event.clone(), true, StatusCode::BAD_REQUEST),
+            (1, event.clone(), false, StatusCode::UNAUTHORIZED),
+        ] {
+            let mut request = Request::builder()
+                .method("POST")
+                .uri(TEST_PUSH_PATH)
+                .header("content-type", "application/json");
+            if token {
+                request = request.header(DEBUG_TOKEN_HEADER, hex::encode(TOKEN));
+            }
+            let response = router(store.clone(), sink.clone(), TOKEN).oneshot(request.body(Body::from(
+                serde_json::json!({"assignmentHandle":handle,"assignmentEpoch":epoch,"eventId":id}).to_string())).unwrap()).await.unwrap();
+            assert_eq!(response.status(), expected);
+            if expected == StatusCode::ACCEPTED {
+                let bytes = axum::body::to_bytes(response.into_body(), 4096)
+                    .await
+                    .unwrap();
+                let response: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+                assert_eq!(response["eventId"], event);
+            }
+        }
+        assert_eq!(sink.0.load(Ordering::Relaxed), 1);
     }
 }

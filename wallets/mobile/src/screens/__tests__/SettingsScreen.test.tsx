@@ -6,7 +6,7 @@ import { LanguageProvider } from '../../i18n';
 import { AppSecurityProvider } from '../../services/AppSecurity';
 import { walletService } from '../../services/WalletService';
 import SettingsScreen from '../SettingsScreen';
-import NodeStatusScreen from '../NodeStatusScreen';
+import NodeStatusScreen, {liveRouteResult} from '../NodeStatusScreen';
 import mobileAppVersion from '../../../../../config/mobile-app-version.json';
 
 jest.mock('@react-native-async-storage/async-storage', () => {
@@ -133,6 +133,50 @@ describe('SettingsScreen', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+  });
+
+  it('replaces a stale Tor diagnostic error after the background route recovers', () => {
+    expect(
+      liveRouteResult(
+        {
+          phase: 'connected',
+          connected: true,
+          endpoint: 'node.example.onion:18089',
+          checkedAtMs: 123,
+          elapsedMs: 1514,
+        },
+        {
+          status: 'error',
+          endpoint: 'node.example.onion:18089',
+          error: 'Embedded Tor did not establish a circuit in time',
+        },
+        'node.example.onion:18089',
+      ),
+    ).toEqual({
+      status: 'connected',
+      endpoint: 'node.example.onion:18089',
+      elapsedMs: 1514,
+    });
+  });
+
+  it('does not apply live status from a different configured endpoint', () => {
+    const fallback = {
+      status: 'error' as const,
+      endpoint: 'selected.example.onion:18089',
+      error: 'Selected endpoint failed',
+    };
+    expect(
+      liveRouteResult(
+        {
+          phase: 'connected',
+          connected: true,
+          endpoint: 'other.example.onion:18089',
+          checkedAtMs: 123,
+        },
+        fallback,
+        'selected.example.onion:18089',
+      ),
+    ).toBe(fallback);
   });
 
   afterEach(async () => {

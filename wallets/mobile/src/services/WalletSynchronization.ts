@@ -1,15 +1,15 @@
 import type { WalletSnapshot } from './NativeMoneroWallet';
+import { ledgerBalanceIsVerified } from '../../../../packages/wallet-shared/src/walletSync';
 
 /**
- * Core can publish the final scan height one snapshot before it flips its
- * synchronized flag. Reaching the latest positive daemon height is the
- * stronger signal; a newer daemon height automatically makes this false
- * again until the wallet catches up.
+ * Reaching the chain tip does not prove that Core has finished its final
+ * checks. Require its explicit confirmation as well as the current height;
+ * a newer daemon target makes the wallet synchronize again.
  */
 export function walletSnapshotIsSynchronized(
   snapshot: WalletSnapshot | undefined,
 ): boolean {
-  if (!snapshot) {
+  if (!snapshot?.synchronized) {
     return false;
   }
   const targetHeight = Math.max(
@@ -39,6 +39,9 @@ export function walletIsSpendReady({
   ledgerSigningReadyHeight?: number;
 }): boolean {
   if (!walletSnapshotIsSynchronized(snapshot)) {
+    return false;
+  }
+  if (hardwareWallet && !ledgerBalanceIsVerified(snapshot, true)) {
     return false;
   }
   if (!hardwareWallet || !readOnlySession) {

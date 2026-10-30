@@ -4,6 +4,7 @@
 //! can enter only as a fixed-size HPKE envelope addressed to this exact Worker.
 
 pub mod debug;
+mod hosting;
 
 use anyhow::Context;
 use fast_wallet_protocol::{
@@ -91,6 +92,24 @@ pub struct OutboundRelayWorker {
 }
 
 pub trait RelayClient: Send + Sync {
+    fn pull_hosting_checks(
+        &self,
+        _descriptor: &WorkerDescriptor,
+        _auth: &WorkerRequestAuth,
+        _limit: usize,
+        _now: u64,
+    ) -> anyhow::Result<Option<Vec<fast_wallet_relay::hosting::HostingChallenge>>> {
+        Ok(None)
+    }
+    fn complete_hosting_check(
+        &self,
+        _descriptor: &WorkerDescriptor,
+        _response: fast_wallet_relay::hosting::HostingResponse,
+        _now: u64,
+    ) -> anyhow::Result<()> {
+        anyhow::bail!("Relay does not support hosting checks")
+    }
+
     fn pull(
         &self,
         descriptor: &WorkerDescriptor,
@@ -111,6 +130,28 @@ pub trait RelayClient: Send + Sync {
 }
 
 impl RelayClient for RelayMailbox {
+    fn pull_hosting_checks(
+        &self,
+        descriptor: &WorkerDescriptor,
+        auth: &WorkerRequestAuth,
+        limit: usize,
+        now: u64,
+    ) -> anyhow::Result<Option<Vec<fast_wallet_relay::hosting::HostingChallenge>>> {
+        Ok(Some(RelayMailbox::pull_hosting_checks(
+            self, descriptor, auth, limit, now,
+        )?))
+    }
+    fn complete_hosting_check(
+        &self,
+        descriptor: &WorkerDescriptor,
+        response: fast_wallet_relay::hosting::HostingResponse,
+        now: u64,
+    ) -> anyhow::Result<()> {
+        Ok(RelayMailbox::complete_hosting_check(
+            self, descriptor, response, now,
+        )?)
+    }
+
     fn pull(
         &self,
         descriptor: &WorkerDescriptor,
@@ -221,6 +262,23 @@ impl GatewayWakeNotificationSink {
         material.extend_from_slice(&counter.to_be_bytes());
         let event_id = format!("evt_{}", hex::encode(key_id(&material)));
         self.send_gateway_wake(watch, &event_id, "test", true, now)
+    }
+
+    /// Preserves the opaque ID allocated by the durable Gateway scheduler.
+    pub fn send_test_with_event_id(
+        &self,
+        watch: &WatchRegistration,
+        event_id: &str,
+    ) -> anyhow::Result<()> {
+        if event_id.len() != 68
+            || !event_id.starts_with("evt_")
+            || !event_id[4..]
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        {
+            anyhow::bail!("Worker test event identifier is invalid");
+        }
+        self.send_gateway_wake(watch, event_id, "test", true, unix_seconds())
     }
 
     fn send_gateway_wake(
@@ -434,6 +492,24 @@ impl CommunityDirectoryClient {
 }
 
 impl RelayClient for HttpRelayClient {
+    fn pull_hosting_checks(
+        &self,
+        descriptor: &WorkerDescriptor,
+        auth: &WorkerRequestAuth,
+        limit: usize,
+        _now: u64,
+    ) -> anyhow::Result<Option<Vec<fast_wallet_relay::hosting::HostingChallenge>>> {
+        self.http_pull_hosting_checks(descriptor, auth, limit)
+    }
+    fn complete_hosting_check(
+        &self,
+        descriptor: &WorkerDescriptor,
+        response: fast_wallet_relay::hosting::HostingResponse,
+        _now: u64,
+    ) -> anyhow::Result<()> {
+        self.http_complete_hosting_check(descriptor, response)
+    }
+
     fn pull(
         &self,
         descriptor: &WorkerDescriptor,
@@ -552,6 +628,12 @@ impl OutboundRelayWorker {
         now: u64,
     ) -> anyhow::Result<RelayPollResult> {
         let include_envelopes = self.acceptor.admission_available();
+        // Optional control requests never interrupt normal scan enrollment.
+        if self.process_hosting_checks(relay, now).is_err() {
+            eprintln!(
+                "FAST_WALLET_DIAGNOSTICS service=fast-wallet-worker event=hosting-check.failed"
+            );
+        }
         let pull_body = pull_auth_body(
             &self.descriptor.worker_root_id(),
             requested_limit,
@@ -1332,3 +1414,6 @@ mod tests {
             .is_empty());
     }
 }
+
+#[cfg(test)]
+mod self_test_integration;

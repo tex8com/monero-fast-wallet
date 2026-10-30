@@ -1,12 +1,13 @@
 # Monero news service
 
-`monero-news` is the current TEX8 public-content backend. It fetches and caches
-the public [official Monero blog](https://www.getmonero.org/blog/) and
-normalised XMR/USD market data, then exposes a deliberately small,
-wallet-independent client contract:
+`monero-news` is the TEX8 public-content backend. It serves a reviewed catalog
+of Monero news and explanatory Monero Fast Wallet/Node articles, and caches
+normalised XMR/USD market data behind a small wallet-independent contract:
 
 - `GET /healthz`
 - `GET /v1/news?limit=10&category=network|wallet|ecosystem`
+- `GET /articles`
+- `GET /articles/{slug}`
 - `GET /v1/market/quote`
 - `GET /v1/market/chart?timeframe=24H|7D|1M|1Y|Max`
 - `GET /v1/ads/catalog?country=US&placement=news|community|catalog`
@@ -24,11 +25,10 @@ integrations. The client keeps the last valid response locally for offline
 startup and shows an explicit unavailable state if neither backend nor cache is
 available.
 
-The news response is a small catalog of at most ten entries. Every entry has a
-title, summary, publication date, category, optional official article URL, and
-an embedded 960 × 540 JPEG `imageDataUrl`. Embedding the normalized image keeps
-the clients from contacting article hosts directly. If an official title image
-cannot be loaded, the server generates a deterministic Monero-coloured fallback.
+The news response is a reviewed catalog of at most ten entries. Every entry has
+a title, summary, publication date, category, TEX8 article URL, and immutable
+WebP cover on the TEX8 CDN. The HTML pages contain the full article and link to
+the official primary source where applicable.
 
 The service has no wallet, account, identifier, address, or notification data.
 Future public product-catalog and common query-embedding snapshots use the same

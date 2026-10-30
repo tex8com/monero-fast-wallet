@@ -201,20 +201,20 @@ if [[ -n "${TMPDIR:-}" ]]; then
   # when that directory has not been created yet.
   mkdir -p "${TMPDIR}"
 fi
-RUSTFLAGS='-C link-arg=-Wl,-install_name,@rpath/libmfw_product_core.dylib' \
-  cargo build --release --manifest-path "${product_core_root}/Cargo.toml" \
-    --target-dir "${product_core_target_dir}"
+cargo build --release --manifest-path "${product_core_root}/Cargo.toml" \
+  --target-dir "${product_core_target_dir}"
 if [[ ! -f "${product_core_library}" ]]; then
   echo "Product-Core runtime library was not produced: ${product_core_library}" >&2
   return 65 2>/dev/null || exit 65
 fi
-RUSTFLAGS='-C link-arg=-Wl,-install_name,@rpath/libfast_wallet_protocol.dylib' \
-  cargo build --release --locked --manifest-path "${fast_wallet_protocol_root}/Cargo.toml" \
+install_name_tool -id '@rpath/libmfw_product_core.dylib' "${product_core_library}"
+cargo build --release --locked --manifest-path "${fast_wallet_protocol_root}/Cargo.toml" \
   --target-dir "${fast_wallet_protocol_target_dir}"
 if [[ ! -f "${fast_wallet_protocol_library}" ]]; then
   echo "Fast Wallet protocol runtime library was not produced: ${fast_wallet_protocol_library}" >&2
   return 65 2>/dev/null || exit 65
 fi
+install_name_tool -id '@rpath/libfast_wallet_protocol.dylib' "${fast_wallet_protocol_library}"
 "${repo_root}/native/monero-bridge/scripts/build-desktop-fast-crypto.sh" \
   "${fast_crypto_dir}" \
   "${fast_crypto_target_dir}"

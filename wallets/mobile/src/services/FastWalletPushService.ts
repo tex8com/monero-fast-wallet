@@ -12,6 +12,8 @@ import {
   storeProtectedMetadata,
 } from './ProtectedMetadataStorage';
 import { logWalletEvent } from './WalletLogger';
+import { loadFastReceiveIdentities } from './FastReceiveRegistry';
+import type { FastWalletTestPushReceipt } from './NativeMoneroWallet';
 import { requireNativeMoneroWallet } from './NativeMoneroWallet';
 import { withSystemUiInterruption } from './SystemUiInterruption';
 import { v1ReleaseFeatures } from '../../../../packages/wallet-shared/src/v1ReleaseFeatures';
@@ -31,6 +33,7 @@ const EVENT_TYPES = new Set([
 ]);
 const SUBSCRIPTION_ID_KEY = 'monero-fast-wallet.push.subscription-id.v1';
 const REGISTRATION_STATE_KEY = 'monero-fast-wallet.push.registration-state.v1';
+const TEST_RECEIPT_KEY = 'monero-fast-wallet.push.test-receipt.v1';
 const LAST_EVENT_KEY = 'monero-fast-wallet.push.last-event.v2';
 const LAST_EVENT_ID_KEY = 'monero-fast-wallet.push.last-event-id.v2';
 const OPAQUE_EVENT_ID = /^evt_[0-9a-f]{64}$/;
@@ -60,11 +63,17 @@ const FORBIDDEN_EVENT_FIELDS = [
   'walletAddress',
 ] as const;
 
+let lastObservedEvent: FastWalletPushEvent | undefined;
+let testPushInFlight: Promise<FastWalletTestPushReceipt> | undefined;
 let backgroundHandlerInstalled = false;
 let lifecycleStarted = false;
 let registrationInFlight: Promise<void> | undefined;
 let pendingRegistrationToken: string | undefined;
 let registrationRetryTimer: ReturnType<typeof setTimeout> | undefined;
+let registrationGeneration = 0;
+let optOutRequested = false;
+let disableInFlight: Promise<void> | undefined;
+const enableAttempts = new Set<Promise<FastWalletPushRegistration>>();
 const listeners = new Set<(event: FastWalletPushEvent) => void>();
 
 const REGISTRATION_REFRESH_MS = 7 * 24 * 60 * 60 * 1_000;
@@ -314,11 +323,28 @@ async function appIntegrityToken(): Promise<string> {
   return result.token;
 }
 
-async function registerToken(token: string): Promise<string> {
+function registrationIsCurrent(generation: number): boolean {
+  return generation === registrationGeneration && !optOutRequested;
+}
+
+function requireCurrentRegistration(generation: number): void {
+  if (!registrationIsCurrent(generation)) {
+    throw new Error(
+      'Push registration was superseded by notification settings',
+    );
+  }
+}
+
+async function registerToken(
+  token: string,
+  generation: number,
+): Promise<string> {
+  requireCurrentRegistration(generation);
   const startedAt = Date.now();
   logWalletEvent('FastWalletPush', 'registration.appIntegrity.start');
   try {
     const appCheckToken = await appIntegrityToken();
+    requireCurrentRegistration(generation);
     logWalletEvent('FastWalletPush', 'registration.appIntegrity.success', {
       elapsedMs: Date.now() - startedAt,
       hasIntegrityToken: true,
@@ -332,6 +358,7 @@ async function registerToken(token: string): Promise<string> {
         token,
         appCheckToken,
       );
+    requireCurrentRegistration(generation);
     logWalletEvent('FastWalletPush', 'registration.gateway.success', {
       elapsedMs: Date.now() - nativeStartedAt,
       generation: registration.generation,
@@ -342,6 +369,7 @@ async function registerToken(token: string): Promise<string> {
       SUBSCRIPTION_ID_KEY,
       registration.installationId,
     );
+    requireCurrentRegistration(generation);
     await storeRegistrationState({
       desired: 'enabled',
       status: 'active',
@@ -351,6 +379,7 @@ async function registerToken(token: string): Promise<string> {
       generation: registration.generation,
       leaseExpiresAt: registration.leaseExpiresAt,
     });
+    requireCurrentRegistration(generation);
     logWalletEvent('FastWalletPush', 'registration.persist.success', {
       elapsedMs: Date.now() - persistStartedAt,
       success: true,
@@ -366,6 +395,21 @@ async function registerToken(token: string): Promise<string> {
 }
 
 async function enableFastWalletNotifications(): Promise<FastWalletPushRegistration> {
+  // An explicit re-enable starts only after a preceding disable has finished.
+  if (disableInFlight) await disableInFlight;
+  optOutRequested = false;
+  const attempt = performNotificationEnable(registrationGeneration);
+  enableAttempts.add(attempt);
+  try {
+    return await attempt;
+  } finally {
+    enableAttempts.delete(attempt);
+  }
+}
+
+async function performNotificationEnable(
+  generation: number,
+): Promise<FastWalletPushRegistration> {
   const startedAt = Date.now();
   logWalletEvent('FastWalletPush', 'registration.start', {
     platform: Platform.OS,
@@ -383,7 +427,9 @@ async function enableFastWalletNotifications(): Promise<FastWalletPushRegistrati
   let subscriptionId: string;
   let providerTokenLength = 0;
   try {
+    requireCurrentRegistration(generation);
     permissionStatus = await requestPermission(instance);
+    requireCurrentRegistration(generation);
     logWalletEvent('FastWalletPush', 'registration.permission.complete', {
       permissionGranted:
         permissionStatus === 'authorized' || permissionStatus === 'granted',
@@ -397,8 +443,9 @@ async function enableFastWalletNotifications(): Promise<FastWalletPushRegistrati
     logWalletEvent('FastWalletPush', 'registration.providerToken.obtained', {
       providerTokenLength,
     });
-    subscriptionId = await registerToken(token);
+    subscriptionId = await registerToken(token, generation);
   } catch (error) {
+    if (!registrationIsCurrent(generation)) throw error;
     const nextRetryAt = Date.now() + retryDelayMs(1);
     await storeRegistrationState({
       desired: 'enabled',
@@ -407,6 +454,7 @@ async function enableFastWalletNotifications(): Promise<FastWalletPushRegistrati
       nextRetryAt,
       lastError: error instanceof Error ? error.message : String(error),
     });
+    if (!registrationIsCurrent(generation)) throw error;
     scheduleRegistrationRetry(nextRetryAt);
     logWalletEvent('FastWalletPush', 'registration.error', {
       elapsedMs: Date.now() - startedAt,
@@ -450,9 +498,11 @@ export async function requestMobilePushProviderToken(): Promise<MobilePushProvid
 }
 
 async function performRegistrationRefresh(
-  token?: string,
-  forceRefresh = false,
+  token: string | undefined,
+  forceRefresh: boolean,
+  generation: number,
 ): Promise<void> {
+  requireCurrentRegistration(generation);
   const startedAt = Date.now();
   logWalletEvent('FastWalletPush', 'registration.refresh.start', {
     hasProviderToken: Boolean(token),
@@ -472,6 +522,7 @@ async function performRegistrationRefresh(
   }
   const state = await loadRegistrationState();
   const subscriptionId = await getStoredSubscriptionId();
+  requireCurrentRegistration(generation);
   if (state?.desired === 'disabled') {
     return;
   }
@@ -509,7 +560,7 @@ async function performRegistrationRefresh(
   await instance.registerDeviceForRemoteMessages?.();
   const nextToken = token || (await instance.getToken());
   if (nextToken) {
-    await registerToken(nextToken);
+    await registerToken(nextToken, generation);
     logWalletEvent('FastWalletPush', 'registration.refresh.success', {
       elapsedMs: Date.now() - startedAt,
       success: true,
@@ -521,6 +572,7 @@ async function refreshRegistrationQuietly(
   token?: string,
   forceRefresh = false,
 ): Promise<void> {
+  if (optOutRequested) return;
   if (registrationInFlight) {
     // Token rotations may race an ordinary lease refresh. Keep only the most
     // recent provider token and drain it before releasing the single-flight
@@ -529,17 +581,23 @@ async function refreshRegistrationQuietly(
     await registrationInFlight;
     return;
   }
+  const generation = registrationGeneration;
   registrationInFlight = (async () => {
     let nextToken = token;
     do {
-      await performRegistrationRefresh(nextToken, forceRefresh);
+      await performRegistrationRefresh(nextToken, forceRefresh, generation);
       nextToken = pendingRegistrationToken;
       pendingRegistrationToken = undefined;
     } while (nextToken);
   })()
     .catch(async error => {
+      if (!registrationIsCurrent(generation)) return;
       const previous = await loadRegistrationState().catch(() => undefined);
-      if (previous?.desired === 'disabled') return;
+      if (
+        !registrationIsCurrent(generation) ||
+        previous?.desired === 'disabled'
+      )
+        return;
       const retryCount = Math.min((previous?.retryCount ?? 0) + 1, 32);
       const nextRetryAt = Date.now() + retryDelayMs(retryCount);
       await storeRegistrationState({
@@ -550,6 +608,7 @@ async function refreshRegistrationQuietly(
         lastSuccessAt: previous?.lastSuccessAt,
         lastError: error instanceof Error ? error.message : String(error),
       }).catch(() => undefined);
+      if (!registrationIsCurrent(generation)) return;
       scheduleRegistrationRetry(nextRetryAt);
       logWalletEvent('FastWalletPush', 'registration.refreshError', {
         error: error instanceof Error ? error.message : String(error),
@@ -565,20 +624,38 @@ async function refreshRegistrationQuietly(
 }
 
 async function disableFastWalletNotifications(): Promise<void> {
+  if (disableInFlight) return disableInFlight;
+  // Invalidate every older attempt immediately, including one still waiting
+  // for permission or a native Onion request. Its success/error must not
+  // restore enabled metadata or arm another retry after this user action.
+  optOutRequested = true;
+  registrationGeneration += 1;
+  pendingRegistrationToken = undefined;
   if (registrationRetryTimer) {
     clearTimeout(registrationRetryTimer);
     registrationRetryTimer = undefined;
   }
-  await requireNativeMoneroWallet().disableFastWalletDelivery();
-  await deleteProtectedMetadata(SUBSCRIPTION_ID_KEY);
-  await storeRegistrationState({
-    desired: 'disabled',
-    status: 'disabled',
-    retryCount: 0,
+  const attempts: Promise<unknown>[] = [...enableAttempts];
+  if (registrationInFlight) attempts.push(registrationInFlight);
+  const disabling = (async () => {
+    // Protected metadata writes may already be in progress. Finish them
+    // before persisting the authoritative disabled state, never after it.
+    await Promise.allSettled(attempts);
+    await requireNativeMoneroWallet().disableFastWalletDelivery();
+    await deleteProtectedMetadata(SUBSCRIPTION_ID_KEY);
+    await storeRegistrationState({
+      desired: 'disabled',
+      status: 'disabled',
+      retryCount: 0,
+    });
+    const instance = messagingInstance();
+    await instance?.setAutoInitEnabled?.(false);
+    await instance?.deleteToken?.();
+  })().finally(() => {
+    if (disableInFlight === disabling) disableInFlight = undefined;
   });
-  const instance = messagingInstance();
-  await instance?.setAutoInitEnabled?.(false);
-  await instance?.deleteToken?.();
+  disableInFlight = disabling;
+  return disabling;
 }
 
 export function parseFastWalletPushEvent(
@@ -608,9 +685,20 @@ export function parseFastWalletPushEvent(
   const vanity = data.type === VANITY_EVENT_TYPE;
   const claim = data.type === CLAIM_EVENT_TYPE;
   if (claim) {
-    if (data.orderId !== undefined || typeof data.jobId !== 'string' || !/^[0-9a-f]{48}$/.test(data.jobId)
-        || data.deepLink !== `tex8monero://mfw-claim/${data.jobId}`) return undefined;
-    return {type: CLAIM_EVENT_TYPE, contractVersion: EVENT_CONTRACT, eventId: data.eventId, jobId: data.jobId, deepLink: data.deepLink};
+    if (
+      data.orderId !== undefined ||
+      typeof data.jobId !== 'string' ||
+      !/^[0-9a-f]{48}$/.test(data.jobId) ||
+      data.deepLink !== `tex8monero://mfw-claim/${data.jobId}`
+    )
+      return undefined;
+    return {
+      type: CLAIM_EVENT_TYPE,
+      contractVersion: EVENT_CONTRACT,
+      eventId: data.eventId,
+      jobId: data.jobId,
+      deepLink: data.deepLink,
+    };
   }
   if (data.jobId !== undefined) return undefined;
   if (vanity && !v1ReleaseFeatures.vanityAddress) {
@@ -665,7 +753,9 @@ async function showAndroidForegroundNotification(
 
   try {
     await notifier.show(title, body, event.eventId);
-    logWalletEvent('FastWalletPush', 'foregroundNotification.shown');
+    logWalletEvent('FastWalletPush', 'foregroundNotification.shown', {
+      eventId: event.eventId,
+    });
   } catch (error) {
     logWalletEvent('FastWalletPush', 'foregroundNotification.error', {
       error: error instanceof Error ? error.message : String(error),
@@ -681,11 +771,27 @@ async function handleRemoteMessage(
   if (!event) {
     return;
   }
+  // Retain only the validated opaque hint while protected storage is locked.
+  // WalletState replays it after the existing app-wide unlock boundary.
+  lastObservedEvent = event;
+  logWalletEvent(
+    'FastWalletPush',
+    options.opened
+      ? 'remoteMessage.opened'
+      : options.foreground
+      ? 'remoteMessage.foreground'
+      : 'remoteMessage.background',
+    { eventId: event.eventId },
+  );
   const previousId = await loadProtectedMetadata(LAST_EVENT_ID_KEY).catch(
     () => null,
   );
   if (previousId === event.eventId) {
-    if (options.opened && (event.type === VANITY_EVENT_TYPE || event.type === CLAIM_EVENT_TYPE) && event.deepLink) {
+    if (
+      options.opened &&
+      (event.type === VANITY_EVENT_TYPE || event.type === CLAIM_EVENT_TYPE) &&
+      event.deepLink
+    ) {
       await Linking.openURL(event.deepLink).catch(() => undefined);
     }
     return;
@@ -698,7 +804,11 @@ async function handleRemoteMessage(
   if (options.foreground) {
     await showAndroidForegroundNotification(message, event);
   }
-  if (options.opened && (event.type === VANITY_EVENT_TYPE || event.type === CLAIM_EVENT_TYPE) && event.deepLink) {
+  if (
+    options.opened &&
+    (event.type === VANITY_EVENT_TYPE || event.type === CLAIM_EVENT_TYPE) &&
+    event.deepLink
+  ) {
     await Linking.openURL(event.deepLink).catch(() => undefined);
   }
   logWalletEvent(
@@ -706,29 +816,109 @@ async function handleRemoteMessage(
     event.type === TEST_EVENT_TYPE
       ? 'testSignal.received'
       : 'incomingSignal.received',
+    { eventId: event.eventId },
   );
 }
 
-async function sendTestNotification(): Promise<FastWalletPushRegistration> {
-  // A test push is also the first-run transport check.  It must not assume
-  // that an earlier Fast Wallet enrollment happened: otherwise a fresh app
-  // installation always reaches the Gateway without a provider registration
-  // and receives the opaque, but unhelpful, HTTP 409 response.
-  //
-  // This is an explicit user action, so it is the right moment to request
-  // notification permission, obtain the FCM token, verify App Check and
-  // register the installation before asking the Gateway to deliver the test.
-  // Neither token is persisted in JavaScript or emitted to diagnostics.
-  const startedAt = Date.now();
-  logWalletEvent('FastWalletPush', 'testPush.registration.start');
-  const registration = await enableFastWalletNotifications();
-  logWalletEvent('FastWalletPush', 'testPush.registration.success', {
-    elapsedMs: Date.now() - startedAt,
-    success: true,
-  });
-  await requireNativeMoneroWallet().sendFastWalletTestPush();
-  logWalletEvent('FastWalletPush', 'testPush.accepted');
-  return registration;
+export function parseTestPushReceipt(
+  value: unknown,
+): FastWalletTestPushReceipt {
+  const receipt = value as Partial<FastWalletTestPushReceipt> | undefined;
+  if (
+    !receipt ||
+    receipt.accepted !== true ||
+    typeof receipt.eventId !== 'string' ||
+    !OPAQUE_EVENT_ID.test(receipt.eventId) ||
+    !Number.isSafeInteger(receipt.scheduledAt) ||
+    (receipt.scheduledAt ?? 0) <= 0 ||
+    !Number.isSafeInteger(receipt.deliverAfter) ||
+    receipt.deliverAfter! - receipt.scheduledAt! !== 10
+  ) {
+    throw new Error('Invalid scheduled test notification receipt');
+  }
+  return receipt as FastWalletTestPushReceipt;
+}
+
+async function getLastScheduledTestPush(): Promise<
+  FastWalletTestPushReceipt | undefined
+> {
+  const raw = await loadProtectedMetadata(TEST_RECEIPT_KEY);
+  if (!raw) return undefined;
+  try {
+    return parseTestPushReceipt(JSON.parse(raw));
+  } catch {
+    return undefined;
+  }
+}
+
+async function testNotificationReady(): Promise<boolean> {
+  if (optOutRequested || disableInFlight) return false;
+  const [state, subscriptionId, identities, permission] = await Promise.all([
+    loadRegistrationState(),
+    getStoredSubscriptionId(),
+    loadFastReceiveIdentities(),
+    getNotificationAuthorizationStatus(),
+  ]);
+  const now = Math.floor(Date.now() / 1000);
+  return (
+    !optOutRequested &&
+    !disableInFlight &&
+    permission === 'authorized' &&
+    Boolean(subscriptionId) &&
+    state?.desired === 'enabled' &&
+    state.status === 'active' &&
+    (state.leaseExpiresAt ?? 0) > now &&
+    identities.some(
+      identity =>
+        identity.notificationsEnabled === true &&
+        identity.workerReceiptVerified === true &&
+        Boolean(identity.assignmentHandle) &&
+        (identity.assignmentExpiresAt ?? 0) > now,
+    )
+  );
+}
+
+async function sendTestNotification(): Promise<FastWalletTestPushReceipt> {
+  if (testPushInFlight) return testPushInFlight;
+  const generation = registrationGeneration;
+  const request = (async () => {
+    if (!(await testNotificationReady())) {
+      throw new Error(
+        'Enable payment alerts for a backed-up Fast Wallet in Wallets and allow notifications before testing.',
+      );
+    }
+    requireCurrentRegistration(generation);
+    logWalletEvent('FastWalletPush', 'testPush.request.start');
+    const receipt = parseTestPushReceipt(
+      await requireNativeMoneroWallet().sendFastWalletTestPush(),
+    );
+    requireCurrentRegistration(generation);
+    logWalletEvent('FastWalletPush', 'testPush.scheduled', {
+      eventId: receipt.eventId,
+      scheduledAt: receipt.scheduledAt,
+      deliverAfter: receipt.deliverAfter,
+    });
+    // The server receipt is authoritative even if the owner backgrounds and
+    // locks the app before optional local receipt persistence completes.
+    storeProtectedMetadata(TEST_RECEIPT_KEY, JSON.stringify(receipt)).catch(
+      error => {
+        logWalletEvent('FastWalletPush', 'testPush.persist.error', {
+          eventId: receipt.eventId,
+          error,
+        });
+      },
+    );
+    return receipt;
+  })()
+    .catch(error => {
+      logWalletEvent('FastWalletPush', 'testPush.request.error', { error });
+      throw error;
+    })
+    .finally(() => {
+      if (testPushInFlight === request) testPushInFlight = undefined;
+    });
+  testPushInFlight = request;
+  return request;
 }
 
 function installBackgroundHandler(): void {
@@ -799,6 +989,7 @@ function subscribe(listener: (event: FastWalletPushEvent) => void): () => void {
 }
 
 async function getLastEvent(): Promise<FastWalletPushEvent | undefined> {
+  if (lastObservedEvent) return lastObservedEvent;
   const raw = await loadProtectedMetadata(LAST_EVENT_KEY);
   if (!raw) {
     return undefined;
@@ -819,6 +1010,8 @@ export const FastWalletPushService = {
   installBackgroundHandler,
   refreshRegistrationQuietly,
   sendTestNotification,
+  testNotificationReady,
+  getLastScheduledTestPush,
   startLifecycle,
   subscribe,
 };

@@ -264,6 +264,13 @@ export type FastReceiveIdentity = {
   scannerStatus: string;
 };
 
+export type FastWalletTestPushReceipt = {
+  accepted: boolean;
+  eventId: string;
+  scheduledAt: number;
+  deliverAfter: number;
+};
+
 export type FastWalletProviderRegistration = {
   installationId: string;
   provider: string;
@@ -590,7 +597,7 @@ export interface Spec extends TurboModule {
    * Requests a generic notification only for this authenticated installation.
    * It accepts no wallet, transaction, key, or notification text input.
    */
-  sendFastWalletTestPush(): Promise<void>;
+  sendFastWalletTestPush(): Promise<FastWalletTestPushReceipt>;
 
   loadOfficialFastWalletWorkerDescriptor(
     network: string,
@@ -625,11 +632,17 @@ export interface Spec extends TurboModule {
     network: string,
     assignmentExpiresAt: number,
     now: number,
+    forceNewAssignment: boolean,
   ): Promise<FastWalletAssignment>;
 
+  checkFastWalletHosting(identityId: string, workerDescriptorHex: string, network: string, now: number): Promise<string>;
+
   submitFastWalletWatch(
+    identityId: string,
     workerDescriptorHex: string,
     network: string,
+    assignmentHandleHex: string,
+    assignmentEpoch: number,
     now: number,
     envelopeHex: string,
   ): Promise<string>;

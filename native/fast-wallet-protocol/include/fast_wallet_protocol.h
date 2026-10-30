@@ -84,6 +84,15 @@ int32_t tex8_fast_wallet_protocol_verify_worker_receipt_v1(
     const uint8_t *receipt,
     size_t receipt_len);
 
+/* Fresh hosting proof; hosted must be 0 or 1. Handle and nonce are exactly
+ * 32 bytes. The caller additionally binds checked_at to its attempt start. */
+int32_t tex8_fast_wallet_protocol_verify_hosting_status_v1(
+    const uint8_t *descriptor, size_t descriptor_len,
+    uint8_t expected_network, uint64_t now,
+    const uint8_t assignment_handle[32], uint64_t assignment_epoch,
+    const uint8_t nonce[32], uint8_t hosted, uint64_t checked_at,
+    const uint8_t *proof, size_t proof_len);
+
 int32_t tex8_fast_wallet_protocol_seal_watch_v1(
     const uint8_t *descriptor,
     size_t descriptor_len,

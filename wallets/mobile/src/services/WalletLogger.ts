@@ -7,6 +7,11 @@ type DiagnosticFields = Record<string, unknown>;
 
 const SAFE_FIELDS = new Set([
   'available',
+  'balancePositive',
+  'displayedBalancePositive',
+  'workingBalancePositive',
+  'snapshotRevision',
+  'assignmentEpoch',
   'biometryType',
   'chainHeight',
   'checkedCount',
@@ -19,6 +24,8 @@ const SAFE_FIELDS = new Set([
   'downloadedHeight',
   'downloadStartHeight',
   'elapsedMs',
+  'scheduledAt',
+  'deliverAfter',
   'enrolled',
   'failureCode',
   'failedAttempts',
@@ -26,6 +33,7 @@ const SAFE_FIELDS = new Set([
   'fastWalletEnabled',
   'fullSpendOutputScan',
   'generation',
+  'lagBlocks',
   'hostedCount',
   'httpStatus',
   'initialSetup',
@@ -73,6 +81,12 @@ const SAFE_FIELDS = new Set([
   'status',
   'state',
   'stateUpdateDurationMs',
+  'scanPackAvailable',
+  'scanPackCanonicalHeight',
+  'scanPackGeneration',
+  'scanPackLagBlocks',
+  'scanPackManifestHeight',
+  'scanPackStatusAgeSeconds',
   'sessionGeneration',
   'spentStatusBlockchainOutputCount',
   'spentStatusPoolOutputCount',
@@ -89,6 +103,7 @@ const SAFE_FIELDS = new Set([
   'txCount',
   'verificationDurationMs',
   'verifiedOutputCount',
+  'workerReceiptVerified',
   'viewHeight',
   'walletHeight',
   'useSsl',
@@ -180,6 +195,7 @@ const SAFE_STRING_VALUES: Readonly<Record<string, ReadonlySet<string>>> = {
   ]),
   platform: new Set(['android', 'ios', 'linux', 'macos', 'unknown', 'windows']),
   status: new Set([
+    'active',
     'error',
     'failed',
     'ok',
@@ -355,12 +371,16 @@ function sanitizeFields(fields: DiagnosticFields) {
       .filter(([key, value]) => isAllowedField(key, value))
       .map(([key, value]) => [
         key,
-        typeof value === 'string' ? safeToken(value) : value,
+        typeof value === 'string' && key !== 'eventId'
+          ? safeToken(value)
+          : value,
       ]),
   );
 }
 
 function isAllowedField(key: string, value: unknown) {
+  if (key === 'eventId')
+    return typeof value === 'string' && /^evt_[0-9a-f]{64}$/.test(value);
   if (SAFE_FIELDS.has(key)) {
     if (typeof value === 'boolean') {
       return true;

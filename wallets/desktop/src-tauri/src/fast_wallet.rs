@@ -3,12 +3,16 @@ use std::{
     fs,
     io::Write,
     path::PathBuf,
+    sync::Mutex,
     time::{SystemTime, UNIX_EPOCH},
 };
 use tauri::{AppHandle, Manager};
 
+mod slot;
+
 const REGISTRY_FILE: &str = "fast-wallet-registry.json";
 const REGISTRY_VERSION: u8 = 1;
+static REGISTRY_WRITER: Mutex<()> = Mutex::new(());
 pub const INDEPENDENT_SOFTWARE_ID_PREFIX: &str = "fast-receive-v2-";
 const LEGACY_SOFTWARE_ID_PREFIX: &str = "fast-receive-";
 const LEGACY_DISABLED_MESSAGE: &str =
@@ -49,6 +53,8 @@ pub struct FastWalletRecord {
     pub watch_message_id: Option<String>,
     #[serde(default)]
     pub worker_receipt_verified: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hosting_status: Option<crate::fast_wallet_hosting::HostingStatus>,
     pub created_at: u64,
     pub updated_at: u64,
 }
@@ -74,15 +80,18 @@ pub fn list(app: &AppHandle) -> Result<Vec<FastWalletRecord>, String> {
 }
 
 pub fn derivation_index(app: &AppHandle) -> Result<u64, String> {
-    Ok(load(app)?
-        .wallets
-        .iter()
-        .map(|record| record.derivation_index)
-        .max()
-        .map_or(0, |index| index.saturating_add(1)))
+    slot::next_derivation_index(
+        load(app)?
+            .wallets
+            .iter()
+            .map(|record| record.derivation_index),
+    )
 }
 
 pub fn insert(app: &AppHandle, record: FastWalletRecord) -> Result<FastWalletRecord, String> {
+    let _writer = REGISTRY_WRITER
+        .lock()
+        .map_err(|_| "The Fast Wallet list is busy.".to_owned())?;
     let mut registry = load(app)?;
     if registry
         .wallets
@@ -98,6 +107,9 @@ pub fn insert(app: &AppHandle, record: FastWalletRecord) -> Result<FastWalletRec
 }
 
 pub fn update(app: &AppHandle, mut record: FastWalletRecord) -> Result<FastWalletRecord, String> {
+    let _writer = REGISTRY_WRITER
+        .lock()
+        .map_err(|_| "The Fast Wallet list is busy.".to_owned())?;
     let mut registry = load(app)?;
     let index = registry
         .wallets
@@ -105,6 +117,16 @@ pub fn update(app: &AppHandle, mut record: FastWalletRecord) -> Result<FastWalle
         .position(|existing| existing.id == record.id)
         .ok_or_else(|| "Fast Wallet was not found on this device.".to_owned())?;
     record.created_at = registry.wallets[index].created_at;
+    let previous = &registry.wallets[index];
+    if record.assignment_handle != previous.assignment_handle
+        || record.assignment_epoch != previous.assignment_epoch
+        || record.watch_message_id != previous.watch_message_id
+    {
+        record.hosting_status = Some(crate::fast_wallet_hosting::HostingStatus::unknown(
+            now(),
+            "hosting_check_required",
+        ));
+    }
     record.updated_at = now();
     let record = normalize_record(record)?;
     registry.wallets[index] = record.clone();
@@ -130,6 +152,9 @@ pub fn get(app: &AppHandle, identity_id: &str) -> Result<FastWalletRecord, Strin
 }
 
 pub fn remove(app: &AppHandle, identity_id: &str) -> Result<FastWalletRecord, String> {
+    let _writer = REGISTRY_WRITER
+        .lock()
+        .map_err(|_| "The Fast Wallet list is busy.".to_owned())?;
     validate_id(identity_id)?;
     let mut registry = load(app)?;
     let index = registry
@@ -218,6 +243,7 @@ pub fn new_record(
         assignment_expires_at: None,
         watch_message_id: None,
         worker_receipt_verified: false,
+        hosting_status: None,
         created_at: timestamp,
         updated_at: timestamp,
     };
@@ -387,6 +413,10 @@ fn validate_record(record: &FastWalletRecord) -> Result<(), String> {
         || !seed_backup_valid
         || !alert_status_valid
         || !assignment_valid
+        || record
+            .hosting_status
+            .as_ref()
+            .is_some_and(|status| !status.valid())
     {
         return Err("The Fast Wallet list contains invalid data.".to_owned());
     }

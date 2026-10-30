@@ -6,6 +6,10 @@ import test from 'node:test';
 const desktopRoot = join(import.meta.dirname, '..');
 const app = readFileSync(join(desktopRoot, 'src/App.tsx'), 'utf8');
 const native = readFileSync(join(desktopRoot, 'src-tauri/src/lib.rs'), 'utf8');
+const walletEngine = readFileSync(
+  join(desktopRoot, '../../native/monero-bridge/cpp/WalletEngine.cpp'),
+  'utf8',
+);
 const torTransport = readFileSync(
   join(desktopRoot, 'src-tauri/src/tor_transport.rs'),
   'utf8',
@@ -41,6 +45,39 @@ test('desktop node status manages the global Clearnet sync and Tor wallet routes
   assert.doesNotMatch(settings, /load_node_settings|save_node_settings|Node status/);
 });
 
+test('node cards follow the retained monitor without automatically running more route probes', () => {
+  const nodeStatus = app.slice(
+    app.indexOf('function DesktopNodeStatus('),
+    app.indexOf('function marketChartTimestamp('),
+  );
+  const polling = nodeStatus.slice(
+    nodeStatus.indexOf('const pollConnectivity ='),
+    nodeStatus.indexOf('const choosePreset ='),
+  );
+  assert.match(polling, /invoke<ConnectivityStatus>\('connectivity_status'/);
+  assert.match(polling, /window\.setInterval\(pollConnectivity, 1_500\)/);
+  assert.match(polling, /cancelled \|\| inFlight \|\| diagnosingRef\.current/);
+  assert.match(polling, /!cancelled && !diagnosingRef\.current/);
+  assert.match(polling, /diagnosticRequest\.current === request/);
+  assert.match(polling, /routeContextRef\.current === routeContext/);
+  assert.match(polling, /window\.clearInterval\(timer\)/);
+  assert.doesNotMatch(polling, /diagnose_connection_routes|runDiagnostics/);
+  assert.doesNotMatch(nodeStatus, /void runDiagnostics\(\)/);
+  assert.match(nodeStatus, /saveQueue\.current\.then\(runDiagnostics\)/);
+  assert.match(nodeStatus, /\[diagnosing, network, profile, routeContext, saveState\]/);
+  assert.match(nodeStatus, /diagnosticRequest\.current !== request \|\| routeContextRef\.current !== routeContext/);
+});
+
+test('node cards distinguish a pending or idle monitor from a failed route', () => {
+  const nodeStatus = app.slice(
+    app.indexOf('function DesktopNodeStatus('),
+    app.indexOf('function marketChartTimestamp('),
+  );
+  assert.match(nodeStatus, /phase === 'starting' \|\| phase === 'checking'/);
+  assert.match(nodeStatus, /!checking && phase === 'error' \? 'failed'/);
+  assert.match(nodeStatus, /phase === 'error' \? t\('nodeStatus\.failed'\) : t\('nodeStatus\.notChecked'\)/);
+});
+
 test('desktop embeds Tor for Onion profiles and keeps direct RPC available', () => {
   assert.match(torTransport, /arti_client/);
   assert.match(torTransport, /TorClientConfigBuilder::from_directories/);
@@ -51,7 +88,10 @@ test('desktop embeds Tor for Onion profiles and keeps direct RPC available', () 
   assert.match(torTransport, /read_socks4_request/);
   assert.match(torTransport, /read_socks5_request/);
   assert.match(torTransport, /SOCKS4a hostname/);
-  assert.match(torTransport, /socks5h:\/\/127\.0\.0\.1:9050/);
+  assert.match(torTransport, /PREFERRED_TOR_SOCKS_ADDRESS/);
+  assert.match(torTransport, /StdTcpListener::bind\("127\.0\.0\.1:0"\)/);
+  assert.match(torTransport, /socks-port-unavailable/);
+  assert.match(torTransport, /format!\("socks5h:\/\/\{\}"/);
   assert.match(native, /tor_transport::start_embedded_tor/);
   assert.match(native, /probe_tor_route/);
   assert.match(native, /probe_clearnet_route/);
@@ -59,10 +99,10 @@ test('desktop embeds Tor for Onion profiles and keeps direct RPC available', () 
     native,
     /first_party_endpoint_with_dns_fallback\(&profile\.daemon_address\)/,
   );
-  assert.match(native, /proxy_address: tor_transport::TOR_SOCKS_ADDRESS/);
+  assert.match(native, /tor_transport::socks_address\(\)/);
   assert.match(notificationAgent, /connect_through_tor/);
   assert.match(notificationAgent, /client_tls\(request, transport\)/);
-  assert.match(updateAdapter, /proxy: 'socks5h:\/\/127\.0\.0\.1:9050'/);
+  assert.match(updateAdapter, /invoke<string>\('embedded_tor_proxy_uri'\)/);
   assert.match(tauriConfig, /connect-src 'self';/);
   assert.doesNotMatch(tauriConfig, /connect-src[^;]*https:/);
 });
@@ -118,6 +158,21 @@ test('desktop background checks preserve confirmed routes and refresh retained s
   assert.match(app, /window\.addEventListener\('focus', pollOnFocus\)/);
   assert.match(app, /document\.addEventListener\('visibilitychange', pollOnVisibility\)/);
   assert.doesNotMatch(app, /setConnectivity\([^)]*connected:\s*false/);
+});
+
+test('node changes never block the UI or overwrite a newer selection', () => {
+  assert.match(walletEngine, /try_lock_for\(std::chrono::milliseconds\(250\)\)/);
+  assert.match(walletEngine, /network sync is busy; node change must be retried/);
+  assert.match(native, /wallet\.node-settings-apply-queued/);
+  assert.match(native, /wallet\.node-settings-apply-retrying/);
+  assert.match(native, /latest != applied_profile/);
+  assert.match(native, /reason", "superseded/);
+  const saveCommand = native.slice(
+    native.indexOf('async fn save_node_settings'),
+    native.indexOf('async fn diagnose_connection_routes'),
+  );
+  assert.match(saveCommand, /spawn_blocking/);
+  assert.doesNotMatch(saveCommand, /\.await\s*\.map_err/);
 });
 
 test('Community Worker selection crosses a native verified command boundary', () => {

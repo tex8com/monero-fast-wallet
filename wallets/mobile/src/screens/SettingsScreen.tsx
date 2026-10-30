@@ -12,6 +12,7 @@ import {
 } from 'react-native';
 import { colors, spacing, radius } from '../theme/colors';
 import { Icon } from '../components/Icon';
+import FastWalletTestPushPanel from '../components/FastWalletTestPushPanel';
 import {
   languageNames,
   supportedLanguages,
@@ -58,7 +59,7 @@ import { PROJECT_PAGE_ADDRESSES } from '../../../../packages/wallet-shared/src/p
 export default function SettingsScreen({ navigation }: any) {
   const insets = useSafeAreaInsets();
   const { dateLocale, language, setLanguage, t } = useI18n();
-  const { reconcileLedgerBalance, registeredWallet, session } = useWalletState();
+  const { reconcileLedgerBalance, registeredWallet, registeredWallets = [], session } = useWalletState();
   const {
     mode: savedProtectionMode,
     setMode: setAppProtectionMode,
@@ -409,6 +410,7 @@ export default function SettingsScreen({ navigation }: any) {
           </Text>
         </View>
 
+        <FastWalletTestPushPanel wallets={registeredWallets} />
         <View style={s.section}>
           <View style={s.sectionHeaderRow}>
             <Text style={s.sectionTitle}>{t('settings.worker')}</Text>

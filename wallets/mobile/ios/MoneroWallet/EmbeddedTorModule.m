@@ -281,6 +281,34 @@ NSString *_Nullable MFWEmbeddedTorSocksAddress(NSTimeInterval timeout,
   return [[MFWEmbeddedTorRuntime shared] waitUntilReady:timeout error:error];
 }
 
+NSURLSessionConfiguration *_Nullable MFWEmbeddedTorSessionConfiguration(
+    NSTimeInterval timeout, NSError **error) {
+  MFWEmbeddedTorRuntime *runtime = [MFWEmbeddedTorRuntime shared];
+  [runtime.condition lock];
+  NSURLSessionConfiguration *configuration = runtime.ready
+      ? [runtime.sessionConfiguration copy] : nil;
+  [runtime.condition unlock];
+  if (configuration == nil) {
+    // A request's remaining deadline must never be extended to bootstrap Tor.
+    if (!isfinite(timeout) || timeout < 10.0 || timeout > MFWMaximumBootstrapSeconds) {
+      if (error != NULL) *error = MFWError(2, @"Embedded Tor is not ready before the request deadline.");
+      return nil;
+    }
+    configuration = [runtime readySessionConfigurationWithTimeout:timeout error:error];
+  }
+  NSDictionary *proxy = configuration.connectionProxyDictionary;
+  NSString *host = proxy[(id)kCFStreamPropertySOCKSProxyHost];
+  NSNumber *port = proxy[(id)kCFStreamPropertySOCKSProxyPort];
+  if (configuration == nil || ![host isKindOfClass:NSString.class] ||
+      !([host isEqualToString:@"127.0.0.1"] || [host isEqualToString:@"localhost"] || [host isEqualToString:@"::1"]) ||
+      ![proxy[(id)kCFProxyTypeKey] isEqual:(id)kCFProxyTypeSOCKS] ||
+      ![port isKindOfClass:NSNumber.class] || port.integerValue < 1 || port.integerValue > 65535) {
+    if (error != NULL) *error = MFWError(10, @"Embedded Tor did not provide a valid private SOCKS route.");
+    return nil;
+  }
+  return configuration;
+}
+
 @interface MFWBoundedTorRequest : NSObject <NSURLSessionDataDelegate,
                                             NSURLSessionTaskDelegate>
 @property(nonatomic, strong) NSMutableData *data;

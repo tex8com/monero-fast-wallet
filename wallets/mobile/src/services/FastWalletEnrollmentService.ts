@@ -18,6 +18,8 @@ export interface EnrollFastWalletWatchInput {
   restoreHeight: number;
   /** Omit for the signed build's official Worker; pass only after private pairing. */
   workerDescriptorHex?: string;
+  /** Owner-authorized repair: retire stale pending state before creating a candidate. */
+  forceNewAssignment?: boolean;
   now?: number;
 }
 
@@ -84,10 +86,14 @@ export async function enrollFastWalletWatch(
       network: input.network,
       assignmentExpiresAt,
       now,
+      ...(input.forceNewAssignment ? { forceNewAssignment: true } : {}),
     });
     logWalletEvent('FastWalletEnrollment', 'assignment.success', {
+      assignmentEpoch: assignment.assignmentEpoch,
       elapsedMs: Date.now() - startedAt,
+      status: 'pending',
       success: true,
+      workerReceiptVerified: false,
     });
     const envelopeExpiresAt = now + WATCH_ENVELOPE_LIFETIME_SECONDS;
     const envelopeHex = await nativeWallet.sealFastReceiveWatchWithStoredSecret(
@@ -110,18 +116,24 @@ export async function enrollFastWalletWatch(
       success: true,
     });
     const messageId = await nativeWallet.submitFastWalletWatch({
+      identityId: checkedRequired(input.identityId, 'identityId'),
       workerDescriptorHex: descriptor,
       network: input.network,
+      assignmentHandleHex: assignment.assignmentHandle,
+      assignmentEpoch: assignment.assignmentEpoch,
       now,
       envelopeHex: checkedExactHex(envelopeHex, 484, 'watchEnvelope'),
     });
     logWalletEvent('FastWalletEnrollment', 'watchUpload.success', {
+      assignmentEpoch: assignment.assignmentEpoch,
       elapsedMs: Date.now() - startedAt,
+      status: 'active',
       success: true,
+      workerReceiptVerified: true,
     });
 
     const result = {
-      assignment,
+      assignment: { ...assignment, status: 'active' as const },
       messageId: checkedExactHex(messageId, 32, 'messageId'),
       // The caller hashes this public canonical descriptor before persisting
       // metadata. Keeping the protocol helper independent avoids importing a
@@ -198,8 +210,11 @@ export async function enrollLedgerFastWalletWatch(
       now,
     });
     logWalletEvent('FastWalletEnrollment', 'ledgerAssignment.success', {
+      assignmentEpoch: assignment.assignmentEpoch,
       elapsedMs: Date.now() - startedAt,
+      status: 'pending',
       success: true,
+      workerReceiptVerified: false,
     });
     const envelopeExpiresAt = now + WATCH_ENVELOPE_LIFETIME_SECONDS;
     const envelopeHex = await nativeWallet.sealLedgerFastWalletWatch({
@@ -220,17 +235,23 @@ export async function enrollLedgerFastWalletWatch(
       success: true,
     });
     const messageId = await nativeWallet.submitFastWalletWatch({
+      identityId,
       workerDescriptorHex: descriptor,
       network: input.network,
+      assignmentHandleHex: assignment.assignmentHandle,
+      assignmentEpoch: assignment.assignmentEpoch,
       now,
       envelopeHex: checkedExactHex(envelopeHex, 484, 'watchEnvelope'),
     });
     logWalletEvent('FastWalletEnrollment', 'ledgerWatchUpload.success', {
+      assignmentEpoch: assignment.assignmentEpoch,
       elapsedMs: Date.now() - startedAt,
+      status: 'active',
       success: true,
+      workerReceiptVerified: true,
     });
     const result = {
-      assignment,
+      assignment: { ...assignment, status: 'active' as const },
       messageId: checkedExactHex(messageId, 32, 'messageId'),
       workerDescriptorHashInput: descriptor,
     };

@@ -126,10 +126,55 @@ test('new wallet creation is network-free and starts near an authenticated tip',
   const helper = sharedEngine.slice(helperStart, helperEnd);
 
   assert.match(helper, /authenticatedTargetHeight/);
-  assert.match(helper, /kAuthenticatedTipSafetyBlocks = 60/);
-  assert.match(helper, /approximateBlockChainHeight\(\)/);
-  assert.match(helper, /kOfflineEstimateSafetyBlocks = 7 \* 24 \* 30/);
+  assert.match(helper, /kAuthenticatedTipSafetyBlocks = 1/);
+  assert.match(helper, /getRefreshFromBlockHeight\(\)/);
+  assert.match(
+    helper,
+    /authenticatedTargetHeight - kAuthenticatedTipSafetyBlocks/,
+  );
+  assert.doesNotMatch(helper, /approximateBlockChainHeight\(\)/);
   assert.doesNotMatch(helper, /wallet->estimateBlockChainHeight\(\)/);
+
+  assert.match(sharedEngine, /networkSync\.freshWalletRebaseStarted/);
+  assert.match(sharedEngine, /networkSync\.freshWalletRebaseCompleted/);
+  assert.match(
+    sharedEngine,
+    /freshWalletStartHeight =\s*authenticatedTargetHeight - 1/,
+  );
+  assert.match(
+    sharedEngine,
+    /getLocked\(walletId\)\.useDaemonHeightForAutomaticRestore = true/,
+  );
+  const rebaseStart = sharedEngine.indexOf(
+    'failureStage = "rebasing-fresh-wallet"',
+  );
+  const rebaseEnd = sharedEngine.indexOf(
+    'failureStage = "preparing-wallet-scans"',
+    rebaseStart,
+  );
+  const rebase = sharedEngine.slice(rebaseStart, rebaseEnd);
+  assert.ok(rebaseStart >= 0 && rebaseEnd > rebaseStart);
+  assert.match(rebase, /resetBlockchainCacheForSharedSync\(\)/);
+  assert.doesNotMatch(rebase, /->rescanBlockchain\(\)/);
+  assert.match(rebase, /walletHeightAfter != 1/);
+  assert.match(rebase, /freshWalletCursor != 1/);
+  assert.match(rebase, /freshWalletTarget != freshWalletStartHeight/);
+});
+
+test('gRPC block delivery adapts to latency instead of using one small fixed chunk', () => {
+  const adaptivePatch = read(
+    'third_party/monero-patches/0096-wallet-use-latency-safe-grpc-chunks.patch',
+  );
+
+  assert.match(adaptivePatch, /m_grpc_stream_chunk_hint = 256/);
+  assert.doesNotMatch(adaptivePatch, /m_grpc_stream_chunk_hint = 64/);
+  assert.match(adaptivePatch, /kChunkWaitDeadlineMs = 10000/);
+  assert.match(adaptivePatch, /m_grpc_stream_chunk_hint \/ 2/);
+  assert.match(adaptivePatch, /m_grpc_stream_chunk_hint \* 2/);
+  assert.match(adaptivePatch, /m_grpc_stream_fast_chunk_streak >= 4/);
+  assert.match(adaptivePatch, /m_grpc_stream_timeout_retries < 2/);
+  assert.match(adaptivePatch, /m_grpc_stream_chunk_hint_overridden = true/);
+  assert.match(adaptivePatch, /reopen_with_adaptive_hint/);
 });
 
 test('the authenticated Core series includes the shared provider implementation', () => {
@@ -386,7 +431,11 @@ test('native diagnostic persistence accepts only short non-secret atoms', () => 
   assert.match(engine, /value\.size\(\) > 48/);
   assert.match(engine, /return "redacted"/);
   assert.match(engine, /diagnosticAtom\(field\.second\)/);
-  assert.match(engine, /kDiagnosticRingCapacity = 256/);
+  assert.match(engine, /kDiagnosticRingCapacity = 2048/);
+  const androidModule = read(
+    'wallets/mobile/android/app/src/main/java/com/monerowallet/NativeMoneroWalletModule.kt',
+  );
+  assert.match(androidModule, /MAX_DIAGNOSTIC_FILE_BYTES = 5 \* 1024 \* 1024L/);
 });
 
 test('restore heights are one-time creation inputs and shared-sync cache resets are explicit', () => {
@@ -415,6 +464,25 @@ test('restore heights are one-time creation inputs and shared-sync cache resets 
   assert.doesNotMatch(testbench, /"\$\{workdir\}\/fast-receive-0"/);
 });
 
+test('shared sync takes exclusive refresh ownership before any cache reset or membership', () => {
+  const engine = read('native/monero-bridge/cpp/WalletEngine.cpp');
+  const join = engine.slice(
+    engine.indexOf('void joinNetworkSync('),
+    engine.indexOf('void leaveNetworkSync('),
+  );
+  const drain = join.indexOf('session.wallet->stopRefresh()');
+  assert.ok(drain >= 0, 'Shared consumers must join the independent API worker');
+  assert.ok(drain < join.indexOf('session.wallet->rescanBlockchain()'));
+  assert.ok(drain < join.indexOf('coordinator->wallets.insert(walletId)'));
+
+  const close = engine.slice(
+    engine.indexOf('void closeSessionWallet('),
+    engine.indexOf('WalletId addWallet('),
+  );
+  assert.ok(close.indexOf('wallet->stop()') < close.indexOf('wallet->stopRefresh()'));
+  assert.ok(close.indexOf('wallet->stopRefresh()') < close.indexOf('wallet->store(""'));
+});
+
 test('the unlinked security-boundary harness is never registered against a linked Core', () => {
   const cmake = read('native/monero-bridge/CMakeLists.txt');
   assert.match(
@@ -425,4 +493,25 @@ test('the unlinked security-boundary harness is never registered against a linke
     cmake,
     /if\(NOT MONERO_WALLET_BRIDGE_WITH_MONERO\)[\s\S]*add_test\([\s\S]*NAME monero_wallet_bridge_security_boundary/,
   );
+});
+
+test('public distribution prefetch stays outside wallet open and stops on lifecycle boundaries', () => {
+  const engine = read('native/monero-bridge/cpp/WalletEngine.cpp');
+  const addWallet = engine.slice(engine.indexOf('WalletId addWallet('), engine.indexOf('WalletId nextWalletId()'));
+  assert.match(addWallet, /publicOutputCacheDirectory_\.empty\(\)/);
+  assert.match(addWallet, /setRctDistributionCacheDirectory\(directory\)/);
+  assert.doesNotMatch(addWallet.slice(0, addWallet.indexOf('void prefetchPublicOutputDistribution')), /prefetchRctDistribution\(/);
+  assert.match(engine, /networkSync\.providerReady[\s\S]*prefetchPublicOutputDistribution\(provider\);[\s\S]*"fetching-blocks"/);
+  assert.match(engine, /lock\(coordinator\.mutex\);\s*if \(!coordinator\.stop && !coordinator\.wallets\.empty\(\) &&\s*coordinator\.configurationGeneration == configurationGeneration\) \{\s*prefetchPublicOutputDistribution\(provider\)/);
+  const closeAll = engine.slice(engine.indexOf('void closeAllWallets('), engine.indexOf('void configureNetworkSync('));
+  const cancel = closeAll.indexOf('cancelRctDistributionPrefetch()');
+  const clear = closeAll.indexOf('coordinator.wallets.clear()');
+  assert.ok(cancel >= 0 && clear > cancel);
+  const leave = engine.slice(engine.indexOf('void leaveNetworkSync('), engine.indexOf('void prioritizeNetworkWallet('));
+  assert.match(leave, /wallets\.empty\(\)[\s\S]*cancelRctDistributionPrefetch\(\)/);
+  assert.match(engine, /stalePublicTransport->cancelRctDistributionPrefetch\(\);[\s\S]*closeWallet\(stalePublicTransport, false\)/);
+  const recovery = engine.slice(engine.lastIndexOf('if (stalePublicTransport != nullptr) {'), engine.indexOf('void stopAllNetworkCoordinators()'));
+  assert.doesNotMatch(recovery, /cancelRctDistributionPrefetch/);
+  const stopAll = engine.slice(engine.indexOf('void stopAllNetworkCoordinators()'));
+  assert.match(stopAll, /worker\.join\(\)[\s\S]*transport->cancelRctDistributionPrefetch\(\);[\s\S]*closeWallet\(transport, false\)/);
 });

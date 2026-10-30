@@ -1,5 +1,6 @@
 import {relaunch} from '@tauri-apps/plugin-process';
 import {check, type Update} from '@tauri-apps/plugin-updater';
+import {invoke} from '@tauri-apps/api/core';
 import updateConfig from '../../../config/app-update.json';
 import {
   createAppUpdateCoordinator,
@@ -34,12 +35,13 @@ async function checkDesktopUpdate(): Promise<AppUpdateOffer | null> {
   if (!updateConfig.desktop.enabled) {
     return null;
   }
+  const proxy = await invoke<string>('embedded_tor_proxy_uri');
   const update = await check({
     timeout: 30_000,
     // Update metadata and artifacts follow the same fail-closed Tor route as
     // every other desktop service request. Block synchronization is the sole
     // Clearnet exception.
-    proxy: 'socks5h://127.0.0.1:9050',
+    proxy,
   });
   pendingUpdate = update;
   if (!update) {

@@ -6,8 +6,12 @@ import {
   networkSyncMegabitsPerSecond,
   walletSyncDerivationsPerSecond,
 } from '../../../packages/wallet-shared/src/networkSync.ts';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import {
+  ledgerBalanceIsVerified,
   nextWalletPublication,
+  nextWalletSyncStartHeight,
   presentWalletSync,
   syncStartHeightForWallet,
   updateWalletSyncEta,
@@ -19,6 +23,41 @@ test('rounded progress cannot display 100% before native completion', () => {
   assert.equal(displaySyncPercent(nearTip, false), 99.9);
   assert.equal(displaySyncPercent(100, false), 99.9);
   assert.equal(displaySyncPercent(100, true), 100);
+});
+
+test('read-only balance stays visible but new Ledger outputs are provisional after the initial check', () => {
+  const snapshot = {
+    walletHeight: 1_000,
+    daemonHeight: 1_000,
+    daemonTargetHeight: 1_000,
+    synchronized: true,
+    pendingOutputKeyImageCount: '3',
+    balanceAtomic: '1000000000000',
+  };
+  const viewing = nextWalletPublication(undefined, {
+    snapshot,
+    transactions: [{ direction: 'in' }],
+    requiresLedgerVerification: false,
+    ledgerVerified: true,
+  });
+  assert.equal(viewing.publishedSnapshot?.balanceAtomic, snapshot.balanceAtomic);
+  assert.equal(ledgerBalanceIsVerified(viewing.publishedSnapshot, true), false);
+  assert.equal(ledgerBalanceIsVerified({ ...snapshot, pendingOutputKeyImageCount: 0 }, true), true);
+  assert.equal(ledgerBalanceIsVerified({ ...snapshot, pendingOutputKeyImageCount: '0' }, false), false);
+});
+
+test('missing or invalid Ledger output counters never establish a verified balance', () => {
+  assert.equal(ledgerBalanceIsVerified(undefined, true), false);
+  const snapshot = {
+    walletHeight: 1_000,
+    daemonHeight: 1_000,
+    daemonTargetHeight: 1_000,
+    synchronized: true,
+  };
+  assert.equal(ledgerBalanceIsVerified(snapshot, true), false);
+  for (const pendingOutputKeyImageCount of [-1, 0.5, 'invalid', Infinity]) {
+    assert.equal(ledgerBalanceIsVerified({ ...snapshot, pendingOutputKeyImageCount }, true), false);
+  }
 });
 
 test('a Ledger working snapshot cannot publish an intermediate incoming-only balance', () => {
@@ -254,6 +293,23 @@ test('shared live sync rates use native bytes and derivation time', () => {
   }), 120_000);
 });
 
+test('desktop presents blockchain and wallet progress with distinct native colors', () => {
+  const desktopRoot = join(import.meta.dirname, '..');
+  const app = readFileSync(join(desktopRoot, 'src/App.tsx'), 'utf8');
+  const styles = readFileSync(join(desktopRoot, 'src/styles.css'), 'utf8');
+  assert.match(app, /testId="blockchain-progress" variant="blockchain"/);
+  assert.match(app, /testId="wallet-progress" variant="wallet"/);
+  assert.match(styles, /\.desktop-sync-progress\.wallet \.sync-track span:not\(\.ready\) \{ background: #737381; \}/);
+});
+
+test('desktop samples the live gRPC payload and expires stale transfer rates', () => {
+  const desktopRoot = join(import.meta.dirname, '..');
+  const app = readFileSync(join(desktopRoot, 'src/App.tsx'), 'utf8');
+  assert.match(app, /payloadBytes > 0 \|\| networkBytes <= 0 \? 0 : networkBytes/);
+  assert.match(app, /observedAt - lastTransferAtRef\.current > 3_000/);
+  assert.match(app, /setRate\(undefined\)/);
+});
+
 test('only the native core may confirm a wallet as synchronized', () => {
   const sync = presentWalletSync({
     walletHeight: 1_000,
@@ -326,7 +382,7 @@ test('refresh progress is measured from the first live core height', () => {
   assert.equal(sync.coreConfirmed, false);
 });
 
-test('a configured restore height is the durable percentage baseline', async () => {
+test('restore height remains a fallback, while live session progress takes priority', async () => {
   const restoreHeight = 3_549_388;
   const sync = presentWalletSync(
     {
@@ -335,18 +391,55 @@ test('a configured restore height is the durable percentage baseline', async () 
       daemonTargetHeight: 3_724_447,
       synchronized: false,
     },
-    { startHeight: syncStartHeightForWallet(restoreHeight, 3_700_000) },
+    { startHeight: syncStartHeightForWallet(restoreHeight) },
   );
 
   assert.equal(sync.phase, 'syncing');
   assert.equal(sync.progress, 0);
   assert.equal(sync.remainingBlocks, 175_059);
 
-  assert.equal(syncStartHeightForWallet(restoreHeight, 3_700_000), restoreHeight);
+  assert.equal(syncStartHeightForWallet(restoreHeight, 3_700_000), 3_700_000);
   assert.equal(syncStartHeightForWallet(undefined, 3_700_000), 3_700_000);
 
   const desktopApp = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
-  assert.match(desktopApp, /syncStartHeightForWallet\(wallet\?\.restoreHeight/);
+  assert.match(desktopApp, /nextWalletSyncStartHeight\(/);
+  assert.doesNotMatch(desktopApp, /registration\.restoreHeight \|\| syncStartHeightsRef/);
+});
+
+test('resumed Ledger scan measures only the session remainder, not old restore history', () => {
+  const initial = {
+    walletHeight: '3789205', daemonHeight: '3793557',
+    daemonTargetHeight: '3793557', synchronized: false,
+  };
+  const baseline = nextWalletSyncStartHeight(undefined, initial);
+  assert.equal(baseline, 3_789_205);
+  assert.equal(presentWalletSync(initial, { startHeight: baseline }).progress, 0);
+  const scanning = { ...initial, walletHeight: '3790029' };
+  const held = nextWalletSyncStartHeight(baseline, scanning);
+  assert.equal(held, baseline);
+  const progress = presentWalletSync(scanning, { startHeight: held });
+  assert.equal(progress.remainingBlocks, 3_528);
+  assert.equal(progress.scannedBlocks, 824);
+  assert.equal(progress.progress, 18);
+  assert.equal(progress.coreConfirmed, false);
+});
+
+test('presentation baseline survives retries and resets only on Core completion or rewind', () => {
+  const snapshot = {
+    walletHeight: 1_000, daemonHeight: 2_000,
+    daemonTargetHeight: 2_000, synchronized: false,
+  };
+  const start = nextWalletSyncStartHeight(undefined, snapshot);
+  assert.equal(nextWalletSyncStartHeight(start, { ...snapshot, walletHeight: 1_500 }), 1_000);
+  assert.equal(nextWalletSyncStartHeight(start, undefined), 1_000);
+  assert.equal(nextWalletSyncStartHeight(start, { ...snapshot, walletHeight: 0 }), 1_000);
+  assert.equal(nextWalletSyncStartHeight(start, { ...snapshot, walletHeight: 900 }), 900);
+  const ready = { ...snapshot, walletHeight: 2_000, synchronized: true };
+  assert.equal(nextWalletSyncStartHeight(start, ready), 2_000);
+  const nextStart = nextWalletSyncStartHeight(2_000, { ...snapshot, walletHeight: 2_000, daemonTargetHeight: 2_010 });
+  assert.equal(presentWalletSync({ ...snapshot, walletHeight: 2_000, daemonTargetHeight: 2_010 }, { startHeight: nextStart }).progress, 0);
+  assert.equal(nextWalletSyncStartHeight(undefined, undefined), undefined);
+  assert.equal(nextWalletSyncStartHeight(undefined, { ...snapshot, walletHeight: Number.NaN }), undefined);
 });
 
 test('Tauri requires the same explicit Ledger restore point as the CLI', async () => {
@@ -413,6 +506,23 @@ test('ETA excludes native checkpoint time and cannot jump on one slow batch', ()
   assert.ok(resumed.etaSeconds <= 170);
 });
 
+test('ETA discards throughput measured before a node provider change', () => {
+  const initial = updateWalletSyncEta(undefined, 10_000, 0, {
+    providerGeneration: 7,
+  });
+  const first = updateWalletSyncEta(initial.state, 9_500, 10_000, {
+    providerGeneration: 7,
+  });
+  const changed = updateWalletSyncEta(first.state, 9_000, 120_000, {
+    providerGeneration: 8,
+  });
+
+  assert.equal(changed.etaSeconds, undefined);
+  assert.equal(changed.state.progressSamples, 0);
+  assert.equal(changed.state.startRemainingBlocks, 9_000);
+  assert.equal(changed.state.providerGeneration, 8);
+});
+
 test('Ledger reconciliation is automatic once, manual later, and globally single-flight', async () => {
   const desktopApp = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
   const verificationPredicate = desktopApp.slice(
@@ -422,18 +532,51 @@ test('Ledger reconciliation is automatic once, manual later, and globally single
   assert.match(verificationPredicate, /ledgerKeyImagesVerifiedAt/);
   assert.match(verificationPredicate, /pendingOutputKeyImageCount/);
 
+  const dashboardPublication = desktopApp.slice(
+    desktopApp.indexOf('const snapshotsByRegistration = useMemo'),
+    desktopApp.indexOf('const publishedSnapshot = publication?.publishedSnapshot'),
+  );
+  assert.equal(
+    dashboardPublication.match(/&& !registration\.ledgerKeyImagesVerifiedAt/g)?.length,
+    1,
+    'wallet cards must require Ledger only for the initial durable verification',
+  );
+  assert.equal(
+    dashboardPublication.match(/&& !wallet\.ledgerKeyImagesVerifiedAt/g)?.length,
+    1,
+    'the selected wallet must require Ledger only for the initial durable verification',
+  );
+  assert.doesNotMatch(
+    dashboardPublication,
+    /pendingOutputCount === 0/,
+    'new incoming outputs must not blank a previously verified Ledger balance',
+  );
+
   const activeAutoReconciliation = desktopApp.slice(
     desktopApp.indexOf('const activeLedgerNeedsAutomaticVerification'),
     desktopApp.indexOf('  return <div className="home-stack home-dashboard">'),
   );
-  const activeCooldown = activeAutoReconciliation.indexOf(
+  const automaticAttempt = activeAutoReconciliation.slice(
+    activeAutoReconciliation.indexOf('const attempt = async () =>'),
+  );
+  const activeCooldown = automaticAttempt.indexOf(
     'ledgerAutoVerificationAttemptedRef.current.add(wallet.id);',
   );
-  const activeDiscovery = activeAutoReconciliation.indexOf("invoke<string>('ledger_transport_status')");
+  const activeDiscovery = automaticAttempt.indexOf("invoke<string>('ledger_transport_status')");
   assert.ok(activeCooldown >= 0 && activeCooldown < activeDiscovery, 'active BLE cooldown must begin before discovery');
   assert.match(activeAutoReconciliation, /ledgerReconciliationInFlightRef\.current = true/);
   assert.match(activeAutoReconciliation, /finally \{\n        ledgerReconciliationInFlightRef\.current = false;/);
   assert.doesNotMatch(activeAutoReconciliation, /setInterval/);
+
+  const manualVerification = activeAutoReconciliation.slice(
+    activeAutoReconciliation.indexOf('const verifyLedgerBalance = async () =>'),
+    activeAutoReconciliation.indexOf('  useEffect(() =>'),
+  );
+  assert.ok(
+    manualVerification.indexOf("invoke<string>('ledger_transport_status')")
+      < manualVerification.indexOf("invoke<WalletOperationResponse>('enable_ledger_read_only'"),
+    'manual Ledger verification must establish the transport before opening the wallet',
+  );
 
   assert.match(desktopApp, /const ledgerReconciliationInFlightRef = useRef\(false\)/);
   assert.doesNotMatch(desktopApp, /MONERO_DESKTOP_LEDGER_BACKGROUND_RECONCILIATION_START/);

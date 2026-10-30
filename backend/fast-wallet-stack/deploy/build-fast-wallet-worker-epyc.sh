@@ -26,7 +26,9 @@ command -v rsync >/dev/null 2>&1 || {
   exit 69
 }
 
-install -d "${stage_root}/backend" "${stage_root}/native" "${cargo_target}"
+install -d "${stage_root}/backend" "${stage_root}/native" "${stage_root}/config" "${cargo_target}"
+install -m 0644 "${repo_root}/config/v1-release-features.json" \
+  "${stage_root}/config/v1-release-features.json"
 for service in fast-wallet-worker fast-wallet-relay notification-gateway; do
   rsync -a --delete --exclude target --exclude Cargo.lock \
     "${repo_root}/backend/${service}/" "${stage_root}/backend/${service}/"

@@ -34,7 +34,7 @@ function nativeFixture() {
         assignmentHandle,
         assignmentEpoch: 4,
         expiresAt: 1_902_592_000,
-        status: 'active',
+        status: 'pending',
       };
     }),
     sealFastReceiveWatchWithStoredSecret: jest.fn(async () => {
@@ -50,6 +50,13 @@ function nativeFixture() {
 }
 
 describe('FastWalletEnrollmentService', () => {
+  it('requests a new candidate for an explicit hosting repair before sealing', async () => {
+    const { callOrder, native } = nativeFixture();
+    await enrollFastWalletWatch(native, input({ forceNewAssignment: true }));
+    expect(native.sponsorFastWalletAssignment).toHaveBeenCalledWith(expect.objectContaining({ forceNewAssignment: true }));
+    expect(callOrder).toEqual(['sponsor', 'seal', 'submit']);
+  });
+
   it('sponsors, seals natively, then submits one canonical fixed-size envelope', async () => {
     const { callOrder, native } = nativeFixture();
 
@@ -77,12 +84,16 @@ describe('FastWalletEnrollmentService', () => {
       now: 1_900_000_000,
     });
     expect(native.submitFastWalletWatch).toHaveBeenCalledWith({
+      identityId: 'fast-receive-v2-1',
       workerDescriptorHex: descriptor,
       network: 'stagenet',
+      assignmentHandleHex: assignmentHandle,
+      assignmentEpoch: 4,
       now: 1_900_000_000,
       envelopeHex: envelope,
     });
     expect(result.assignment.assignmentHandle).toBe(assignmentHandle);
+    expect(result.assignment.status).toBe('active');
     expect(result.messageId).toBe(messageId);
   });
 
@@ -94,9 +105,10 @@ describe('FastWalletEnrollmentService', () => {
       input({ workerDescriptorHex: undefined }),
     );
 
-    expect(
-      native.loadOfficialFastWalletWorkerDescriptor,
-    ).toHaveBeenCalledWith('stagenet', 1_900_000_000);
+    expect(native.loadOfficialFastWalletWorkerDescriptor).toHaveBeenCalledWith(
+      'stagenet',
+      1_900_000_000,
+    );
     expect(native.sponsorFastWalletAssignment).toHaveBeenCalledWith(
       expect.objectContaining({ workerDescriptorHex: descriptor }),
     );

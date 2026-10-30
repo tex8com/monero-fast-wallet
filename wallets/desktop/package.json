@@ -18,7 +18,7 @@
     "test:news-contract": "node --test scripts/test-news-catalog-contract.mjs",
     "test:mfw-contract": "node --test scripts/test-mfw-name-contract.mjs",
     "test:update-contract": "node --test scripts/test-app-update-contract.mjs",
-    "test:push-contract": "node --experimental-strip-types --test scripts/test-fast-wallet-push-contract.mjs",
+    "test:push-contract": "node --experimental-strip-types --test scripts/test-fast-wallet-push-contract.mjs scripts/test-notification-self-test.mjs",
     "test:platform-contract": "node --test scripts/test-platform-release-contract.mjs",
     "test:acceleration-contract": "node --test scripts/test-fast-crypto-packaging-contract.mjs",
     "test:linux-push-e2e": "node scripts/test-linux-notification-agent-e2e.mjs",
@@ -34,11 +34,11 @@
     "bundle:linux": "bash scripts/build-bundle.sh appimage"
   },
   "dependencies": {
-    "@tauri-apps/api": "^2.8.0",
+    "@tauri-apps/api": "2.12.1",
     "@tauri-apps/plugin-geolocation": "^2.3.2",
-    "@tauri-apps/plugin-notification": "^2.3.3",
-    "@tauri-apps/plugin-process": "^2.3.1",
-    "@tauri-apps/plugin-updater": "^2.10.1",
+    "@tauri-apps/plugin-notification": "2.5.1",
+    "@tauri-apps/plugin-process": "2.4.0",
+    "@tauri-apps/plugin-updater": "2.13.1",
     "@types/qrcode": "^1.5.6",
     "flag-icons": "^7.5.0",
     "jsqr": "^1.4.0",
@@ -47,7 +47,7 @@
     "react-dom": "^19.0.0"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2.8.0",
+    "@tauri-apps/cli": "2.12.1",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^4.4.1",

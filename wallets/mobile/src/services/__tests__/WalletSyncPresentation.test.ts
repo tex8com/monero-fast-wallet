@@ -1,4 +1,5 @@
 import {
+  nextWalletSyncStartHeight,
   presentWalletSync,
   updateWalletSyncEta,
 } from '../../../../../packages/wallet-shared/src/walletSync';
@@ -16,6 +17,28 @@ function snapshot(overrides: Record<string, unknown> = {}) {
 }
 
 describe('presentWalletSync', () => {
+  it('measures a reopened wallet from the remaining live range, not its historical restore height', () => {
+    const initial = snapshot({
+      walletHeight: 3_789_205,
+      daemonHeight: 3_793_557,
+      daemonTargetHeight: 3_793_557,
+    });
+    const startHeight = nextWalletSyncStartHeight(undefined, initial);
+    expect(presentWalletSync(initial, { startHeight }).progress).toBe(0);
+    const next = snapshot({
+      walletHeight: 3_790_029,
+      daemonHeight: 3_793_557,
+      daemonTargetHeight: 3_793_557,
+    });
+    const held = nextWalletSyncStartHeight(startHeight, next);
+    const result = presentWalletSync(next, { startHeight: held });
+    expect(held).toBe(startHeight);
+    expect(result.progress).toBe(18);
+    expect(result.scannedBlocks).toBe(824);
+    expect(result.remainingBlocks).toBe(3_528);
+    expect(result.coreConfirmed).toBe(false);
+  });
+
   it('measures progress only from the current live refresh baseline', () => {
     const result = presentWalletSync(snapshot(), { startHeight: 3_700_000 });
 

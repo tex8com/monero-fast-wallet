@@ -45,4 +45,13 @@ describe('Fast Wallet diagnostic logging', () => {
     expect(line).toContain('"retryCount":1');
     expect(line).not.toContain('abc-secret');
   });
+  it('preserves only a complete opaque event id for request-to-receipt correlation', () => {
+    const eventId = 'evt_' + 'a'.repeat(64);
+    const line = formatWalletLogLine('FastWalletPush', 'testPush.scheduled', {eventId, scheduledAt: 10, deliverAfter: 20});
+    expect(line).toContain(eventId);
+    expect(line).toContain('"deliverAfter":20');
+    expect(formatWalletLogLine('FastWalletPush', 'received', {eventId: 'wallet-address-or-token'}))
+      .not.toContain('wallet-address-or-token');
+  });
+
 });

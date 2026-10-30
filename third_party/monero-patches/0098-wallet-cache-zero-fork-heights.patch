@@ -1,0 +1,59 @@
+From 32d55c7a7c0a6af99d389755e2ec04541bc315b5 Mon Sep 17 00:00:00 2001
+From: TEX8 Monero Patch Integrator <monero-patches@tex8.local>
+Date: Wed, 28 Oct 2026 11:39:16 -0500
+Subject: [PATCH] wallet: cache zero fork heights after successful RPC
+
+Track validity separately from the activation height. A successful height of zero is cached until invalidation, while RPC failures remain retryable. This avoids repeated hard_fork_info requests without changing daemon routing or fork-rule decisions.
+---
+ src/wallet/node_rpc_proxy.cpp | 7 ++++++-
+ src/wallet/node_rpc_proxy.h   | 1 +
+ 2 files changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/src/wallet/node_rpc_proxy.cpp b/src/wallet/node_rpc_proxy.cpp
+index aa0b4dfd3..f679ad208 100644
+--- a/src/wallet/node_rpc_proxy.cpp
++++ b/src/wallet/node_rpc_proxy.cpp
+@@ -66,7 +66,10 @@ void NodeRPCProxy::invalidate()
+ {
+   m_height = 0;
+   for (size_t n = 0; n < 256; ++n)
++  {
+     m_earliest_height[n] = 0;
++    m_earliest_height_cached[n] = false;
++  }
+   m_dynamic_base_fee_estimate = 0;
+   m_dynamic_base_fee_estimate_cached_height = 0;
+   m_dynamic_base_fee_estimate_grace_blocks = 0;
+@@ -219,7 +222,8 @@ boost::optional<std::string> NodeRPCProxy::get_earliest_height(uint8_t version,
+ {
+   if (m_offline)
+     return boost::optional<std::string>("offline");
+-  if (m_earliest_height[version] == 0)
++  // Zero is a valid activation height, not a cache-miss sentinel.
++  if (!m_earliest_height_cached[version])
+   {
+     cryptonote::COMMAND_RPC_HARD_FORK_INFO::request req_t = AUTO_VAL_INIT(req_t);
+     cryptonote::COMMAND_RPC_HARD_FORK_INFO::response resp_t = AUTO_VAL_INIT(resp_t);
+@@ -235,6 +239,7 @@ boost::optional<std::string> NodeRPCProxy::get_earliest_height(uint8_t version,
+     }
+ 
+     m_earliest_height[version] = resp_t.earliest_height;
++    m_earliest_height_cached[version] = true;
+   }
+ 
+   earliest_height = m_earliest_height[version];
+diff --git a/src/wallet/node_rpc_proxy.h b/src/wallet/node_rpc_proxy.h
+index 0088090a8..72460d74d 100644
+--- a/src/wallet/node_rpc_proxy.h
++++ b/src/wallet/node_rpc_proxy.h
+@@ -85,6 +85,7 @@ private:
+ 
+   uint64_t m_height;
+   uint64_t m_earliest_height[256];
++  bool m_earliest_height_cached[256];
+   uint64_t m_dynamic_base_fee_estimate;
+   uint64_t m_dynamic_base_fee_estimate_cached_height;
+   uint64_t m_dynamic_base_fee_estimate_grace_blocks;
+-- 
+2.54.0 (Apple Git-157)
+

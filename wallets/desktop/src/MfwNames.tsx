@@ -1044,23 +1044,22 @@ export default function MfwNames({
                   )}
                 </div>
               )}
-              <div className="mfw-name-actions mfw-registration-actions">
-                <button
-                  className="primary"
-                  disabled={
-                    !availability ||
-                    !["available", "available-again"].includes(
-                      availability.status,
-                    ) ||
-                    busy ||
-                    availabilityLoading
-                  }
-                  onClick={advanceRegistration}
-                  type="button"
-                >
-                  Continue
-                </button>
-              </div>
+              {availability &&
+                ["available", "available-again"].includes(
+                  availability.status,
+                ) &&
+                !availabilityLoading &&
+                !busy && (
+                  <div className="mfw-name-actions mfw-registration-actions">
+                    <button
+                      className="primary"
+                      onClick={advanceRegistration}
+                      type="button"
+                    >
+                      Continue
+                    </button>
+                  </div>
+                )}
             </>
           )}
 

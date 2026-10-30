@@ -128,3 +128,21 @@ content-type: application/json
 No fake output or transaction is inserted into the Worker database. If the
 same address has multiple active registrations, each registration receives its
 own test wake.
+
+
+The same authenticated loopback endpoint also supports the Settings scheduler's
+opaque form (never expose this route publicly):
+
+```json
+{"assignmentHandle":"<64 lowercase hex>","assignmentEpoch":1,"eventId":"evt_<64 lowercase hex>"}
+```
+
+This selects exactly the existing `fw1:<assignmentHandle>` watch at the supplied
+epoch. The Worker preserves `eventId`, signs a domain-separated `signal=test`
+wake and sends it through its ordinary Gateway sink. A successful response
+includes that exact `eventId`. Incorrect epoch, noncanonical ID, unknown watch
+or missing token cannot produce a wake. Repeating the scheduled ID is
+idempotent at the Gateway. The original address-based operator mode remains
+available, with its existing authentication and loopback-only binding.
+The Settings delay and restart-safe trigger are owned by the Gateway; this
+endpoint adds no sleep, matched output, transaction or history entry.

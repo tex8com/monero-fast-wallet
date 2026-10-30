@@ -97,11 +97,32 @@ upstream_tree=c592d864569be294d2bdca25b674cd17f78614e5
 # Patch 0095 exposes canonical signed transaction bytes only from an already
 # prepared in-memory transaction so the app can hold an explicitly approved
 # MFW claim locally until its commit reaches protocol maturity.
+# Patch 0096 starts the six persistent gRPC lanes at a throughput-oriented
+# 256-block hint, then adapts between 16 and 256 from measured delivery wait.
+# Slow responses shrink and reopen the stream, fast streaks grow it again, and
+# a ten-second deadline retries before a permanent transport fallback.
+# Patch 0097 atomically adopts the encrypted viewing companion's exact scan
+# state into the Ledger signing wallet. It re-derives and verifies every owned
+# output and Key Image on the connected device before accepting copied spent
+# state, eliminating the second historical signing-wallet scan.
+# Patch 0098 caches successful hard-fork responses with activation height zero
+# using an explicit validity flag; RPC errors remain retryable and invalidation
+# clears all per-version entries without changing fork rules or daemon routing.
+# Patch 0099 prefetches shared public RCT distributions outside wallet locks,
+# persists checksummed snapshots atomically, validates genesis and chain anchors
+# on every hit and appends absolute cumulative tails. Exact transport/auth
+# identities partition active work; public disk snapshots survive Tor-port and
+# password changes only after fresh validation over the current transport.
 # A cache at a prior verified tree may advance in place; a fresh checkout must
 # apply the complete series and reach `patched_tree` below.
-previous_patched_tree=dd34fc6f8bb43ef3b28c0889fb289963bdda3c23
-previous_patch_count=94
-patched_tree=aa2eb0294cdd1b9aa0b7c50ae6079071624dc670
+previous_patched_tree=a8908a19fb5bed793049e3b167ddc61fb8e13b46
+previous_patch_count=98
+# Patch 0100 rejects already confirmed pool transactions, preserves confirmed
+# spend heights through pending timeouts, and repairs stale local spend/pool
+# metadata only from confirmed transaction hashes, rings and known Key Images.
+# Its per-pool history indexes are transient; reorg rollback remains authoritative.
+# A stopped/joined API refresh worker cannot be reactivated by transaction helpers.
+patched_tree=37d6a1a4a39c2fd128fdf9befd82381339951c58
 
 # The applied patch files in series are the source of truth. `git am` creates
 # a new local integration commit on every fresh checkout, so its SHA must not

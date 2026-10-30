@@ -81,6 +81,12 @@ namespace {
 constexpr unsigned int kMfwNameMaximumTermYears = 1000;
 constexpr uint64_t kMfwNameAnnualFeeAtomic = 10000000000ULL;
 
+#if defined(__APPLE__)
+void ensureLedgerBleTransportCallbacks() {
+  tex8::desktop::installLedgerBleTransportCallbacks();
+}
+#endif
+
 char* copyString(const std::string& value) noexcept {
   auto* output = static_cast<char*>(std::malloc(value.size() + 1));
   if (output == nullptr) return nullptr;
@@ -495,6 +501,19 @@ Tex8DesktopResult invokeSecret(Tex8DesktopWalletCore* core, Callback callback) n
 
 }  // namespace
 
+extern "C" Tex8DesktopResult tex8_desktop_wallet_drain_diagnostics() noexcept {
+  try { return success(jsonStringList(tex8::wallet::WalletEngine::drainDiagnosticLines())); }
+  catch (...) { return failure("Diagnostic drain failed"); }
+}
+
+extern "C" Tex8DesktopResult tex8_desktop_wallet_ledger_usb_available() noexcept {
+#if defined(__APPLE__)
+  return success(tex8::desktop::ledgerUsbAvailable() ? "true" : "false");
+#else
+  return success("false");
+#endif
+}
+
 extern "C" Tex8DesktopWalletCore* tex8_desktop_wallet_core_new() noexcept {
   try { return new Tex8DesktopWalletCore(); } catch (...) { return nullptr; }
 }
@@ -618,6 +637,9 @@ extern "C" Tex8DesktopResult tex8_desktop_wallet_create_from_device(
     unsigned long long restore_height, const char* subaddress_lookahead,
     unsigned int account_index) noexcept {
   return invoke(core, [&] {
+#if defined(__APPLE__)
+    ensureLedgerBleTransportCallbacks();
+#endif
     tex8::wallet::CreateWalletFromDeviceRequest request;
     request.path = input(path); request.password = input(password);
     request.network = networkFrom(network); request.deviceName = input(device_name);
@@ -645,9 +667,30 @@ extern "C" Tex8DesktopResult tex8_desktop_wallet_open(
     Tex8DesktopWalletCore* core, const char* path, const char* password,
     unsigned char network, unsigned long long restore_height) noexcept {
   return invoke(core, [&] {
+#if defined(__APPLE__)
+    ensureLedgerBleTransportCallbacks();
+#endif
     tex8::wallet::OpenWalletRequest request;
     request.path = input(path); request.password = input(password);
     request.network = networkFrom(network); request.restoreHeight = restore_height;
+    return core->engine.openWallet(request);
+  });
+}
+
+extern "C" Tex8DesktopResult tex8_desktop_wallet_close(
+    Tex8DesktopWalletCore* core, const char* wallet_id, int store) noexcept;
+
+extern "C" Tex8DesktopResult tex8_desktop_wallet_open_with_device(
+    Tex8DesktopWalletCore* core, const char* path, const char* password,
+    unsigned char network, unsigned long long restore_height, const char* device_name) noexcept {
+  return invoke(core, [&] {
+#if defined(__APPLE__)
+    ensureLedgerBleTransportCallbacks();
+#endif
+    tex8::wallet::OpenWalletRequest request;
+    request.path = input(path); request.password = input(password);
+    request.network = networkFrom(network); request.restoreHeight = restore_height;
+    request.deviceName = input(device_name);
     return core->engine.openWallet(request);
   });
 }
@@ -1025,6 +1068,9 @@ extern "C" Tex8DesktopResult tex8_desktop_wallet_hardware_status(
 extern "C" Tex8DesktopResult tex8_desktop_wallet_reconnect_hardware(
     Tex8DesktopWalletCore* core, const char* wallet_id) noexcept {
   return invoke(core, [&] {
+#if defined(__APPLE__)
+    ensureLedgerBleTransportCallbacks();
+#endif
     return hardwareStatusJson(core->engine.reconnectHardwareWallet(input(wallet_id)));
   });
 }

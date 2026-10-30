@@ -62,6 +62,11 @@ if [[ -n "${wallet_crypto_rustflags}" ]]; then
   wallet_crypto_rustflags+=" "
 fi
 wallet_crypto_rustflags+="-C target-cpu=${wallet_crypto_target_cpu}"
+if [[ "${wallet_crypto_os}" == "Darwin" ]]; then
+  # Avoid Xcode 27's malformed chained-fixups output for Rust cdylibs. The
+  # classic fixup format remains compatible with the macOS 12 package target.
+  wallet_crypto_rustflags+=" -C link-arg=-Wl,-no_fixup_chains"
+fi
 
 mkdir -p "${wallet_crypto_target_dir}"
 (

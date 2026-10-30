@@ -69,8 +69,8 @@ const serverGrpc = read(
 );
 
 test('the authenticated Core retains the measured production patch sequence', () => {
-  assert.equal(series.length, 93);
-  assert.deepEqual(series.slice(-15), [
+  assert.equal(series.length, 97);
+  assert.deepEqual(series.slice(-19), [
     sixLanePatchName,
     '0080-wallet-spill-public-blockstream-overflow-to-bounded-disk.patch',
     '0081-wallet-cli-select-public-and-private-Fast-Wallet-wor.patch',
@@ -86,15 +86,19 @@ test('the authenticated Core retains the measured production patch sequence', ()
     '0091-wallet-add-local-shared-sync-cache-reset.patch',
     '0092-wallet-require-ledger-parse-mode-after-companion-prime.patch',
     '0093-wallet-keep-companion-ledger-derivations-as-device-tokens.patch',
+    '0094-wallet-api-select-connected-Ledger-transport-on-open.patch',
+    '0095-wallet-api-export-signed-raw-transactions.patch',
+    '0096-wallet-use-latency-safe-grpc-chunks.patch',
+    '0097-wallet-adopt-verified-Ledger-companion-scan-state.patch',
   ]);
-  assert.match(lock, /^previous_patch_count=92$/m);
+  assert.match(lock, /^previous_patch_count=96$/m);
   assert.match(
     lock,
-    /^previous_patched_tree=5c0b09ed55682c0f6d60b9cbd4db91d5dacc0388$/m,
+    /^previous_patched_tree=810ee1ce8c931962bd19a9a6a795dd6e1c3064a8$/m,
   );
   assert.match(
     lock,
-    /^patched_tree=0389d585c9c742eda74b5e9912997d2ba5393503$/m,
+    /^patched_tree=74b3f675f2b5b3c547d84c1603095d3d979db07f$/m,
   );
   assert.match(hotPathPatch, /^-.*process_new_transaction SLOW txid=/m);
   assert.match(hotPathPatch, /^-.*SLOW_TX[^\n]*\n-.*txid=/m);

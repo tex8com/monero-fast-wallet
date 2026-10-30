@@ -19,9 +19,9 @@ import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import java.io.InputStream
 import java.net.InetSocketAddress
-import java.net.Proxy
 import java.net.Socket
 import java.nio.charset.StandardCharsets
+import org.json.JSONObject
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
@@ -41,6 +41,7 @@ class ConnectivityForegroundService : Service() {
   }
   private val torCheckRunning = AtomicBoolean(false)
   private val clearnetCheckRunning = AtomicBoolean(false)
+  @Volatile private var destroyed = false
   private lateinit var connectivityManager: ConnectivityManager
 
   private val periodicCheck = object : Runnable {
@@ -73,6 +74,7 @@ class ConnectivityForegroundService : Service() {
   }
 
   override fun onDestroy() {
+    destroyed = true
     mainHandler.removeCallbacks(periodicCheck)
     runCatching { connectivityManager.unregisterNetworkCallback(networkCallback) }
     routeExecutor.shutdownNow()
@@ -93,6 +95,7 @@ class ConnectivityForegroundService : Service() {
   }
 
   private fun checkRoutes() {
+    if (destroyed) return
     checkTorRoute()
     checkClearnetRoute()
   }
@@ -107,35 +110,52 @@ class ConnectivityForegroundService : Service() {
     markCheckingUnlessConnected(torStatus, endpoint.label, "Connecting to Tor")
     routeExecutor.execute {
       val startedAt = SystemClock.elapsedRealtime()
+      var phase = "tor_bootstrap"
+      var phaseStartedAt = startedAt
       val result = runCatching {
         val proxyAddress = EmbeddedTorManager.ensureReady(this, TOR_BOOTSTRAP_TIMEOUT_MS)
-        probeThroughSocks(proxyAddress, endpoint)
+        probeThroughSocks(proxyAddress, endpoint) { nextPhase ->
+          phase = nextPhase
+          phaseStartedAt = SystemClock.elapsedRealtime()
+        }
       }
-      torStatus.set(
-        result.fold(
-          onSuccess = {
-            RouteSnapshot.connected(
-              endpoint.label,
-              SystemClock.elapsedRealtime() - startedAt,
-            )
+      // A long Onion handshake must not publish an obsolete endpoint result
+      // after a profile switch, nor after this service instance was stopped.
+      val currentEndpoint = configuration.get().tor
+      if (!destroyed && currentEndpoint == endpoint) {
+        torStatus.set(
+          result.fold(
+            onSuccess = {
+              RouteSnapshot.connected(
+                endpoint.label,
+                SystemClock.elapsedRealtime() - startedAt,
+              )
+            },
+            onFailure = { error ->
+              RouteSnapshot.failed(
+                endpoint.label,
+                error.message ?: "Tor route is unavailable",
+              )
+            },
+          ),
+        )
+        val error = result.exceptionOrNull()
+        Log.i(
+          LOG_TAG,
+          if (result.isSuccess) {
+            "route=tor phase=connected elapsed_ms=${SystemClock.elapsedRealtime() - startedAt}"
+          } else {
+            "route=tor phase=error stage=$phase " +
+              "elapsed_ms=${SystemClock.elapsedRealtime() - startedAt} " +
+              "stage_elapsed_ms=${SystemClock.elapsedRealtime() - phaseStartedAt} " +
+              "type=${(error?.cause ?: error)?.javaClass?.simpleName ?: "unknown"}"
           },
-          onFailure = { error ->
-            RouteSnapshot.failed(
-              endpoint.label,
-              error.message ?: "Tor route is unavailable",
-            )
-          },
-        ),
-      )
-      Log.i(
-        LOG_TAG,
-        if (result.isSuccess) {
-          "route=tor phase=connected elapsed_ms=${SystemClock.elapsedRealtime() - startedAt}"
-        } else {
-          "route=tor phase=error type=${result.exceptionOrNull()?.javaClass?.simpleName ?: "unknown"}"
-        },
-      )
+        )
+      }
       torCheckRunning.set(false)
+      if (!destroyed && currentEndpoint != endpoint) {
+        mainHandler.post { checkTorRoute() }
+      }
     }
   }
 
@@ -180,32 +200,29 @@ class ConnectivityForegroundService : Service() {
     }
   }
 
-  private fun probeThroughSocks(proxyAddress: String, endpoint: Endpoint) {
+  private fun probeThroughSocks(
+    proxyAddress: String,
+    endpoint: Endpoint,
+    onPhase: (String) -> Unit,
+  ) {
     val proxyEndpoint = parseEndpoint(proxyAddress)
-    Socket(
-      Proxy(
-        Proxy.Type.SOCKS,
-        InetSocketAddress.createUnresolved(proxyEndpoint.host, proxyEndpoint.port),
-      ),
-    ).use { socket ->
-      socket.soTimeout = ROUTE_PROBE_TIMEOUT_MS
-      socket.connect(
-        InetSocketAddress.createUnresolved(endpoint.host, endpoint.port),
-        ROUTE_PROBE_TIMEOUT_MS,
-      )
-      val request =
-        "GET /get_height HTTP/1.1\r\nHost: ${endpoint.host}\r\n" +
-          "Accept: application/json\r\nConnection: close\r\n\r\n"
-      socket.getOutputStream().write(request.toByteArray(StandardCharsets.US_ASCII))
-      socket.getOutputStream().flush()
-      val response = socket.getInputStream().bufferedReader(StandardCharsets.UTF_8).use {
-        it.readText().take(MAX_HEALTH_RESPONSE_CHARS)
-      }
-      require(
-        (response.startsWith("HTTP/1.1 200 ") || response.startsWith("HTTP/1.0 200 ")) &&
-          response.contains("\"height\"")
-      ) { "The selected Onion daemon did not return a valid /get_height response" }
+    val body = TorRouteProbe.probe(
+      proxyEndpoint.host,
+      proxyEndpoint.port,
+      endpoint.host,
+      endpoint.port,
+    ) { phase -> onPhase(phase) }
+    onPhase("daemon_response")
+    val response = runCatching {
+      JSONObject(String(body, StandardCharsets.UTF_8))
+    }.getOrElse { error ->
+      throw IllegalStateException("The selected Onion daemon returned invalid health JSON", error)
     }
+    val height = response.opt("height")
+    require(
+      (height is Int || height is Long) && (height as Number).toLong() > 0 &&
+        (!response.has("status") || response.opt("status") == "OK")
+    ) { "The selected Onion daemon did not return a valid /get_height response" }
   }
 
   private fun probeGrpcApi(endpoint: Endpoint) {
@@ -307,7 +324,6 @@ class ConnectivityForegroundService : Service() {
     private const val ROUTE_CHECK_INTERVAL_MS = 20_000L
     private const val TOR_BOOTSTRAP_TIMEOUT_MS = 120_000L
     private const val ROUTE_PROBE_TIMEOUT_MS = 8_000
-    private const val MAX_HEALTH_RESPONSE_CHARS = 32 * 1024
     private const val MAX_HTTP2_SETTINGS_BYTES = 65_535
     private val HTTP2_PREFACE =
       "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n".toByteArray(StandardCharsets.US_ASCII)

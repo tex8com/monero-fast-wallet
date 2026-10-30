@@ -3,6 +3,7 @@
 #include "WalletEngineTypes.h"
 
 #include <memory>
+#include <initializer_list>
 #include <string>
 #include <vector>
 
@@ -33,6 +34,9 @@ class WalletEngine {
   // builds persist these already allowlisted lines beside the host records so
   // native transport failures remain available after Logcat has rotated.
   static std::vector<std::string> drainDiagnosticLines();
+  static void recordDiagnosticEvent(
+      const std::string& event,
+      const std::initializer_list<std::pair<std::string, std::string>>& fields);
   static void setLedgerBleTransportCallbacks(
       const LedgerBleTransportCallbacks& callbacks);
   static void clearLedgerBleTransportCallbacks();

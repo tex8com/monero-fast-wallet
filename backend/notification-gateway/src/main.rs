@@ -1,8 +1,11 @@
 use ed25519_dalek::VerifyingKey;
 use fast_wallet_protocol::WorkerDescriptor;
 use notification_gateway::{
-    provider::{ApnsDeliveryConfig, DirectProviderDelivery, FcmCredentials, FcmDeliveryConfig},
-    router, GatewayState, HttpRelayControl, HttpWorkerAdmissionDirectory,
+    provider::{
+        ApnsCredentials, ApnsDeliveryConfig, DirectProviderDelivery, FcmCredentials,
+        FcmDeliveryConfig,
+    },
+    router, GatewayState, HttpRelayControl, HttpWorkerAdmissionDirectory, HttpWorkerTestTrigger,
 };
 use std::{
     env,
@@ -57,20 +60,14 @@ async fn run() -> Result<(), String> {
         }),
         _ => return Err("NOTIFICATION_GATEWAY_FCM_PROJECT_ID and exactly one FCM credential source must be configured together".to_owned()),
     };
-    let apns = optional_pair(
-        "NOTIFICATION_GATEWAY_APNS_TOPIC",
-        "NOTIFICATION_GATEWAY_APNS_PROVIDER_JWT_FILE",
-    )?
-    .map(
-        |(topic, provider_jwt_file)| -> Result<ApnsDeliveryConfig, String> {
-            Ok(ApnsDeliveryConfig {
-                topic,
-                provider_jwt_file: PathBuf::from(provider_jwt_file),
-                sandbox: env_bool("NOTIFICATION_GATEWAY_APNS_SANDBOX", false)?,
-            })
-        },
-    )
-    .transpose()?;
+    let apns = apns_configuration(
+        optional_env("NOTIFICATION_GATEWAY_APNS_TOPIC"),
+        optional_env("NOTIFICATION_GATEWAY_APNS_PROVIDER_JWT_FILE"),
+        optional_env("NOTIFICATION_GATEWAY_APNS_TEAM_ID"),
+        optional_env("NOTIFICATION_GATEWAY_APNS_KEY_ID"),
+        optional_env("NOTIFICATION_GATEWAY_APNS_SIGNING_KEY_FILE"),
+        env_bool("NOTIFICATION_GATEWAY_APNS_SANDBOX", false)?,
+    )?;
     let delivery = Arc::new(DirectProviderDelivery::new(
         fcm,
         apns,
@@ -127,6 +124,15 @@ async fn run() -> Result<(), String> {
         let mut auth = load_secret_file(Path::new(&path))?;
         state = state.with_claim_service_auth(auth);
         auth.zeroize();
+    }
+    if let Some((origin, token_file)) = optional_pair(
+        "NOTIFICATION_GATEWAY_WORKER_TEST_ORIGIN",
+        "NOTIFICATION_GATEWAY_WORKER_TEST_TOKEN_FILE",
+    )? {
+        let mut token = load_secret_file(Path::new(&token_file))?;
+        let trigger = HttpWorkerTestTrigger::new(&origin, token, Duration::from_secs(10));
+        token.zeroize();
+        state = state.with_worker_test_trigger(Arc::new(trigger?));
     }
     let listener = TcpListener::bind(bind)
         .await
@@ -282,20 +288,27 @@ fn required_env(name: &str) -> Result<String, String> {
         .ok_or_else(|| format!("{name} is required"))
 }
 
-fn optional_pair(first: &str, second: &str) -> Result<Option<(String, String)>, String> {
-    let first_value = env::var(first)
-        .ok()
-        .map(|value| value.trim().to_owned())
-        .filter(|value| !value.is_empty());
-    let second_value = env::var(second)
-        .ok()
-        .map(|value| value.trim().to_owned())
-        .filter(|value| !value.is_empty());
-    match (first_value, second_value) {
-        (None, None) => Ok(None),
-        (Some(first_value), Some(second_value)) => Ok(Some((first_value, second_value))),
-        _ => Err(format!("{first} and {second} must be configured together")),
-    }
+fn apns_configuration(
+    topic: Option<String>,
+    jwt_file: Option<String>,
+    team_id: Option<String>,
+    key_id: Option<String>,
+    signing_key_file: Option<String>,
+    sandbox: bool,
+) -> Result<Option<ApnsDeliveryConfig>, String> {
+    let (topic, credentials) = match (topic, jwt_file, team_id, key_id, signing_key_file) {
+        (None, None, None, None, None) => return Ok(None),
+        (Some(topic), Some(path), None, None, None) =>
+            (topic, ApnsCredentials::ProviderJwtFile(PathBuf::from(path))),
+        (Some(topic), None, Some(team_id), Some(key_id), Some(path)) =>
+            (topic, ApnsCredentials::SigningKeyFile { team_id, key_id, path: PathBuf::from(path) }),
+        _ => return Err("APNs requires NOTIFICATION_GATEWAY_APNS_TOPIC and exactly one complete credential source: PROVIDER_JWT_FILE or TEAM_ID + KEY_ID + SIGNING_KEY_FILE".to_owned()),
+    };
+    Ok(Some(ApnsDeliveryConfig {
+        topic,
+        credentials,
+        sandbox,
+    }))
 }
 
 fn optional_env(name: &str) -> Option<String> {
@@ -303,6 +316,14 @@ fn optional_env(name: &str) -> Option<String> {
         .ok()
         .map(|value| value.trim().to_owned())
         .filter(|value| !value.is_empty())
+}
+
+fn optional_pair(first: &str, second: &str) -> Result<Option<(String, String)>, String> {
+    match (optional_env(first), optional_env(second)) {
+        (None, None) => Ok(None),
+        (Some(first_value), Some(second_value)) => Ok(Some((first_value, second_value))),
+        _ => Err(format!("{first} and {second} must be configured together")),
+    }
 }
 
 fn env_u64(name: &str, default: u64) -> Result<u64, String> {
@@ -355,4 +376,37 @@ async fn shutdown_signal() {
     #[cfg(not(unix))]
     let terminate = std::future::pending::<()>();
     tokio::select! { _ = ctrl_c => {}, _ = terminate => {} }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn apns_requires_exactly_one_complete_credential_source() {
+        for mask in 0..32 {
+            let value = |bit, value: &str| {
+                if mask & bit != 0 {
+                    Some(value.to_owned())
+                } else {
+                    None
+                }
+            };
+            let result = apns_configuration(
+                value(1, "com.tex8.monerowallet.desktop"),
+                value(2, "/protected/provider.jwt"),
+                value(4, "TESTTEAM01"),
+                value(8, "TESTKEY001"),
+                value(16, "/protected/signing.p8"),
+                false,
+            );
+            assert_eq!(result.is_ok(), matches!(mask, 0 | 3 | 29));
+            if matches!(mask, 0 | 3 | 29) {
+                match result.unwrap() {
+                    None => assert_eq!(mask, 0),
+                    Some(config) => assert!(!config.sandbox),
+                }
+            }
+        }
+    }
 }

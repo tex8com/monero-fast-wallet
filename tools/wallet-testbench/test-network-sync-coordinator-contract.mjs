@@ -206,7 +206,7 @@ test('one coordinator fetches and decodes once before wallet-private fan-out', (
   assert.match(walletEngine, /executeAsyncWalletScan/);
   assert.match(walletEngine, /consumeSharedBlockBatch\(\*batch\)/);
   assert.match(worker, /providerRetryAfter/);
-  assert.match(worker, /coordinatorExecutionMutex_/);
+  assert.match(worker, /acquireCoordinatorSharedLock/);
   assert.match(worker, /networkSync\.walletStalled/);
   assert.match(worker, /scanExecutor->submit/);
   assert.match(worker, /scanExecutor->workerCount/);
@@ -253,6 +253,19 @@ test('real slow-scanner fault injection is acceptance-only and proves isolation'
   assert.match(multiwalletAcceptance, /MFW_ACCEPTANCE_SLOW_SCANNER/);
   assert.match(multiwalletAcceptance, /healthy\.walletHeight > slow\.walletHeight/);
   assert.match(multiwalletAcceptance, /acceptance_slow_scanner/);
+});
+
+test('wallet deletion has writer priority over recurring background scans', () => {
+  assert.match(walletEngine, /coordinatorExclusiveWaiters_/);
+  assert.match(walletEngine, /acquireCoordinatorSharedLock/);
+  assert.match(
+    walletEngine,
+    /leaveNetworkSync\(walletId\);[\s\S]*ExclusiveWaiter[\s\S]*coordinatorExecutionMutex_/,
+  );
+  assert.match(
+    walletEngine,
+    /coordinatorExclusiveWaiters_\.load\(std::memory_order_acquire\) > 0/,
+  );
 });
 
 test('corrupted public batches are rejected before private wallet fan-out', () => {
@@ -309,8 +322,11 @@ test('asynchronous consumers remain single-flight and cannot publish pre-restore
   );
   assert.match(
     worker,
-    /requestedDownloadCursor = replayRetainedBatch[\s\S]*\? minimumRetainedTarget[\s\S]*coordinator\.status\.downloadedHeight/,
+    /requestedDownloadCursor = missingHistoricalBatch[\s\S]*\? minimumTarget[\s\S]*replayRetainedBatch[\s\S]*\? minimumRetainedTarget[\s\S]*coordinator\.status\.downloadedHeight/,
   );
+  assert.match(worker, /network_fanout::needsHistoricalCatchUp/);
+  assert.match(worker, /networkSync\.replayGapDetected/);
+  assert.doesNotMatch(worker, /work\.error = "required shared block batch is not retained"/);
   assert.match(worker, /const bool atTip = publicAtTip && pendingScans == 0/);
   assert.match(worker, /work\.batch = findReplayBatchLocked/);
   assert.match(worker, /const uint64_t requiredCursor = std::max\([\s\S]*work\.cursor, work\.target/);
@@ -700,13 +716,15 @@ test('a shared-transport failure is diagnosable without disclosing wallet data',
   const end = walletEngine.indexOf('void stopAllNetworkCoordinators()', start);
   const worker = walletEngine.slice(start, end);
   assert.match(worker, /coordinator\.status\.lastError\.clear\(\)/);
-  assert.match(worker, /networkSyncFailureCode\(error\.what\(\)\)/);
+  assert.match(worker, /localWalletFailure[\s\S]*networkSyncFailureCode\(error\.what\(\)\)/);
   assert.match(worker, /coordinator\.status\.lastError = hideTransientRetry[\s\S]*networkSyncSafeStatus\(failureCode\)/);
   assert.doesNotMatch(worker, /coordinator\.status\.lastError = error\.what\(\)/);
   assert.match(worker, /\+\+coordinator\.status\.consecutiveFailures/);
   assert.match(worker, /const char\* failureStage = "initializing-transport"/);
   assert.match(worker, /"networkSync\.iterationFailed"[\s\S]*\{"stage", failureStage\}/);
   assert.match(worker, /networkSync\.transportDiscarded/);
+  assert.match(worker, /failureDomain/);
+  assert.match(worker, /iterationId/);
   assert.match(proofRunner, /benchmark_network_error=/);
   assert.match(proofRunner, /benchmark_network_fetched_blocks=/);
 });
@@ -763,7 +781,21 @@ test('isolated transport reconnects stay non-fatal but persistent or invalid fai
   assert.match(worker, /hideTransientRetry \? "reconnecting" : "retrying"/);
   assert.match(worker, /networkSync\.tipReconnectHidden/);
   assert.match(worker, /networkSync\.transientReconnectHidden/);
-  assert.match(worker, /const bool retainPublicTransport =[\s\S]*privateReconciliationActive \|\| preserveConfirmedTip/);
+  assert.match(worker, /const bool retainPublicTransport =[\s\S]*localWalletFailure \|\| privateReconciliationActive \|\|[\s\S]*preserveConfirmedTip/);
   assert.match(worker, /networkSync\.tipTransportRetained/);
+  assert.match(worker, /networkSync\.localFailureTransportRetained/);
   assert.match(worker, /if \(!retainPublicTransport\) \{[\s\S]*coordinator\.publicTransport = nullptr/);
+});
+
+test('fresh-wallet cache failures stay local and never masquerade as node failures', () => {
+  const start = walletEngine.indexOf('void runNetworkCoordinator(');
+  const end = walletEngine.indexOf('void stopAllNetworkCoordinators()', start);
+  const worker = walletEngine.slice(start, end);
+
+  assert.match(walletEngine, /bool isLocalWalletSyncStage/);
+  assert.match(walletEngine, /stage == "rebasing-fresh-wallet"/);
+  assert.match(worker, /failureStage = "rebasing-fresh-wallet"/);
+  assert.match(worker, /failureCode = localWalletFailure[\s\S]*"local-wallet"/);
+  assert.match(worker, /failureDomain = localWalletFailure[\s\S]*"local-wallet"/);
+  assert.match(worker, /transportAction/);
 });

@@ -47,6 +47,7 @@ const COMMANDS: &[&str] = &[
     "list_community_fast_wallet_workers",
     "select_community_fast_wallet_worker",
     "enable_encrypted_fast_wallet_alerts",
+    "check_fast_wallet_hosting",
     "turn_off_fast_wallet_alerts",
     "delete_hosted_fast_wallet_data",
     "enable_fast_wallet",
@@ -56,6 +57,11 @@ const COMMANDS: &[&str] = &[
     "request_notification_installation",
     "disable_notification_installation",
     "consume_pending_notification_open",
+    "consume_pending_notification_events",
+    "request_test_push_notification",
+    "test_push_notification_status",
+    "open_notification_settings",
+    "open_focus_settings",
     "background_notification_agent_config_path",
     "create_vanity_quote",
     "vanity_order_status",
@@ -280,6 +286,7 @@ fn main() {
         bridge_dir.join("cpp/WalletEngineTypes.h"),
         desktop_bridge_dir.join("cpp/DesktopWalletCore.cpp"),
         desktop_bridge_dir.join("cpp/DesktopNotificationsMac.mm"),
+        desktop_bridge_dir.join("cpp/ApnsRegistrationState.h"),
         desktop_bridge_dir.join("cpp/DesktopLedgerBleMac.mm"),
         desktop_bridge_dir.join("cpp/DesktopPlatformAuthMac.mm"),
         desktop_bridge_dir.join("cpp/DesktopPlatformAuthWindows.cpp"),
@@ -307,6 +314,8 @@ fn main() {
     let mut native = cc::Build::new();
     native
         .cpp(true)
+        // Only the allowlisted operational ring; never enable Core's raw logs.
+        .define("TEX8_WALLET_DIAGNOSTICS", Some("1"))
         .warnings(true)
         // MSVC does not accept the GCC/Clang spelling below.  Keep the
         // native bridge on the same C++ standard on every desktop target.

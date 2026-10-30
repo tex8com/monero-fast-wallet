@@ -62,6 +62,11 @@ Tex8DesktopResult unavailable() noexcept { return Tex8DesktopResult{0, nullptr, 
     return function == nullptr ? unavailable() : function arguments;          \
   }
 
+TEX8_FORWARD_RESULT(tex8_desktop_wallet_ledger_usb_available, (), ())
+TEX8_FORWARD_RESULT(tex8_desktop_wallet_open_with_device,
+    (Tex8DesktopWalletCore* core, const char* path, const char* password, unsigned char network, unsigned long long restore_height, const char* device_name),
+    (core, path, password, network, restore_height, device_name))
+
 extern "C" int tex8_desktop_wallet_core_linked_with_monero() noexcept {
   using Function = int (*)();
   const auto function = resolve<Function>("tex8_desktop_wallet_core_linked_with_monero");
@@ -93,6 +98,7 @@ extern "C" void tex8_desktop_result_free(Tex8DesktopResult* result) noexcept {
 }
 
 TEX8_FORWARD_RESULT(tex8_desktop_wallet_ledger_transport_status, (Tex8DesktopWalletCore* core), (core))
+TEX8_FORWARD_RESULT(tex8_desktop_wallet_drain_diagnostics, (), ())
 TEX8_FORWARD_RESULT(tex8_desktop_wallet_ledger_connection_status, (Tex8DesktopWalletCore* core), (core))
 TEX8_FORWARD_RESULT(tex8_desktop_wallet_compute_backend_status, (Tex8DesktopWalletCore* core), (core))
 TEX8_FORWARD_RESULT(tex8_desktop_wallet_set_compute_backend, (Tex8DesktopWalletCore* core, const char* preference), (core, preference))

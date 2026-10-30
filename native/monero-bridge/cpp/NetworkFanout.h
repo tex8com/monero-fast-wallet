@@ -164,6 +164,11 @@ class BoundedExecutor {
   bool stopping_{false};
 };
 
+inline bool needsHistoricalCatchUp(
+    uint64_t scannerCursor, uint64_t downloadedHeight, bool retained) {
+  return scannerCursor < downloadedHeight && !retained;
+}
+
 inline bool updateDownloadRange(
     bool& initialized,
     uint64_t minimumTarget,

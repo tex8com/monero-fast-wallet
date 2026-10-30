@@ -107,3 +107,19 @@ describe('FastWalletPushService', () => {
     ).toBeUndefined();
   });
 });
+
+
+describe('scheduled test receipts', () => {
+  const {parseTestPushReceipt} = require('../FastWalletPushService');
+  const receipt = {accepted: true, eventId: 'evt_' + 'a'.repeat(64), scheduledAt: 100, deliverAfter: 110};
+  it('accepts an exact server schedule, independent of delayed HTTP delivery', () => {
+    expect(parseTestPushReceipt(receipt)).toEqual(receipt);
+  });
+  it.each([
+    {...receipt, accepted: false}, {...receipt, eventId: 'not-an-event'},
+    {...receipt, scheduledAt: 100.5}, {...receipt, deliverAfter: 109},
+    {...receipt, deliverAfter: Infinity},
+  ])('rejects a malformed or unconfirmed receipt', value => {
+    expect(() => parseTestPushReceipt(value)).toThrow();
+  });
+});

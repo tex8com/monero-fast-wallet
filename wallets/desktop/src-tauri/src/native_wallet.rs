@@ -31,6 +31,16 @@ unsafe extern "C" {
     fn tex8_desktop_wallet_core_new() -> *mut RawCore;
     fn tex8_desktop_wallet_core_free(core: *mut RawCore);
     fn tex8_desktop_result_free(result: *mut RawResult);
+    fn tex8_desktop_wallet_drain_diagnostics() -> RawResult;
+    fn tex8_desktop_wallet_ledger_usb_available() -> RawResult;
+    fn tex8_desktop_wallet_open_with_device(
+        core: *mut RawCore,
+        path: *const c_char,
+        password: *const c_char,
+        network: u8,
+        restore_height: u64,
+        device_name: *const c_char,
+    ) -> RawResult;
     fn tex8_desktop_wallet_ledger_transport_status(core: *mut RawCore) -> RawResult;
     fn tex8_desktop_wallet_ledger_connection_status(core: *mut RawCore) -> RawResult;
     fn tex8_desktop_wallet_compute_backend_status(core: *mut RawCore) -> RawResult;
@@ -391,6 +401,34 @@ impl NativeWallet {
         self.call(
             |core, path, password| unsafe {
                 tex8_desktop_wallet_open(core, path, password, network, restore_height)
+            },
+            path,
+            password,
+        )
+    }
+    pub fn ledger_usb_available(&self) -> Result<bool, String> {
+        self.result(unsafe { tex8_desktop_wallet_ledger_usb_available() })
+            .map(|value| value == "true")
+    }
+    pub fn open_with_device(
+        &self,
+        path: &str,
+        password: &str,
+        network: u8,
+        restore_height: u64,
+        device: &str,
+    ) -> Result<String, String> {
+        let device = c(device)?;
+        self.call(
+            |core, path, password| unsafe {
+                tex8_desktop_wallet_open_with_device(
+                    core,
+                    path,
+                    password,
+                    network,
+                    restore_height,
+                    device.as_ptr(),
+                )
             },
             path,
             password,
@@ -937,6 +975,20 @@ impl NativeWallet {
         unsafe { tex8_desktop_result_free(&mut result) };
         output
     }
+}
+
+/// The diagnostic ring has its own mutex. Do not take the wallet lock here:
+/// transport and native-operation failures must be visible while FFI is busy.
+pub fn drain_diagnostics() -> Vec<String> {
+    let mut result = unsafe { tex8_desktop_wallet_drain_diagnostics() };
+    let lines = if result.ok == 1 && !result.value.is_null() {
+        let raw = unsafe { CStr::from_ptr(result.value) }.to_string_lossy();
+        serde_json::from_str(&raw).unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    unsafe { tex8_desktop_result_free(&mut result) };
+    lines
 }
 
 fn configure_public_block_spool() {

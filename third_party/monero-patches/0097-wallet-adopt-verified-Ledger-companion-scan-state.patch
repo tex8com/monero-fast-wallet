@@ -1,0 +1,220 @@
+From fa8f909109d12eb9d81c50a378aa5e0ac6095fe7 Mon Sep 17 00:00:00 2001
+From: TEX8 Monero Patch Integrator <monero-patches@tex8.local>
+Date: Sun, 11 Oct 2026 14:37:01 -0500
+Subject: [PATCH] wallet: adopt verified Ledger companion scan state
+
+---
+ src/wallet/api/wallet.cpp    |   9 +++
+ src/wallet/api/wallet2_api.h |   6 +-
+ src/wallet/wallet2.cpp       | 146 +++++++++++++++++++++++++++++++++++
+ src/wallet/wallet2.h         |   1 +
+ 4 files changed, 160 insertions(+), 2 deletions(-)
+
+diff --git a/src/wallet/api/wallet.cpp b/src/wallet/api/wallet.cpp
+index abc60b7..9032899 100644
+--- a/src/wallet/api/wallet.cpp
++++ b/src/wallet/api/wallet.cpp
+@@ -1137,6 +1137,15 @@ bool WalletImpl::prepareHardwareWalletScanFromViewOnly(
+             setStatusError(tr("Ledger could not enter device-token derivation mode"));
+             return false;
+         }
++        // The encrypted companion is the one canonical scanner. Atomically
++        // adopt its exact cursor and full public wallet cache, while the Core
++        // method re-derives and compares every Key Image on this Ledger before
++        // accepting any copied spent state. This replaces the old second
++        // historical signing-wallet scan without weakening device or output
++        // ownership checks.
++        m_wallet->adopt_view_only_scan_state(*view_only->m_wallet);
++        m_history->refresh();
++        m_synchronized = view_only->m_synchronized.load();
+         return true;
+     } catch (const std::exception &e) {
+         setStatusError(e.what());
+diff --git a/src/wallet/api/wallet2_api.h b/src/wallet/api/wallet2_api.h
+index 9c7d91d..b7594a2 100644
+--- a/src/wallet/api/wallet2_api.h
++++ b/src/wallet/api/wallet2_api.h
+@@ -559,8 +559,10 @@ struct Wallet
+     virtual bool prepareHardwareWalletScan() = 0;
+     /*!
+      * \brief prepareHardwareWalletScanFromViewOnly - primes a Ledger scanner
+-     * from an already-approved, encrypted local view-only wallet. The private
+-     * view key never leaves the native Wallet implementation.
++     * and atomically adopts the already-approved encrypted companion's exact
++     * scan state. The private view key never leaves the native Wallet
++     * implementation; every copied owned output is rebound to the connected
++     * Ledger and its Key Image must match before spent state is accepted.
+      */
+     virtual bool prepareHardwareWalletScanFromViewOnly(
+         const Wallet &viewOnlyWallet) = 0;
+diff --git a/src/wallet/wallet2.cpp b/src/wallet/wallet2.cpp
+index 81c41d0..e7ee396 100644
+--- a/src/wallet/wallet2.cpp
++++ b/src/wallet/wallet2.cpp
+@@ -16853,6 +16853,152 @@ void wallet2::import_blockchain(const std::tuple<size_t, crypto::hash, std::vect
+   m_last_block_reward = cryptonote::get_outs_money_amount(genesis.miner_tx);
+ }
+ //----------------------------------------------------------------------------------------------------
++size_t wallet2::adopt_view_only_scan_state(wallet2 &source)
++{
++  THROW_WALLET_EXCEPTION_IF(
++      this == &source,
++      error::wallet_internal_error,
++      "Ledger scan-state source and destination must be different wallets");
++  THROW_WALLET_EXCEPTION_IF(
++      !source.watch_only() || source.get_device_type() != hw::device::SOFTWARE,
++      error::wallet_internal_error,
++      "Ledger scan-state source must be a software view-only wallet");
++  THROW_WALLET_EXCEPTION_IF(
++      get_device_type() != hw::device::LEDGER,
++      error::wallet_internal_error,
++      "Ledger scan-state destination must be a Ledger wallet");
++  THROW_WALLET_EXCEPTION_IF(
++      nettype() != source.nettype(),
++      error::wallet_internal_error,
++      "Ledger scan-state wallets use different networks");
++  THROW_WALLET_EXCEPTION_IF(
++      get_account().get_keys().m_account_address !=
++          source.get_account().get_keys().m_account_address,
++      error::wallet_internal_error,
++      "Ledger scan-state wallets have different master public keys");
++  THROW_WALLET_EXCEPTION_IF(
++      source.m_blockchain.empty(),
++      error::wallet_internal_error,
++      "Ledger scan-state source has no verified blockchain cursor");
++
++  for (size_t index = 0; index < source.m_transfers.size(); ++index)
++  {
++    const transfer_details &transfer = source.m_transfers[index];
++    THROW_WALLET_EXCEPTION_IF(
++        !transfer.m_key_image_known || transfer.m_key_image_partial,
++        error::wallet_internal_error,
++        "Ledger scan-state source has an unverified owned output at index " +
++            std::to_string(index));
++  }
++
++  std::string destination_checkpoint;
++  CHECK_AND_ASSERT_THROW_MES(
++      ::serialization::dump_binary(*this, destination_checkpoint),
++      "Failed to checkpoint Ledger signing state before scan-state adoption");
++  i_wallet2_callback *destination_callback = m_callback;
++  m_callback = nullptr;
++
++  try
++  {
++    // The encrypted companion is the canonical scanner. Copy only its public
++    // chain and wallet-cache material; account secrets and device ownership
++    // remain those of this already-open Ledger wallet.
++    clear_soft(false);
++    m_blockchain = source.m_blockchain;
++    m_transfers = source.m_transfers;
++    m_payments = source.m_payments;
++    m_confirmed_txs = source.m_confirmed_txs;
++    m_unconfirmed_txs = source.m_unconfirmed_txs;
++    m_unconfirmed_payments = source.m_unconfirmed_payments;
++    m_scanned_pool_txs[0] = source.m_scanned_pool_txs[0];
++    m_scanned_pool_txs[1] = source.m_scanned_pool_txs[1];
++    m_subaddresses = source.m_subaddresses;
++    m_subaddress_labels = source.m_subaddress_labels;
++    m_account_tags = source.m_account_tags;
++    m_refresh_from_block_height = source.m_refresh_from_block_height;
++    m_skip_to_height = source.m_skip_to_height;
++    m_last_block_reward = source.m_last_block_reward;
++    m_pool_info_query_time = source.m_pool_info_query_time;
++    m_has_ever_refreshed_from_node = source.m_has_ever_refreshed_from_node;
++    m_key_images.clear();
++    m_pub_keys.clear();
++
++    // Never trust copied spend capability. Re-derive every Key Image on the
++    // connected Ledger, bind it to the exact output public key, and require it
++    // to match the Key Image whose spent status the companion already checked.
++    for (size_t index = 0; index < m_transfers.size(); ++index)
++    {
++      transfer_details &transfer = m_transfers[index];
++      const crypto::key_image expected_key_image = transfer.m_key_image;
++      const crypto::public_key output_key = transfer.get_public_key();
++      const crypto::public_key tx_public_key =
++          get_tx_pub_key_from_received_outs(transfer);
++      const std::vector<crypto::public_key> additional_tx_public_keys =
++          get_additional_tx_pub_keys_from_extra(transfer.m_tx);
++      cryptonote::keypair ephemeral;
++      if (should_expand(transfer.m_subaddr_index))
++        create_one_off_subaddress(transfer.m_subaddr_index);
++      const bool derived = cryptonote::generate_key_image_helper(
++          m_account.get_keys(),
++          m_subaddresses,
++          output_key,
++          tx_public_key,
++          additional_tx_public_keys,
++          transfer.m_internal_output_index,
++          ephemeral,
++          transfer.m_key_image,
++          m_account.get_device());
++      THROW_WALLET_EXCEPTION_IF(
++          !derived,
++          error::wallet_internal_error,
++          "Ledger could not verify owned output " + std::to_string(index));
++      if (should_expand(transfer.m_subaddr_index))
++        expand_subaddresses(transfer.m_subaddr_index);
++      THROW_WALLET_EXCEPTION_IF(
++          ephemeral.pub != output_key,
++          error::wallet_internal_error,
++          "Ledger output binding failed at index " + std::to_string(index));
++      THROW_WALLET_EXCEPTION_IF(
++          transfer.m_key_image != expected_key_image,
++          error::wallet_internal_error,
++          "Ledger Key Image does not match the companion at index " +
++              std::to_string(index));
++      transfer.m_key_image_known = true;
++      transfer.m_key_image_request = false;
++      transfer.m_key_image_partial = false;
++      m_key_images[transfer.m_key_image] = index;
++      m_pub_keys[output_key] = index;
++    }
++
++    THROW_WALLET_EXCEPTION_IF(
++        get_blockchain_current_height() !=
++            source.get_blockchain_current_height(),
++        error::wallet_internal_error,
++        "Ledger scan-state cursor did not match the companion");
++    THROW_WALLET_EXCEPTION_IF(
++        balance_all(false) != source.balance_all(false) ||
++            unlocked_balance_all(false) != source.unlocked_balance_all(false),
++        error::wallet_internal_error,
++        "Ledger spend state did not match the companion");
++    m_device_last_key_image_sync = time(NULL);
++    store();
++    m_callback = destination_callback;
++    return m_transfers.size();
++  }
++  catch (...)
++  {
++    const std::exception_ptr failure = std::current_exception();
++    const bool restored = ::serialization::parse_binary(
++        destination_checkpoint,
++        *this);
++    m_callback = destination_callback;
++    CHECK_AND_ASSERT_THROW_MES(
++        restored,
++        "Ledger scan-state adoption failed and signing state could not be restored");
++    std::rethrow_exception(failure);
++  }
++}
++//----------------------------------------------------------------------------------------------------
+ std::tuple<uint64_t, uint64_t, std::vector<tools::wallet2::exported_transfer_details>> wallet2::export_outputs(bool all, uint32_t start, uint32_t count) const
+ {
+   PERF_TIMER(export_outputs);
+diff --git a/src/wallet/wallet2.h b/src/wallet/wallet2.h
+index f4bcecb..12e47c7 100644
+--- a/src/wallet/wallet2.h
++++ b/src/wallet/wallet2.h
+@@ -1712,6 +1712,7 @@ private:
+     void import_payments_out(const std::list<std::pair<crypto::hash,wallet2::confirmed_transfer_details>> &confirmed_payments);
+     std::tuple<size_t, crypto::hash, std::vector<crypto::hash>> export_blockchain() const;
+     void import_blockchain(const std::tuple<size_t, crypto::hash, std::vector<crypto::hash>> &bc);
++    size_t adopt_view_only_scan_state(wallet2 &source);
+     bool export_key_images(const std::string &filename, bool all = false) const;
+     std::pair<uint64_t, std::vector<std::pair<crypto::key_image, crypto::signature>>> export_key_images(bool all = false) const;
+     std::vector<crypto::key_image> owned_output_key_images() const;
+-- 
+2.54.0 (Apple Git-157)

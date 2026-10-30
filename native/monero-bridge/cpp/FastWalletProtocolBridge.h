@@ -360,6 +360,24 @@ inline void verifyWorkerReceipt(
   }
 }
 
+inline void verifyHostingStatus(
+    const std::string& descriptorHex, NetworkType network, uint64_t now,
+    const std::string& handleHex, uint64_t epoch,
+    const std::string& nonceHex, bool hosted, uint64_t checkedAt,
+    const std::string& proofHex) {
+  const auto descriptor = decodeHex(descriptorHex, 1, 4096);
+  const auto handle = decodeHex(handleHex, 32, 32);
+  const auto nonce = decodeHex(nonceHex, 32, 32);
+  const auto proof = decodeHex(proofHex, 1, 4096);
+  const auto status = tex8_fast_wallet_protocol_verify_hosting_status_v1(
+      descriptor.data(), descriptor.size(), networkCode(network), now,
+      handle.data(), epoch, nonce.data(), hosted ? 1 : 0, checkedAt,
+      proof.data(), proof.size());
+  if (status != TEX8_FAST_WALLET_PROTOCOL_OK) {
+    throw WalletEngineError("Fast Wallet hosting proof is invalid");
+  }
+}
+
 inline std::string verifiedNameAddress(
     WalletEngine& engine,
     const std::string& recordPayloadHex,

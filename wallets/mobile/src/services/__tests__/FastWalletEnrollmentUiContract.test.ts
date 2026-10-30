@@ -39,6 +39,20 @@ describe('Fast Wallet encrypted-alert UI contract', () => {
     join(mobileRoot, 'android/app/build.gradle'),
     'utf8',
   );
+  const androidNative = readFileSync(
+    join(
+      mobileRoot,
+      'android/app/src/main/java/com/monerowallet/NativeMoneroWalletModule.kt',
+    ),
+    'utf8',
+  );
+  const iosNative = readFileSync(
+    join(
+      mobileRoot,
+      'ios/MoneroWallet/NativeMoneroWallet/RCTNativeMoneroWallet.mm',
+    ),
+    'utf8',
+  );
 
   it('keeps the primary wallet list simple and treats Fast Wallet as a wallet', () => {
     expect(walletsScreen).toContain("t('wallets.backupRecoveryWords')");
@@ -139,5 +153,48 @@ describe('Fast Wallet encrypted-alert UI contract', () => {
     expect(walletsScreen).not.toContain('Turn HPKE on');
     expect(walletsScreen).not.toContain('Upload private view key');
     expect(walletsScreen).not.toContain('Register scanner');
+  });
+
+  it('activates an assignment only for the exact Worker-acknowledged candidate', () => {
+    const androidSubmit = androidNative.slice(
+      androidNative.indexOf('override fun submitFastWalletWatch('),
+      androidNative.indexOf(
+        'override fun disableFastWalletDelivery(',
+        androidNative.indexOf('override fun submitFastWalletWatch('),
+      ),
+    );
+    const iosSubmit = iosNative.slice(
+      iosNative.indexOf('- (void)submitFastWalletWatch:'),
+      iosNative.indexOf(
+        '- (void)disableFastWalletDelivery',
+        iosNative.indexOf('- (void)submitFastWalletWatch:'),
+      ),
+    );
+
+    for (const source of [androidSubmit, iosSubmit]) {
+      const receiptVerification =
+        source.indexOf('verifyFastWalletWorkerReceipt') >= 0
+          ? source.indexOf('verifyFastWalletWorkerReceipt')
+          : source.indexOf('verifyWorkerReceipt');
+      const activeWrite =
+        source.indexOf('status = "active"') >= 0
+          ? source.indexOf('status = "active"')
+          : source.indexOf('@"status": @"active"');
+      expect(receiptVerification).toBeGreaterThan(0);
+      expect(activeWrite).toBeGreaterThan(receiptVerification);
+      expect(source).toContain('assignmentHandle');
+      expect(source).toContain('assignmentEpoch');
+      expect(source).toContain('Pending Fast Wallet assignment does not exist');
+      expect(source).toContain(
+        'Acknowledged Fast Wallet assignment is no longer current',
+      );
+    }
+
+    expect(androidSubmit).toContain(
+      'pending.handle == checkedAssignmentHandle',
+    );
+    expect(androidSubmit).toContain('pending.epoch == checkedAssignmentEpoch');
+    expect(iosSubmit).toContain('isEqualToString:checkedAssignmentHandle');
+    expect(iosSubmit).toContain('checkedAssignmentEpoch');
   });
 });

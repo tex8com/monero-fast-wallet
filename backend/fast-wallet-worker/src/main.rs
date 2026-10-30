@@ -3,8 +3,8 @@ use ed25519_dalek::VerifyingKey;
 use fast_wallet_protocol::{HpkePrivateKey, Network as ProtocolNetwork, SigningKeyMaterial};
 use fast_wallet_scanner_core::{
     dispatch_pending_notifications, BlockSource, CuprateHttpMempoolSource, EncryptedJsonFileStore,
-    HardwareHostedViewKeyMatcher, MempoolScannerWorker, Network, ScanPackBlockSource, ScannedBlock,
-    ScannerWorker, WatchStore,
+    HardwareHostedViewKeyMatcher, MempoolScannerWorker, Network, ScanPackBlockSource,
+    ScanPackHealth, ScannedBlock, ScannerWorker, WatchStore,
 };
 use fast_wallet_worker::{
     debug::{router as debug_router, validate_loopback_bind},
@@ -80,6 +80,8 @@ fn main() -> Result<()> {
     let source = AdmissionBlockSource {
         inner: scanpack,
         admission: admission.clone(),
+        last_health: None,
+        failed: false,
     };
 
     let acceptor = WorkerWatchAcceptor::new(
@@ -339,6 +341,42 @@ fn start_debug_endpoint(
 struct AdmissionBlockSource {
     inner: ScanPackBlockSource,
     admission: WorkerAdmissionGate,
+    last_health: Option<ScanPackHealth>,
+    failed: bool,
+}
+
+impl AdmissionBlockSource {
+    fn record_health(&mut self) {
+        let health = self.inner.health();
+        if health != self.last_health || self.failed {
+            match health.as_ref() {
+                Some(value) => eprintln!(
+                    "FAST_WALLET_DIAGNOSTICS service=fast-wallet-worker event=scanpack.state available={} generation={} manifestHeight={} canonicalHeight={} lagBlocks={} statusAgeSeconds={}",
+                    value.available,
+                    value.generation,
+                    value.manifest_end_height,
+                    value.canonical_height,
+                    value.lag_blocks,
+                    value.status_age_seconds,
+                ),
+                None => eprintln!(
+                    "FAST_WALLET_DIAGNOSTICS service=fast-wallet-worker event=scanpack.state available=false status=missing"
+                ),
+            }
+            self.last_health = health;
+            self.failed = false;
+        }
+    }
+
+    fn record_failure(&mut self, operation: &str) {
+        self.admission.set_available(false);
+        if !self.failed {
+            eprintln!(
+                "FAST_WALLET_DIAGNOSTICS service=fast-wallet-worker event=scanpack.failed operation={operation} available=false"
+            );
+            self.failed = true;
+        }
+    }
 }
 
 impl BlockSource for AdmissionBlockSource {
@@ -353,12 +391,16 @@ impl BlockSource for AdmissionBlockSource {
             .next_blocks(network, from_height_exclusive, max_blocks)
         {
             Ok(blocks) => {
-                self.admission
-                    .set_available(self.inner.health().is_some_and(|health| health.available));
+                self.record_health();
+                self.admission.set_available(
+                    self.last_health
+                        .as_ref()
+                        .is_some_and(|health| health.available),
+                );
                 Ok(blocks)
             }
             Err(error) => {
-                self.admission.set_available(false);
+                self.record_failure("next-blocks");
                 Err(error)
             }
         }
@@ -366,9 +408,12 @@ impl BlockSource for AdmissionBlockSource {
 
     fn canonical_block_hash(&mut self, network: Network, height: u64) -> Result<Option<String>> {
         match self.inner.canonical_block_hash(network, height) {
-            Ok(hash) => Ok(hash),
+            Ok(hash) => {
+                self.record_health();
+                Ok(hash)
+            }
             Err(error) => {
-                self.admission.set_available(false);
+                self.record_failure("canonical-hash");
                 Err(error)
             }
         }

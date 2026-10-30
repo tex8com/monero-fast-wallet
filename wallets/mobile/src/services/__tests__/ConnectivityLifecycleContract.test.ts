@@ -49,11 +49,17 @@ describe('process-wide connectivity lifecycle', () => {
     expect(service).toContain('Executors.newFixedThreadPool(2)');
     expect(service).toContain('checkTorRoute()');
     expect(service).toContain('checkClearnetRoute()');
-    expect(service).toContain('GET /get_height HTTP/1.1');
-    expect(service).toContain('response.contains("\\"height\\"")');
     expect(service).toContain('HTTP2_PREFACE');
     expect(service).toContain('EMPTY_HTTP2_SETTINGS');
     expect(service).toContain('probeGrpcApi(endpoint)');
+    expect(service).toContain('TorRouteProbe.probe(');
+    expect(service).toContain('JSONObject(String(body, StandardCharsets.UTF_8))');
+    expect(service).toContain('(height as Number).toLong() > 0');
+    expect(service).toContain('response.opt("status") == "OK"');
+    expect(service).toContain('stage_elapsed_ms=');
+    expect(service).toContain('currentEndpoint == endpoint');
+    expect(service).not.toContain('readText().take(');
+    expect(service).not.toContain('response.contains(');
     expect(service).toContain('registerDefaultNetworkCallback');
     expect(service).toContain(
       'onAvailable(network: Network) = requestImmediateCheck(reconnectTor = false)',

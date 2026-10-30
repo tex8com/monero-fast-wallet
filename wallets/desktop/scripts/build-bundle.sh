@@ -32,6 +32,12 @@ elif [[ "${bundle}" == "appimage" ]]; then
 fi
 
 if [[ "${bundle}" == "app" || "${bundle}" == "dmg" ]]; then
+  # Xcode 27's chained-fixups linker can emit proc-macro dylibs whose LINKEDIT
+  # string pool is not aligned for dyld. Cargo then reports the misleading
+  # "can't find crate" error while loading derive macros. The classic fixup
+  # format is fully supported by our macOS 12 deployment target. Set this
+  # before preparation because that script builds Rust runtime libraries.
+  export RUSTFLAGS="${RUSTFLAGS:+${RUSTFLAGS} }-C link-arg=-Wl,-no_fixup_chains"
   # This exports the native wallet link configuration and stages the Rust
   # crypto dylib where the Tauri macOS bundler expects it.
   source "${script_dir}/prepare-macos-monero-core.sh"

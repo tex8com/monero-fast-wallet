@@ -741,8 +741,8 @@ describe('WalletService registered wallet opening', () => {
     );
   });
 
-  it('allows Ledger preparation at proven tip height while the Core flag catches up', async () => {
-    mockNativeWallet.snapshot.mockResolvedValue({
+  it('waits for Core finalization before preparing a Ledger transaction at the chain tip', async () => {
+    const tipSnapshot = {
       id: 'wallet-ledger-tip',
       path: '/wallets/ledger-tip',
       primaryAddress: '4'.repeat(95),
@@ -753,13 +753,14 @@ describe('WalletService registered wallet opening', () => {
       daemonTargetHeight: 100,
       snapshotRevision: 10,
       synchronized: false,
-    });
+    };
+    mockNativeWallet.snapshot.mockResolvedValue(tipSnapshot);
     mockNativeWallet.getAddress.mockResolvedValue('4'.repeat(95));
     mockNativeWallet.getBalance.mockResolvedValue('1000');
     mockNativeWallet.getUnlockedBalance.mockResolvedValue('900');
 
     const service = new WalletService();
-    await service.prepareMfwNameRegistration(
+    const prepare = () => service.prepareMfwNameRegistration(
       {
         walletId: 'wallet-ledger-tip',
         network: 'mainnet',
@@ -774,6 +775,14 @@ describe('WalletService registered wallet opening', () => {
         registryAddress: '4'.repeat(95),
       },
     );
+
+    await expect(prepare()).rejects.toThrow(
+      'Wait for wallet synchronization before sending.',
+    );
+    expect(mockNativeWallet.prepareMfwNameRegistration).not.toHaveBeenCalled();
+
+    mockNativeWallet.snapshot.mockResolvedValue({ ...tipSnapshot, synchronized: true });
+    await prepare();
 
     expect(mockNativeWallet.prepareMfwNameRegistration).toHaveBeenCalledWith(
       expect.objectContaining({ accountIndex: 0, name: 'tip.mfw' }),
@@ -1333,6 +1342,63 @@ describe('WalletService registered wallet opening', () => {
     expect(mockNativeWallet.deleteWalletSecret).toHaveBeenCalledWith(
       registration.credentialKey,
     );
+    await expect(loadRegisteredWallets()).resolves.toEqual([]);
+  });
+
+  it('serializes simultaneous wallet removals', async () => {
+    const first = createRegisteredWallet({
+      id: 'software-mainnet-remove-first',
+      walletName: 'remove-first',
+      path: '/current-container/wallets/mainnet/remove-first',
+      network: 'mainnet',
+      kind: 'software',
+      credentialKey: 'monero.wallet.software.mainnet.remove-first.v1',
+      now: '2026-08-10T15:00:00.000Z',
+    });
+    const second = createRegisteredWallet({
+      id: 'software-mainnet-remove-second',
+      walletName: 'remove-second',
+      path: '/current-container/wallets/mainnet/remove-second',
+      network: 'mainnet',
+      kind: 'software',
+      credentialKey: 'monero.wallet.software.mainnet.remove-second.v1',
+      now: '2026-08-10T15:01:00.000Z',
+    });
+    await saveRegisteredWallet(first);
+    await saveRegisteredWallet(second);
+    mockNativeWallet.openWalletWithStoredSecret
+      .mockResolvedValueOnce({ walletId: 'wallet-remove-first' })
+      .mockResolvedValueOnce({ walletId: 'wallet-remove-second' });
+    const service = new WalletService();
+    await service.openRegisteredWalletRegistration(first);
+    await service.openRegisteredWalletRegistration(second);
+
+    let releaseFirstClose!: () => void;
+    let reportFirstCloseStarted!: () => void;
+    const firstCloseStarted = new Promise<void>(resolve => {
+      reportFirstCloseStarted = resolve;
+    });
+    const firstCloseGate = new Promise<void>(resolve => {
+      releaseFirstClose = resolve;
+    });
+    mockNativeWallet.closeWallet
+      .mockImplementationOnce(async () => {
+        reportFirstCloseStarted();
+        await firstCloseGate;
+      })
+      .mockResolvedValueOnce(undefined);
+
+    const firstRemoval = service.removeRegisteredWallet(first.id);
+    const secondRemoval = service.removeRegisteredWallet(second.id);
+    await firstCloseStarted;
+
+    expect(mockNativeWallet.closeWallet).toHaveBeenCalledTimes(1);
+    releaseFirstClose();
+    const removalResults = await Promise.all([firstRemoval, secondRemoval]);
+    expect(
+      removalResults.map(wallets => wallets.map(wallet => wallet.id)),
+    ).toEqual([[second.id], []]);
+    expect(mockNativeWallet.closeWallet).toHaveBeenCalledTimes(2);
     await expect(loadRegisteredWallets()).resolves.toEqual([]);
   });
 

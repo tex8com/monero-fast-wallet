@@ -5,6 +5,7 @@
 //! Worker watch plaintext. A wake is accepted only from the exact Worker key
 //! pinned to an active assignment.
 
+mod hosting;
 pub mod provider;
 
 use axum::{
@@ -70,6 +71,8 @@ static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 #[derive(Clone)]
 pub struct GatewayState {
     store: Arc<Mutex<EventStore>>,
+    dispatch_lock: Arc<Mutex<()>>,
+    test_wake_trigger: Option<Arc<dyn WorkerTestTrigger>>,
     signals: broadcast::Sender<DeliverySignal>,
     provider_adapter: Option<Arc<ProviderAdapter>>,
     relay_control: Option<Arc<dyn RelayControl>>,
@@ -87,7 +90,85 @@ struct ProviderAdapter {
     delivery: Arc<dyn ProviderDelivery>,
 }
 
+/// Internal, loopback-only trigger. The Worker still authenticates the real
+/// wake through its existing online key; this interface cannot fabricate one.
+pub trait WorkerTestTrigger: Send + Sync {
+    fn trigger(&self, handle: [u8; 32], epoch: u64, event_id: &str) -> Result<(), String>;
+}
+
+pub struct HttpWorkerTestTrigger {
+    endpoint: String,
+    token: Zeroizing<[u8; 32]>,
+    timeout: Duration,
+}
+
+impl HttpWorkerTestTrigger {
+    pub fn new(origin: &str, token: [u8; 32], timeout: Duration) -> Result<Self, String> {
+        let url =
+            reqwest::Url::parse(origin).map_err(|_| "Worker test origin is invalid".to_owned())?;
+        if url.scheme() != "http"
+            || !matches!(url.host_str(), Some("127.0.0.1" | "[::1]" | "::1"))
+            || !url.username().is_empty()
+            || url.password().is_some()
+            || url.path() != "/"
+            || url.query().is_some()
+            || url.fragment().is_some()
+        {
+            return Err("Worker test origin must be a literal loopback HTTP origin".to_owned());
+        }
+        Ok(Self {
+            endpoint: format!("{}/debug/v1/test-push", origin.trim_end_matches('/')),
+            token: Zeroizing::new(token),
+            timeout,
+        })
+    }
+}
+
+impl WorkerTestTrigger for HttpWorkerTestTrigger {
+    fn trigger(&self, handle: [u8; 32], epoch: u64, event_id: &str) -> Result<(), String> {
+        let client = reqwest::blocking::Client::builder()
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(self.timeout)
+            .build()
+            .map_err(|_| "Worker test client could not be created".to_owned())?;
+        let auth = Zeroizing::new(hex::encode(self.token.as_slice()));
+        let response = client
+            .post(&self.endpoint)
+            .header("x-fast-wallet-debug-token", auth.as_str())
+            .json(&serde_json::json!({"assignmentHandle": hex::encode(handle),
+                "assignmentEpoch": epoch, "eventId": event_id}))
+            .send()
+            .map_err(|_| "Worker test trigger transport failed".to_owned())?;
+        if response.status() != StatusCode::ACCEPTED {
+            return Err("Worker rejected test trigger".to_owned());
+        }
+        let mut body = Vec::new();
+        response
+            .take(4097)
+            .read_to_end(&mut body)
+            .map_err(|_| "Worker test response could not be read".to_owned())?;
+        if body.len() > 4096 {
+            return Err("Worker test response is oversized".to_owned());
+        }
+        let value: serde_json::Value = serde_json::from_slice(&body)
+            .map_err(|_| "Worker test response is invalid".to_owned())?;
+        if value["accepted"] != true || value["eventId"] != event_id {
+            return Err("Worker did not accept the correlated test wake".to_owned());
+        }
+        Ok(())
+    }
+}
+
 pub trait RelayControl: Send + Sync {
+    fn hosting_check(&self, request: serde_json::Value) -> Result<serde_json::Value, String> {
+        Ok(
+            serde_json::json!({"contractVersion":"monero-fast-wallet-hosting.v1","status":"unsupported",
+            "assignmentHandle":request["assignmentHandle"],"assignmentEpoch":request["assignmentEpoch"],
+            "nonce":request["nonce"],"checkedAt":null,"proof":null}),
+        )
+    }
+
     fn sponsor(
         &self,
         descriptor: &WorkerDescriptor,
@@ -260,6 +341,36 @@ impl HttpRelayControl {
 }
 
 impl RelayControl for HttpRelayControl {
+    fn hosting_check(&self, request: serde_json::Value) -> Result<serde_json::Value, String> {
+        let auth = Zeroizing::new(hex::encode(self.internal_auth.as_slice()));
+        let response = self
+            .client
+            .post(format!("{}/v1/assignments/hosting-check", self.origin))
+            .header("x-fast-wallet-relay-internal-auth", auth.as_str())
+            .json(&request)
+            .send()
+            .map_err(|_| "Relay hosting check transport failed".to_owned())?;
+        if matches!(response.status().as_u16(), 404 | 405) {
+            return Ok(
+                serde_json::json!({"contractVersion":"monero-fast-wallet-hosting.v1","status":"unsupported",
+                "assignmentHandle":request["assignmentHandle"],"assignmentEpoch":request["assignmentEpoch"],
+                "nonce":request["nonce"],"checkedAt":null,"proof":null}),
+            );
+        }
+        if !response.status().is_success() {
+            return Err("Relay hosting check was rejected".to_owned());
+        }
+        let mut body = Vec::new();
+        response
+            .take(16 * 1024 + 1)
+            .read_to_end(&mut body)
+            .map_err(|_| "Relay hosting response read failed".to_owned())?;
+        if body.len() > 16 * 1024 {
+            return Err("Relay hosting response exceeds its limit".to_owned());
+        }
+        serde_json::from_slice(&body).map_err(|_| "Relay hosting response is invalid".to_owned())
+    }
+
     fn sponsor(
         &self,
         descriptor: &WorkerDescriptor,
@@ -301,6 +412,8 @@ impl GatewayState {
         let (signals, _) = broadcast::channel(1_024);
         Ok(Self {
             store: Arc::new(Mutex::new(EventStore::open(storage_path.into())?)),
+            dispatch_lock: Arc::new(Mutex::new(())),
+            test_wake_trigger: None,
             signals,
             provider_adapter: None,
             relay_control: None,
@@ -323,6 +436,8 @@ impl GatewayState {
         let (signals, _) = broadcast::channel(1_024);
         Ok(Self {
             store: Arc::new(Mutex::new(EventStore::open(storage_path.into())?)),
+            dispatch_lock: Arc::new(Mutex::new(())),
+            test_wake_trigger: None,
             signals,
             provider_adapter: Some(Arc::new(ProviderAdapter {
                 store: Mutex::new(ProviderStore::open(
@@ -340,6 +455,11 @@ impl GatewayState {
             vanity_service_auth_hash: None,
             claim_service_auth_hash: None,
         })
+    }
+
+    pub fn with_worker_test_trigger(mut self, trigger: Arc<dyn WorkerTestTrigger>) -> Self {
+        self.test_wake_trigger = Some(trigger);
+        self
     }
 
     pub fn with_relay_control(mut self, relay_control: Arc<dyn RelayControl>) -> Self {
@@ -543,6 +663,7 @@ impl GatewayState {
         now: u64,
         limit: usize,
     ) -> Result<ProviderDispatchResult, String> {
+        let _dispatch = self.dispatch_lock.lock().await;
         let Some(adapter) = &self.provider_adapter else {
             return Ok(ProviderDispatchResult::default());
         };
@@ -552,6 +673,64 @@ impl GatewayState {
             ..ProviderDispatchResult::default()
         };
         for target in targets {
+            if let Some(binding) = &target.test_assignment {
+                let active = self.store.lock().await.test_assignment_is_active(
+                    &target.installation_id,
+                    binding,
+                    now,
+                );
+                if !active {
+                    adapter.store.lock().await.cancel_scheduled_test(&target)?;
+                    self.store
+                        .lock()
+                        .await
+                        .ack(&target.installation_id, &target.event.id)
+                        .map_err(|_| "Gateway test cancellation ACK failed".to_owned())?;
+                    eprintln!("FAST_WALLET_DIAGNOSTICS service=notification-gateway event=test-push.cancelled eventId={} reason=assignment-inactive", target.event.id);
+                    continue;
+                }
+            }
+            if let Some(binding) = &target.test_trigger {
+                let trigger = self.test_wake_trigger.clone();
+                let binding = binding.clone();
+                let event_id = target.event.id.clone();
+                let started = std::time::Instant::now();
+                let triggered = match trigger {
+                    Some(trigger) => tokio::task::spawn_blocking(move || {
+                        trigger.trigger(
+                            binding.assignment_handle,
+                            binding.assignment_epoch,
+                            &event_id,
+                        )
+                    })
+                    .await
+                    .map(|value| value.is_ok())
+                    .unwrap_or(false),
+                    None => false,
+                };
+                // Successful signed ingress changes the job phase itself. A
+                // lost HTTP response must not roll that durable change back.
+                adapter
+                    .store
+                    .lock()
+                    .await
+                    .retry_test_trigger(&target, now)?;
+                eprintln!("FAST_WALLET_DIAGNOSTICS service=notification-gateway event=test-push.worker-trigger eventId={} accepted={} elapsedMs={}", target.event.id, triggered, started.elapsed().as_millis());
+                result.deferred += 1;
+                continue;
+            }
+            if target.provider == ProviderKind::DesktopWss {
+                // Signed wake ingress already persisted the normal stream
+                // event. Leave it there until the real authenticated ACK.
+                adapter.store.lock().await.complete(
+                    &target,
+                    ProviderDeliveryResult::Delivered,
+                    now,
+                )?;
+                result.delivered += 1;
+                eprintln!("FAST_WALLET_DIAGNOSTICS service=notification-gateway event=provider-delivery.stream-queued eventId={}", target.event.id);
+                continue;
+            }
             let delivery_adapter = adapter.delivery.clone();
             let delivery_target = target.clone();
             let delivery = tokio::task::spawn_blocking(move || {
@@ -575,6 +754,7 @@ impl GatewayState {
                     ProviderDeliveryResult::RetryAfter(Duration::from_secs(5))
                 }
             };
+            eprintln!("FAST_WALLET_DIAGNOSTICS service=notification-gateway event=provider-delivery.result eventId={} provider={:?} outcome={}", target.event.id, target.provider, match &delivery { ProviderDeliveryResult::Delivered => "provider-accepted", ProviderDeliveryResult::InvalidToken => "invalid-token", ProviderDeliveryResult::RetryAfter(_) => "retry" });
             let delivered = matches!(delivery, ProviderDeliveryResult::Delivered);
             let invalid = matches!(delivery, ProviderDeliveryResult::InvalidToken);
             adapter
@@ -609,6 +789,7 @@ pub struct ProviderDispatchResult {
 
 pub fn router(state: GatewayState) -> Router {
     Router::new()
+        .merge(hosting::routes())
         .route("/healthz", get(healthz))
         .route(
             "/api/v1/official-worker-descriptor",
@@ -670,34 +851,57 @@ async fn accept_claim_event(
     Json(input): Json<ClaimEventInput>,
 ) -> Result<(StatusCode, Json<AcceptedResponse>), ApiError> {
     let expected = state.claim_service_auth_hash.ok_or(ApiError::Unavailable)?;
-    let mut supplied: [u8; 32] = headers.get("x-mfw-claim-service-auth")
+    let mut supplied: [u8; 32] = headers
+        .get("x-mfw-claim-service-auth")
         .and_then(|v| v.to_str().ok())
         .and_then(|v| hex::decode(v).ok())
-        .and_then(|v| v.try_into().ok()).ok_or(ApiError::Unauthorized)?;
-    let hash: [u8;32] = Sha256::digest(supplied).into();
+        .and_then(|v| v.try_into().ok())
+        .ok_or(ApiError::Unauthorized)?;
+    let hash: [u8; 32] = Sha256::digest(supplied).into();
     supplied.zeroize();
     if !bool::from(hash.ct_eq(&expected))
         || !valid_installation_id(&input.installation_id)
         || !valid_event_id(&input.event_id)
         || input.job_id.len() != 48
-        || !input.job_id.bytes().all(|v| v.is_ascii_digit() || (b'a'..=b'f').contains(&v)) {
+        || !input
+            .job_id
+            .bytes()
+            .all(|v| v.is_ascii_digit() || (b'a'..=b'f').contains(&v))
+    {
         return Err(ApiError::Unauthorized);
     }
     let event = OpaqueNotificationEvent {
         id: input.event_id,
         category: MFW_CLAIM_EVENT_CATEGORY.to_owned(),
         deep_link: format!("tex8monero://mfw-claim/{}", input.job_id),
-        received_at: unix_seconds().to_string(), opened: false,
+        received_at: unix_seconds().to_string(),
+        opened: false,
     };
     // Provider storage first: retry after a crash must not lose the push
     // merely because the websocket/event-store enqueue already succeeded.
     if let Some(adapter) = &state.provider_adapter {
-        adapter.store.lock().await.enqueue(&input.installation_id, event.clone(), unix_seconds()).map_err(|_| ApiError::Storage)?;
+        adapter
+            .store
+            .lock()
+            .await
+            .enqueue(&input.installation_id, event.clone(), unix_seconds())
+            .map_err(|_| ApiError::Storage)?;
     }
-    if state.store.lock().await.enqueue_trusted_installation_event(&input.installation_id, event.clone())? {
-        let _ = state.signals.send(DeliverySignal { installation_id: input.installation_id, event });
+    if state
+        .store
+        .lock()
+        .await
+        .enqueue_trusted_installation_event(&input.installation_id, event.clone())?
+    {
+        let _ = state.signals.send(DeliverySignal {
+            installation_id: input.installation_id,
+            event,
+        });
     }
-    Ok((StatusCode::ACCEPTED, Json(AcceptedResponse { accepted: true })))
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(AcceptedResponse { accepted: true }),
+    ))
 }
 
 async fn accept_vanity_event(
@@ -1004,87 +1208,67 @@ async fn enable_provider_delivery(
 async fn send_test_push(
     State(state): State<GatewayState>,
     headers: HeaderMap,
-) -> Result<(StatusCode, Json<AcceptedResponse>), ApiError> {
+) -> Result<(StatusCode, Json<ScheduledTestResponse>), ApiError> {
     let (installation_id, installation_auth) = installation_auth(&headers)?;
+    let store = state.store.lock().await;
+    store.authenticate_installation(&installation_id, &installation_auth)?;
+    if !store.delivery_enabled(&installation_id)? {
+        return Err(ApiError::SelfTestProviderRequired);
+    }
     let adapter = state
         .provider_adapter
         .as_ref()
-        .cloned()
         .ok_or(ApiError::Unavailable)?;
-    {
-        let providers = adapter.store.lock().await;
-        let status = providers
-            .status(&installation_id)
-            .ok_or(ApiError::Conflict)?;
-        if status.provider != provider::ProviderKind::Fcm || status.disabled {
-            return Err(ApiError::Conflict);
-        }
+    if state.test_wake_trigger.is_none() {
+        return Err(ApiError::SelfTestUnavailable);
     }
-    let now = unix_seconds();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| ApiError::Unavailable)?;
+    let scheduled_at = now
+        .as_secs()
+        .checked_add(u64::from(now.subsec_nanos() != 0))
+        .ok_or(ApiError::Unavailable)?;
+    let deliver_after = scheduled_at.checked_add(10).ok_or(ApiError::Unavailable)?;
+    let binding = store.select_test_assignment(
+        &installation_id,
+        state.official_worker_descriptor.as_deref(),
+        deliver_after,
+    )?;
     let event = OpaqueNotificationEvent {
-        id: test_event_id(&installation_id, &installation_auth, now),
+        id: test_event_id(&installation_id, &installation_auth, scheduled_at),
         category: TEST_EVENT_CATEGORY.to_owned(),
         deep_link: "tex8://notification/test".to_owned(),
-        received_at: now.to_string(),
+        received_at: scheduled_at.to_string(),
         opened: false,
     };
-    let accepted = {
-        let mut store = state.store.lock().await;
-        store.enqueue_installation_event(&installation_id, &installation_auth, event.clone())?
-    };
-    if !accepted {
-        return Err(ApiError::Unauthorized);
-    }
-    // A visible user-triggered test is intentionally delivered immediately:
-    // returning 202 only after FCM accepted it makes this screen a real
-    // end-to-end check rather than merely a queue-health indication.  Routine
-    // worker events remain queued and retried by the central dispatcher.
-    let target = adapter
-        .store
-        .lock()
-        .await
-        .direct_target(&installation_id, event.clone(), now)
-        .map_err(|_| ApiError::Storage)?
-        .ok_or(ApiError::Conflict)?;
-    let delivery_adapter = adapter.delivery.clone();
-    let delivery_target = target.clone();
-    let delivery = tokio::task::spawn_blocking(move || {
-        delivery_adapter.deliver(
-            delivery_target.provider,
-            &delivery_target.token,
-            &delivery_target.event,
-        )
-    })
-    .await
-    .map_err(|_| ApiError::Unavailable)?
-    .unwrap_or_else(|_| ProviderDeliveryResult::RetryAfter(Duration::from_secs(5)));
     adapter
         .store
         .lock()
         .await
-        .complete_direct(&target, delivery.clone())
-        .map_err(|_| ApiError::Storage)?;
-    // This event exists only for this one immediate delivery attempt.  Do not
-    // leave a stale event in the installation stream if FCM rejects or times
-    // out: it would otherwise look like a received payment in a later app
-    // session even though this is strictly a generic delivery check.
-    state.store.lock().await.ack(&installation_id, &event.id)?;
-    match delivery {
-        ProviderDeliveryResult::Delivered => {
-            let _ = state.signals.send(DeliverySignal {
-                installation_id: installation_id.clone(),
-                event: event.clone(),
-            });
-        }
-        ProviderDeliveryResult::InvalidToken => return Err(ApiError::Conflict),
-        ProviderDeliveryResult::RetryAfter(_) => return Err(ApiError::Unavailable),
-    }
-    eprintln!(
-        "FAST_WALLET_DIAGNOSTICS service=notification-gateway event=test-push.delivered status=202"
-    );
+        .schedule_test(
+            &installation_id,
+            event.clone(),
+            binding,
+            scheduled_at,
+            deliver_after,
+        )
+        .map_err(|error| match error {
+            provider::ScheduleTestError::Conflict => ApiError::SelfTestProviderRequired,
+            provider::ScheduleTestError::RateLimited => ApiError::Capacity,
+            provider::ScheduleTestError::Storage => ApiError::Storage,
+        })?;
+    // No Worker/Provider network call, event publication or sleep in this
+    // request. Only the existing fsync+atomic persistent queue decides 202.
+    eprintln!("FAST_WALLET_DIAGNOSTICS service=notification-gateway event=test-push.scheduled status=202 eventId={} scheduledAt={} deliverAfter={}", event.id, scheduled_at, deliver_after);
     Ok((
         StatusCode::ACCEPTED,
-        Json(AcceptedResponse { accepted: true }),
+        Json(ScheduledTestResponse {
+            accepted: true,
+            event_id: event.id,
+            scheduled_at,
+            deliver_after,
+        }),
     ))
 }
 
@@ -1191,6 +1375,36 @@ async fn accept_worker_wake(
     auth.verify(&descriptor, WorkerAuthPurpose::Wake, &body, now)
         .map_err(|_| ApiError::Unauthorized)?;
 
+    let installation = state.store.lock().await.validate_worker_assignment(
+        &descriptor,
+        assignment_handle,
+        input.assignment_epoch,
+        now,
+    )?;
+    if let Some(adapter) = &state.provider_adapter {
+        if let Some(scheduled) = adapter
+            .store
+            .lock()
+            .await
+            .scheduled_test(&installation, &input.event_id)
+        {
+            if !test
+                || scheduled.binding.assignment_handle != assignment_handle
+                || scheduled.binding.assignment_epoch != input.assignment_epoch
+                || now < scheduled.deliver_after
+            {
+                return Err(ApiError::Conflict);
+            }
+            if scheduled.wake_received {
+                eprintln!("FAST_WALLET_DIAGNOSTICS service=notification-gateway event=test-push.duplicate eventId={}", input.event_id);
+                return Ok((
+                    StatusCode::ACCEPTED,
+                    Json(AcceptedResponse { accepted: true }),
+                ));
+            }
+        }
+    }
+
     let event = OpaqueNotificationEvent {
         id: input.event_id,
         category: if test {
@@ -1214,20 +1428,25 @@ async fn accept_worker_wake(
         event.clone(),
         now,
     )?;
-    if outcome.new_event {
+    // Always repair/deduplicate provider enqueue after authenticated ingress:
+    // a previous process may have stopped between the two durable stores.
+    let queued = if let Some(adapter) = &state.provider_adapter {
+        adapter
+            .store
+            .lock()
+            .await
+            .enqueue(&outcome.installation_id, event.clone(), now)
+            .map_err(|_| ApiError::Storage)?
+    } else {
+        false
+    };
+    if outcome.new_event || queued {
         let _ = state.signals.send(DeliverySignal {
             installation_id: outcome.installation_id.clone(),
             event: event.clone(),
         });
-        if let Some(adapter) = &state.provider_adapter {
-            adapter
-                .store
-                .lock()
-                .await
-                .enqueue(&outcome.installation_id, event, now)
-                .map_err(|_| ApiError::Storage)?;
-        }
     }
+    eprintln!("FAST_WALLET_DIAGNOSTICS service=notification-gateway event=worker-wake.correlated eventId={} test={}", event.id, test);
     eprintln!(
         "FAST_WALLET_DIAGNOSTICS service=notification-gateway event=worker-wake.accepted status=202 newEvent={}",
         outcome.new_event
@@ -1506,6 +1725,15 @@ struct HealthResponse {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ScheduledTestResponse {
+    accepted: bool,
+    event_id: String,
+    scheduled_at: u64,
+    deliver_after: u64,
+}
+
+#[derive(Serialize)]
 struct AcceptedResponse {
     accepted: bool,
 }
@@ -1526,6 +1754,10 @@ pub enum ApiError {
     Replay,
     Storage,
     Unavailable,
+    SelfTestAssignmentRequired,
+    SelfTestWorkerUnsupported,
+    SelfTestProviderRequired,
+    SelfTestUnavailable,
 }
 
 impl IntoResponse for ApiError {
@@ -1535,18 +1767,37 @@ impl IntoResponse for ApiError {
             "FAST_WALLET_DIAGNOSTICS service=notification-gateway event=request.error status={}",
             status.as_u16()
         );
-        status.into_response()
+        let detail = match self {
+            Self::SelfTestAssignmentRequired => Some(("self_test_requires_fast_wallet", "Enable the recommended Fast Wallet service with an active assignment before starting the self-test.")),
+            Self::SelfTestWorkerUnsupported => Some(("self_test_worker_unsupported", "Self-test is available for the configured official Fast Wallet worker.")),
+            Self::SelfTestProviderRequired => Some(("self_test_provider_required", "Register and enable notifications before starting the self-test.")),
+            Self::SelfTestUnavailable => Some(("self_test_unavailable", "The self-test Worker trigger is not configured.")),
+            _ => None,
+        };
+        match detail {
+            Some((code, message)) => (
+                status,
+                Json(serde_json::json!({ "error": code, "message": message })),
+            )
+                .into_response(),
+            None => status.into_response(),
+        }
     }
 }
 
 fn api_error_status(error: &ApiError) -> StatusCode {
     match error {
         ApiError::Unauthorized => StatusCode::UNAUTHORIZED,
-        ApiError::Conflict => StatusCode::CONFLICT,
+        ApiError::Conflict
+        | ApiError::SelfTestAssignmentRequired
+        | ApiError::SelfTestWorkerUnsupported
+        | ApiError::SelfTestProviderRequired => StatusCode::CONFLICT,
         ApiError::BadRequest => StatusCode::BAD_REQUEST,
         ApiError::Capacity => StatusCode::TOO_MANY_REQUESTS,
         ApiError::Replay => StatusCode::CONFLICT,
-        ApiError::Storage | ApiError::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
+        ApiError::Storage | ApiError::Unavailable | ApiError::SelfTestUnavailable => {
+            StatusCode::SERVICE_UNAVAILABLE
+        }
     }
 }
 
@@ -1761,32 +2012,6 @@ impl EventStore {
         self.persist().map_err(|_| ApiError::Storage)
     }
 
-    fn enqueue_installation_event(
-        &mut self,
-        installation_id: &str,
-        auth_secret: &[u8; 32],
-        event: OpaqueNotificationEvent,
-    ) -> Result<bool, ApiError> {
-        self.authenticate_installation(installation_id, auth_secret)?;
-        if !self.delivery_enabled(installation_id)? {
-            return Ok(false);
-        }
-        let queue = self
-            .disk
-            .events
-            .entry(installation_id.to_owned())
-            .or_default();
-        if queue.iter().any(|existing| existing.id == event.id) {
-            return Ok(false);
-        }
-        queue.push_back(event);
-        while queue.len() > MAX_EVENTS_PER_INSTALLATION {
-            queue.pop_front();
-        }
-        self.persist().map_err(|_| ApiError::Storage)?;
-        Ok(true)
-    }
-
     fn enqueue_trusted_installation_event(
         &mut self,
         installation_id: &str,
@@ -1887,6 +2112,83 @@ impl EventStore {
             self.persist().map_err(|_| ApiError::Storage)?;
         }
         Ok(removed)
+    }
+
+    fn select_test_assignment(
+        &self,
+        installation: &str,
+        official: Option<&WorkerDescriptor>,
+        deadline: u64,
+    ) -> Result<provider::TestWakeBinding, ApiError> {
+        let has_active = self.disk.assignments.values().any(|assignment| {
+            assignment.installation_id == installation && assignment.expires_at > deadline
+        });
+        let mut candidates = self
+            .disk
+            .assignments
+            .iter()
+            .filter(|(_, assignment)| {
+                assignment.installation_id == installation
+                    && assignment.expires_at > deadline
+                    && official.map_or(true, |descriptor| {
+                        assignment.worker_root_id == hex::encode(descriptor.worker_root_id())
+                            && assignment.worker_online_key_id
+                                == hex::encode(descriptor.worker_online_key_id())
+                            && assignment.hpke_key_id == hex::encode(descriptor.hpke_key_id())
+                    })
+            })
+            .collect::<Vec<_>>();
+        candidates.sort_by_key(|(handle, _)| *handle);
+        let (handle, assignment) = candidates.first().ok_or(if has_active {
+            ApiError::SelfTestWorkerUnsupported
+        } else {
+            ApiError::SelfTestAssignmentRequired
+        })?;
+        Ok(provider::TestWakeBinding {
+            assignment_handle: decode_fixed::<32>(handle)?,
+            assignment_epoch: assignment.assignment_epoch,
+        })
+    }
+
+    fn test_assignment_is_active(
+        &self,
+        installation: &str,
+        binding: &provider::TestWakeBinding,
+        now: u64,
+    ) -> bool {
+        self.delivery_enabled(installation).unwrap_or(false)
+            && self
+                .disk
+                .assignments
+                .get(&hex::encode(binding.assignment_handle))
+                .is_some_and(|assignment| {
+                    assignment.installation_id == installation
+                        && assignment.assignment_epoch == binding.assignment_epoch
+                        && assignment.expires_at > now
+                })
+    }
+
+    fn validate_worker_assignment(
+        &self,
+        descriptor: &WorkerDescriptor,
+        handle: [u8; 32],
+        epoch: u64,
+        now: u64,
+    ) -> Result<String, ApiError> {
+        let assignment = self
+            .disk
+            .assignments
+            .get(&hex::encode(handle))
+            .ok_or(ApiError::Unauthorized)?;
+        if assignment.assignment_epoch != epoch
+            || assignment.expires_at <= now
+            || assignment.worker_root_id != hex::encode(descriptor.worker_root_id())
+            || assignment.worker_online_key_id != hex::encode(descriptor.worker_online_key_id())
+            || assignment.hpke_key_id != hex::encode(descriptor.hpke_key_id())
+        {
+            return Err(ApiError::Unauthorized);
+        }
+        Ok(assignment.installation_id.clone())
     }
 
     fn accept_worker_wake(
@@ -2901,25 +3203,46 @@ mod tests {
 
     #[tokio::test]
     async fn claim_event_requires_separate_service_auth_and_opaque_job_id() {
-        let auth = [7;32];
-        let state = GatewayState::open(storage()).unwrap().with_claim_service_auth(auth);
-        state.register_installation(INSTALLATION, &AUTH).await.unwrap();
+        let auth = [7; 32];
+        let state = GatewayState::open(storage())
+            .unwrap()
+            .with_claim_service_auth(auth);
+        state
+            .register_installation(INSTALLATION, &AUTH)
+            .await
+            .unwrap();
         let body = serde_json::json!({"installationId":INSTALLATION,"eventId":EVENT,"jobId":"cd".repeat(24)});
         for (key, payload, expected) in [
-            ([0;32], body.clone(), StatusCode::UNAUTHORIZED),
-            (auth, serde_json::json!({"installationId":INSTALLATION,"eventId":EVENT,"jobId":"cd".repeat(24),"name":"private.mfw"}), StatusCode::UNPROCESSABLE_ENTITY),
+            ([0; 32], body.clone(), StatusCode::UNAUTHORIZED),
+            (
+                auth,
+                serde_json::json!({"installationId":INSTALLATION,"eventId":EVENT,"jobId":"cd".repeat(24),"name":"private.mfw"}),
+                StatusCode::UNPROCESSABLE_ENTITY,
+            ),
             (auth, body.clone(), StatusCode::ACCEPTED),
             (auth, body, StatusCode::ACCEPTED),
         ] {
-            let response=router(state.clone()).oneshot(Request::builder().method(Method::POST)
-                .uri("/api/v1/internal/mfw-claim-event").header("content-type","application/json")
-                .header("x-mfw-claim-service-auth",hex::encode(key)).body(Body::from(payload.to_string())).unwrap()).await.unwrap();
-            assert_eq!(response.status(),expected);
+            let response = router(state.clone())
+                .oneshot(
+                    Request::builder()
+                        .method(Method::POST)
+                        .uri("/api/v1/internal/mfw-claim-event")
+                        .header("content-type", "application/json")
+                        .header("x-mfw-claim-service-auth", hex::encode(key))
+                        .body(Body::from(payload.to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), expected);
         }
-        let pending=state.store.lock().await.pending(INSTALLATION);
-        assert_eq!(pending.len(),1);
-        assert_eq!(pending[0].category,MFW_CLAIM_EVENT_CATEGORY);
-        assert_eq!(pending[0].deep_link,format!("tex8monero://mfw-claim/{}","cd".repeat(24)));
+        let pending = state.store.lock().await.pending(INSTALLATION);
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].category, MFW_CLAIM_EVENT_CATEGORY);
+        assert_eq!(
+            pending[0].deep_link,
+            format!("tex8monero://mfw-claim/{}", "cd".repeat(24))
+        );
     }
 
     #[tokio::test]
@@ -3396,3 +3719,6 @@ mod tests {
         assert!(GatewayState::open(path).is_err());
     }
 }
+
+#[cfg(test)]
+mod self_test_tests;

@@ -94,3 +94,8 @@
 0093-wallet-keep-companion-ledger-derivations-as-device-tokens.patch
 0094-wallet-api-select-connected-Ledger-transport-on-open.patch
 0095-wallet-api-export-signed-raw-transactions.patch
+0096-wallet-use-latency-safe-grpc-chunks.patch
+0097-wallet-adopt-verified-Ledger-companion-scan-state.patch
+0098-wallet-cache-zero-fork-heights.patch
+0099-wallet-cache-public-rct-distributions.patch
+0100-wallet-preserve-confirmed-spend-state.patch

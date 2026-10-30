@@ -16,6 +16,7 @@ int main() {
   using tex8::wallet::network_fanout::run;
   using tex8::wallet::network_fanout::mergeAuthenticatedTargetHeight;
   using tex8::wallet::network_fanout::updateDownloadRange;
+  using tex8::wallet::network_fanout::needsHistoricalCatchUp;
   using tex8::wallet::network_fanout::workerCount;
 
   assert(workerCount(0, 8) == 0);
@@ -43,6 +44,13 @@ int main() {
   assert(mergeAuthenticatedTargetHeight(3'738'164, 3'738'165) == 3'738'165);
 
   bool rangeInitialized = false;
+  // A late/reopened signing wallet may be inside the previous download range
+  // but outside retained batches. Fetch its missing history, even if a newer
+  // chain tip arrived meanwhile. Never rewind for an ordinary retained scan.
+  assert(needsHistoricalCatchUp(3'656'524, 3'781'839, false));
+  assert(!needsHistoricalCatchUp(3'656'524, 3'781'839, true));
+  assert(!needsHistoricalCatchUp(3'781'839, 3'781'839, false));
+  assert(!needsHistoricalCatchUp(3'781'840, 3'781'839, false));
   uint64_t rangeStart = 0;
   uint64_t downloaded = 0;
   assert(updateDownloadRange(

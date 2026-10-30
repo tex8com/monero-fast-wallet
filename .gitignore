@@ -20,6 +20,7 @@ tools/transport-protocol-bench/transport-protocol-bench-linux-amd64
 # wallet-watch registrations and must never become part of project history.
 notify-scanner-watch.json.enc
 wallets/desktop/.node_modules-root-owned-backup/
+wallets/desktop/node_modules-root-owned-*/
 
 # Wallet material must never be committed.
 *.keys

@@ -9,6 +9,7 @@ import {
 } from 'react-native';
 
 import { useI18n } from '../i18n';
+import { transactionConfirmationProgress } from '../../../../packages/wallet-shared/src/transactionConfirmations';
 import type { WalletTransaction } from '../services/NativeMoneroWallet';
 import {
   formatAtomicXmr,
@@ -46,17 +47,24 @@ export default function TransactionRow({
       minFractionDigits: 2,
     },
   );
-  const status = transaction.failed
+  const confirmation = transactionConfirmationProgress(transaction);
+  const progress = t('transactions.confirmationProgressShort', {
+    current: confirmation.current, required: confirmation.required,
+  });
+  const status = confirmation.state === 'failed'
     ? t('status.failed')
+    : confirmation.state === 'confirmed'
+    ? t('transactions.confirmed')
     : transaction.pending
     ? t('status.pending')
-    : transaction.confirmations > 0
-    ? transaction.confirmations > 10
-      ? t('transactions.confirmed')
-      : t('transactions.confirmationsShort', {
-          count: transaction.confirmations,
-        })
-    : t('status.unconfirmed');
+    : t('transactions.confirming');
+  const directionLabel = incoming
+    ? confirmation.state === 'confirmed'
+      ? t('home.received')
+      : confirmation.state === 'failed'
+      ? t('status.failed')
+      : t('home.receiving')
+    : t('home.sent');
   const date = transaction.timestamp
     ? new Date(transaction.timestamp * 1000).toLocaleDateString(dateLocale, {
         day: 'numeric',
@@ -81,10 +89,10 @@ export default function TransactionRow({
       </View>
       <View style={s.middle}>
         <Text style={s.title} numberOfLines={1}>
-          {incoming ? t('home.received') : t('home.sent')}
+          {directionLabel}{transaction.timestamp ? ` · ${date}` : ''}
         </Text>
-        <Text style={s.meta} numberOfLines={1}>
-          {date} · {status}
+        <Text style={s.meta} numberOfLines={1} testID="transaction-confirmation-progress">
+          {progress} · {status}
         </Text>
       </View>
       <View style={s.right}>

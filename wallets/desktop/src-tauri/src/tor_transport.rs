@@ -3,12 +3,12 @@ use reqwest::Proxy;
 use serde::Serialize;
 use std::{
     fs,
-    net::{Ipv4Addr, Ipv6Addr},
+    net::{Ipv4Addr, Ipv6Addr, TcpListener as StdTcpListener},
     panic::{self, AssertUnwindSafe},
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
-        Arc, Mutex, OnceLock,
+        Arc, Mutex, OnceLock, RwLock,
     },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -23,11 +23,11 @@ use tor_rtcompat::{tokio::TokioNativeTlsRuntime, ToplevelBlockOn};
 /// Desktop service traffic is fail-closed through the app's embedded Arti Tor
 /// client. The native Monero Fast Node gRPC block provider is intentionally
 /// separate and remains Clearnet.
-pub const TOR_SOCKS_ADDRESS: &str = "127.0.0.1:9050";
-pub const TOR_SOCKS_PROXY: &str = "socks5h://127.0.0.1:9050";
+const PREFERRED_TOR_SOCKS_ADDRESS: &str = "127.0.0.1:19050";
 
 static TOR_STARTED: OnceLock<()> = OnceLock::new();
 static TOR_STATUS: OnceLock<Mutex<TorStatus>> = OnceLock::new();
+static TOR_SOCKS_ADDRESS: OnceLock<RwLock<String>> = OnceLock::new();
 static TOR_WORKER_ALIVE: AtomicBool = AtomicBool::new(false);
 static TOR_STATUS_CHANGED_AT_MS: AtomicU64 = AtomicU64::new(0);
 static TOR_LAST_READY_AT_MS: AtomicU64 = AtomicU64::new(0);
@@ -56,6 +56,46 @@ fn set_status(next: TorStatus) {
     }
 }
 
+fn socks_address_state() -> &'static RwLock<String> {
+    TOR_SOCKS_ADDRESS.get_or_init(|| RwLock::new(PREFERRED_TOR_SOCKS_ADDRESS.to_owned()))
+}
+
+pub fn socks_address() -> String {
+    socks_address_state()
+        .read()
+        .map(|address| address.clone())
+        .unwrap_or_else(|_| PREFERRED_TOR_SOCKS_ADDRESS.to_owned())
+}
+
+pub fn proxy_uri() -> String {
+    format!("socks5h://{}", socks_address())
+}
+
+fn reserve_socks_listener(preferred: Option<&str>) -> Result<StdTcpListener, String> {
+    let requested = preferred.unwrap_or(PREFERRED_TOR_SOCKS_ADDRESS);
+    let listener = match StdTcpListener::bind(requested) {
+        Ok(listener) => listener,
+        Err(error) => {
+            eprintln!(
+                "MONERO_DESKTOP_TOR socks-port-unavailable address={requested} action=ephemeral-fallback error={error}"
+            );
+            StdTcpListener::bind("127.0.0.1:0")
+                .map_err(|fallback| format!("Embedded Tor SOCKS port reservation: {fallback}"))?
+        }
+    };
+    listener
+        .set_nonblocking(true)
+        .map_err(|error| format!("Embedded Tor SOCKS listener mode: {error}"))?;
+    let address = listener
+        .local_addr()
+        .map_err(|error| format!("Embedded Tor SOCKS listener address: {error}"))?
+        .to_string();
+    if let Ok(mut current) = socks_address_state().write() {
+        *current = address;
+    }
+    Ok(listener)
+}
+
 /// Start Tor on its own runtime and return immediately. Nothing in this path
 /// may delay the Tauri window or wallet startup.
 pub fn start_embedded_tor(data_dir: PathBuf) {
@@ -66,12 +106,26 @@ pub fn start_embedded_tor(data_dir: PathBuf) {
     let data_dir = data_dir.join("arti-043");
     TOR_STARTED.get_or_init(|| {
         set_status(TorStatus::Starting);
+        let reserved_listener = reserve_socks_listener(None);
         let spawn_result = std::thread::Builder::new()
             .name("mfw-embedded-tor".to_owned())
             .spawn(move || {
                 TOR_WORKER_ALIVE.store(true, Ordering::Release);
+                let mut reserved_listener = Some(reserved_listener);
                 loop {
                     set_status(TorStatus::Starting);
+                    let listener = match reserved_listener
+                        .take()
+                        .unwrap_or_else(|| reserve_socks_listener(Some(&socks_address())))
+                    {
+                        Ok(listener) => listener,
+                        Err(error) => {
+                            set_status(TorStatus::Failed(error.clone()));
+                            eprintln!("MONERO_DESKTOP_TOR listener-failed error={error}");
+                            std::thread::sleep(Duration::from_secs(2));
+                            continue;
+                        }
+                    };
                     let attempt = panic::catch_unwind(AssertUnwindSafe(|| {
                         #[cfg(target_os = "windows")]
                         {
@@ -83,17 +137,18 @@ pub fn start_embedded_tor(data_dir: PathBuf) {
                             return runtime.block_on(run_embedded_tor(
                                 data_dir.clone(),
                                 runtime.clone(),
+                                listener,
                             ));
                         }
                         #[cfg(not(target_os = "windows"))]
                         {
-                        let runtime = tokio::runtime::Builder::new_multi_thread()
-                            .worker_threads(2)
-                            .thread_name("mfw-tor-runtime")
-                            .enable_all()
-                            .build()
-                            .map_err(|error| format!("Tor runtime: {error}"))?;
-                        runtime.block_on(run_embedded_tor(data_dir.clone()))
+                            let runtime = tokio::runtime::Builder::new_multi_thread()
+                                .worker_threads(2)
+                                .thread_name("mfw-tor-runtime")
+                                .enable_all()
+                                .build()
+                                .map_err(|error| format!("Tor runtime: {error}"))?;
+                            runtime.block_on(run_embedded_tor(data_dir.clone(), listener))
                         }
                     }));
                     match attempt {
@@ -125,23 +180,25 @@ pub fn start_embedded_tor(data_dir: PathBuf) {
 }
 
 #[cfg(not(target_os = "windows"))]
-async fn run_embedded_tor(data_dir: PathBuf) -> Result<(), String> {
-    let runtime = PreferredRuntime::current()
-        .map_err(|error| format!("Tor runtime handle: {error}"))?;
-    run_embedded_tor_with_runtime(data_dir, runtime).await
+async fn run_embedded_tor(data_dir: PathBuf, listener: StdTcpListener) -> Result<(), String> {
+    let runtime =
+        PreferredRuntime::current().map_err(|error| format!("Tor runtime handle: {error}"))?;
+    run_embedded_tor_with_runtime(data_dir, runtime, listener).await
 }
 
 #[cfg(target_os = "windows")]
 async fn run_embedded_tor(
     data_dir: PathBuf,
     runtime: TokioNativeTlsRuntime,
+    listener: StdTcpListener,
 ) -> Result<(), String> {
-    run_embedded_tor_with_runtime(data_dir, runtime).await
+    run_embedded_tor_with_runtime(data_dir, runtime, listener).await
 }
 
 async fn run_embedded_tor_with_runtime(
     data_dir: PathBuf,
     runtime: PreferredRuntime,
+    listener: StdTcpListener,
 ) -> Result<(), String> {
     let state_dir = data_dir.join("state");
     let cache_dir = data_dir.join("cache");
@@ -150,8 +207,7 @@ async fn run_embedded_tor_with_runtime(
 
     // Bind before bootstrap. Local callers can connect immediately while Arti
     // obtains directory data in the background; the app UI is never blocked.
-    let listener = TcpListener::bind(TOR_SOCKS_ADDRESS)
-        .await
+    let listener = TcpListener::from_std(listener)
         .map_err(|error| format!("Embedded Tor SOCKS listener: {error}"))?;
     let config = TorClientConfigBuilder::from_directories(state_dir, cache_dir)
         .build()
@@ -440,7 +496,7 @@ pub fn status_snapshot() -> TorStatusSnapshot {
     TorStatusSnapshot {
         phase: phase.to_owned(),
         connected,
-        endpoint: TOR_SOCKS_ADDRESS.to_owned(),
+        endpoint: socks_address(),
         checked_at_ms: TOR_STATUS_CHANGED_AT_MS.load(Ordering::Acquire),
         last_ready_at_ms: TOR_LAST_READY_AT_MS.load(Ordering::Acquire),
         worker_alive: TOR_WORKER_ALIVE.load(Ordering::Acquire),
@@ -458,8 +514,7 @@ fn now_ms() -> u64 {
 }
 
 pub fn proxy() -> Result<Proxy, String> {
-    Proxy::all(TOR_SOCKS_PROXY)
-        .map_err(|_| "The embedded desktop Tor proxy is unavailable.".to_owned())
+    Proxy::all(proxy_uri()).map_err(|_| "The embedded desktop Tor proxy is unavailable.".to_owned())
 }
 
 #[cfg(test)]
@@ -467,9 +522,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn occupied_socks_port_uses_an_app_private_fallback() {
+        let occupied = StdTcpListener::bind("127.0.0.1:0").expect("reserve occupied port");
+        let occupied_address = occupied.local_addr().expect("occupied address").to_string();
+        let fallback = reserve_socks_listener(Some(&occupied_address)).expect("fallback listener");
+        assert_ne!(
+            fallback.local_addr().expect("fallback address"),
+            occupied.local_addr().expect("occupied address")
+        );
+    }
+
+    #[test]
     fn service_proxy_uses_remote_dns_through_embedded_tor() {
-        assert_eq!(TOR_SOCKS_ADDRESS, "127.0.0.1:9050");
-        assert_eq!(TOR_SOCKS_PROXY, "socks5h://127.0.0.1:9050");
+        assert!(socks_address().starts_with("127.0.0.1:"));
+        assert!(proxy_uri().starts_with("socks5h://127.0.0.1:"));
         assert!(proxy().is_ok());
     }
 

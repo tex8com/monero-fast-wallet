@@ -345,6 +345,191 @@ pub async fn worker_for_assignment(
     Ok(worker)
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HostingCheckRequest<'a> {
+    assignment_epoch: u64,
+    nonce: &'a str,
+    worker_descriptor: &'a str,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct HostingCheckResponse {
+    contract_version: String,
+    status: String,
+    assignment_handle: String,
+    assignment_epoch: u64,
+    nonce: String,
+    checked_at: Option<u64>,
+    proof: Option<String>,
+}
+
+/// Read-only owner authentication deliberately does not require permission to
+/// display notifications. Hosting and delivery are independent observations.
+pub async fn check_hosting(
+    app: &AppHandle,
+    network: &str,
+    assignment: &AssignmentState,
+    attempted_at: u64,
+) -> Result<crate::fast_wallet_hosting::HostingStatus, &'static str> {
+    use crate::fast_wallet_hosting::HostingStatus;
+    let worker = worker_for_assignment(network, assignment, unix_seconds())
+        .await
+        .map_err(|_| "worker_descriptor_invalid")?;
+    let installation = crate::desktop_notifications::status(app)
+        .map_err(|_| "gateway_credentials_missing")?
+        .installation;
+    let auth =
+        crate::secure_store::load_notification_installation_auth(&installation.installation_id)
+            .map_err(|_| "gateway_credentials_missing")?
+            .ok_or("gateway_credentials_missing")?;
+    let auth = zeroize::Zeroizing::new(auth);
+    if !canonical_hex(&auth, 32) {
+        return Err("gateway_credentials_invalid");
+    }
+    let origin = gateway_origin().map_err(|_| "gateway_not_configured")?;
+    let client = client().map_err(|_| "network_error")?;
+    let nonce = random_hex_32().map_err(|_| "random_source_failed")?;
+    crate::diagnostics::record(
+        app,
+        "fast-wallet.hosting-probe-started",
+        &[
+            ("hostingCheckId", nonce[..16].to_owned()),
+            ("assignmentEpoch", assignment.assignment_epoch.to_string()),
+        ],
+    );
+    let request_started_at = unix_seconds();
+    let body = HostingCheckRequest {
+        assignment_epoch: assignment.assignment_epoch,
+        nonce: &nonce,
+        worker_descriptor: &worker.descriptor_hex,
+    };
+    let url = route(
+        &origin,
+        &format!(
+            "/api/v1/installations/assignments/{}/hosting-check",
+            assignment.assignment_handle
+        ),
+    );
+    let operation = async {
+        loop {
+            let mut response = client
+                .post(&url)
+                .header(header::ACCEPT, "application/json")
+                .header(
+                    "x-fast-wallet-installation-id",
+                    &installation.installation_id,
+                )
+                .header("x-fast-wallet-installation-auth", auth.as_str())
+                .json(&body)
+                .send()
+                .await
+                .map_err(|_| "network_error")?;
+            let http_status = response.status().as_u16();
+            if http_status != 202 {
+                crate::diagnostics::record(
+                    app,
+                    "fast-wallet.hosting-probe-response",
+                    &[
+                        ("hostingCheckId", nonce[..16].to_owned()),
+                        ("httpStatus", http_status.to_string()),
+                    ],
+                );
+            }
+            match http_status {
+                200 | 202 => (),
+                401 => return Err("gateway_credentials_invalid"),
+                403 => return Err("assignment_owner_mismatch"),
+                404 | 405 => return Err("hosting_check_unsupported"),
+                409 => return Err("assignment_epoch_mismatch"),
+                429 => return Err("rate_limited"),
+                503 => return Err("worker_unreachable"),
+                _ => return Err("gateway_error"),
+            }
+            let mut bytes = Vec::new();
+            while let Some(chunk) = response.chunk().await.map_err(|_| "response_invalid")? {
+                if bytes.len().saturating_add(chunk.len()) > MAX_RESPONSE_BYTES as usize {
+                    return Err("response_invalid");
+                }
+                bytes.extend_from_slice(&chunk);
+            }
+            let response: HostingCheckResponse =
+                serde_json::from_slice(&bytes).map_err(|_| "response_invalid")?;
+            if response.contract_version != "monero-fast-wallet-hosting.v1"
+                || response.assignment_handle != assignment.assignment_handle
+                || response.assignment_epoch != assignment.assignment_epoch
+                || response.nonce != nonce
+            {
+                return Err("response_binding_invalid");
+            }
+            match response.status.as_str() {
+                "pending"
+                    if http_status == 202
+                        && response.proof.is_none()
+                        && response.checked_at.is_none() =>
+                {
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    continue;
+                }
+                "unsupported"
+                    if http_status == 200
+                        && response.proof.is_none()
+                        && response.checked_at.is_none() =>
+                {
+                    return Err("hosting_check_unsupported");
+                }
+                "hosted" | "missing" if http_status == 200 => (),
+                _ => return Err("response_invalid"),
+            }
+            let checked_at = response.checked_at.ok_or("proof_invalid")?;
+            if checked_at < request_started_at.saturating_sub(5) {
+                return Err("proof_stale");
+            }
+            let proof = response.proof.ok_or("proof_invalid")?;
+            if !canonical_hex(&proof, WORKER_AUTH_SIZE) {
+                return Err("proof_invalid");
+            }
+            let proof =
+                WorkerRequestAuth::decode(&hex::decode(proof).map_err(|_| "proof_invalid")?)
+                    .map_err(|_| "proof_invalid")?;
+            let handle: [u8; 32] = hex::decode(&assignment.assignment_handle)
+                .map_err(|_| "assignment_invalid")?
+                .try_into()
+                .map_err(|_| "assignment_invalid")?;
+            let nonce_bytes: [u8; 32] = hex::decode(&nonce)
+                .map_err(|_| "random_source_failed")?
+                .try_into()
+                .map_err(|_| "random_source_failed")?;
+            fast_wallet_protocol::verify_hosting_status(
+                &worker.descriptor,
+                &handle,
+                assignment.assignment_epoch,
+                &nonce_bytes,
+                response.status == "hosted",
+                checked_at,
+                &proof,
+                unix_seconds(),
+            )
+            .map_err(|_| "proof_invalid")?;
+            return Ok(HostingStatus {
+                status: response.status,
+                attempted_at,
+                checked_at: Some(checked_at),
+                verified: true,
+                repair_attempted: false,
+                error_code: None,
+                assignment_handle: Some(assignment.assignment_handle.clone()),
+                assignment_epoch: Some(assignment.assignment_epoch),
+                worker_root_id: Some(assignment.worker_root_id.clone()),
+            });
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(60), operation)
+        .await
+        .map_err(|_| "hosting_check_timeout")?
+}
+
 pub async fn sponsor_assignment(
     app: &AppHandle,
     identity_id: &str,
@@ -363,29 +548,37 @@ pub async fn sponsor_assignment(
                 .to_owned(),
         );
     }
-    let epoch = existing
-        .as_ref()
-        .map_or(1, |state| state.assignment_epoch.saturating_add(1));
-    if epoch == 0 {
-        return Err("The Fast Wallet assignment counter is exhausted.".to_owned());
-    }
-    let handle = match existing {
-        Some(state) => state.assignment_handle,
-        None => random_hex_32()?,
-    };
+    let descriptor_hash = hex::encode(Sha256::digest(worker.descriptor_hex.as_bytes()));
+    let reusable = load_pending_assignment(identity_id)?.filter(|candidate| {
+        candidate.expires_at > now
+            && constant_hex_eq(&candidate.worker_root_id, &root)
+            && constant_hex_eq(&candidate.descriptor_hash, &descriptor_hash)
+    });
     let requested_expiry = now
         .checked_add(ASSIGNMENT_LIFETIME_SECONDS)
         .ok_or_else(|| "The Fast Wallet assignment expiry is invalid.".to_owned())?;
-    let descriptor_hash = hex::encode(Sha256::digest(worker.descriptor_hex.as_bytes()));
-    let pending = AssignmentState {
-        assignment_handle: handle,
-        assignment_epoch: epoch,
-        expires_at: requested_expiry,
-        descriptor_hash,
-        worker_root_id: root,
-        status: "pending".to_owned(),
+    let pending = if let Some(candidate) = reusable {
+        candidate
+    } else {
+        let epoch = existing
+            .as_ref()
+            .map_or(1, |state| state.assignment_epoch.saturating_add(1));
+        if epoch == 0 {
+            return Err("The Fast Wallet assignment counter is exhausted.".to_owned());
+        }
+        // A candidate always receives a new handle. Relay and Gateway can keep
+        // the previous active handle alive until the Worker has acknowledged the
+        // candidate, so a timeout never destroys a working assignment epoch.
+        AssignmentState {
+            assignment_handle: random_hex_32()?,
+            assignment_epoch: epoch,
+            expires_at: requested_expiry,
+            descriptor_hash,
+            worker_root_id: root,
+            status: "pending".to_owned(),
+        }
     };
-    store_assignment(identity_id, &pending)?;
+    store_pending_assignment(identity_id, &pending)?;
 
     let (installation_id, mut installation_auth) = installation_credentials(app)?;
     let origin = gateway_origin()?;
@@ -435,12 +628,46 @@ pub async fn sponsor_assignment(
         return Err("Payment-alert delivery was not enabled.".to_owned());
     }
 
-    let active = AssignmentState {
+    let accepted = AssignmentState {
         expires_at: response.expires_at,
+        ..pending
+    };
+    store_pending_assignment(identity_id, &accepted)?;
+    Ok(accepted)
+}
+
+/// Promotes only the candidate whose envelope received a verified Worker
+/// receipt. The previous active assignment remains authoritative until this
+/// point and is retired only after the durable local promotion succeeds.
+pub async fn activate_assignment(
+    app: &AppHandle,
+    identity_id: &str,
+    candidate: &AssignmentState,
+) -> Result<AssignmentState, String> {
+    crate::fast_wallet::validate_id(identity_id)?;
+    let pending = load_pending_assignment(identity_id)?
+        .ok_or_else(|| "The pending Fast Wallet assignment is missing.".to_owned())?;
+    if pending.assignment_handle != candidate.assignment_handle
+        || pending.assignment_epoch != candidate.assignment_epoch
+        || pending.expires_at != candidate.expires_at
+        || pending.descriptor_hash != candidate.descriptor_hash
+        || pending.worker_root_id != candidate.worker_root_id
+        || pending.status != "pending"
+    {
+        return Err("The acknowledged Fast Wallet assignment is no longer current.".to_owned());
+    }
+    let previous = load_assignment(identity_id)?;
+    let active = AssignmentState {
         status: "active".to_owned(),
         ..pending
     };
     store_assignment(identity_id, &active)?;
+    let _ = crate::secure_store::delete_fast_wallet_pending_assignment_state(identity_id);
+    if let Some(previous) = previous {
+        if previous.assignment_handle != active.assignment_handle {
+            let _ = delete_remote_assignment(app, &previous.assignment_handle).await;
+        }
+    }
     Ok(active)
 }
 
@@ -522,6 +749,28 @@ pub async fn submit_watch(worker: &TrustedWorker, envelope_hex: &str) -> Result<
     Ok(response.message_id)
 }
 
+/// A newly sealed HPKE envelope cannot reuse a previously accepted pending
+/// handle: its management-token hash changes. Retire only that provisional
+/// candidate, after owner authorization, and keep the active assignment.
+pub async fn retire_pending_for_repair(app: &AppHandle, identity_id: &str) -> Result<(), String> {
+    crate::fast_wallet::validate_id(identity_id)?;
+    let Some(pending) = load_pending_assignment(identity_id)? else {
+        return Ok(());
+    };
+    if load_assignment(identity_id)?
+        .is_some_and(|active| active.assignment_handle == pending.assignment_handle)
+    {
+        return Err(
+            "The pending Fast Wallet assignment is also active; repair was stopped safely."
+                .to_owned(),
+        );
+    }
+    // Never forget a remote candidate if retiring it failed. A retry can then
+    // still find it, and deleting all hosted data retains a complete inventory.
+    delete_remote_assignment(app, &pending.assignment_handle).await?;
+    crate::secure_store::delete_fast_wallet_pending_assignment_state(identity_id)
+}
+
 pub async fn delete_assignment(
     app: &AppHandle,
     identity_id: &str,
@@ -531,10 +780,33 @@ pub async fn delete_assignment(
     if !canonical_hex(assignment_handle, 32) {
         return Err("The Fast Wallet assignment is invalid.".to_owned());
     }
-    let state = load_assignment(identity_id)?
-        .ok_or_else(|| "This Fast Wallet has no hosted scan data.".to_owned())?;
-    if !constant_hex_eq(&state.assignment_handle, assignment_handle) {
+    let active = load_assignment(identity_id)?;
+    let pending = load_pending_assignment(identity_id)?;
+    if let Some(state) = active.as_ref() {
+        if !constant_hex_eq(&state.assignment_handle, assignment_handle) {
+            return Err("The hosted scan data does not belong to this Fast Wallet.".to_owned());
+        }
+    }
+    if active.is_none()
+        && pending
+            .as_ref()
+            .is_some_and(|state| !constant_hex_eq(&state.assignment_handle, assignment_handle))
+    {
         return Err("The hosted scan data does not belong to this Fast Wallet.".to_owned());
+    }
+    delete_remote_assignment(app, assignment_handle).await?;
+    if let Some(candidate) = pending {
+        if candidate.assignment_handle != assignment_handle {
+            let _ = delete_remote_assignment(app, &candidate.assignment_handle).await;
+        }
+    }
+    crate::secure_store::delete_fast_wallet_pending_assignment_state(identity_id)?;
+    crate::secure_store::delete_fast_wallet_assignment_state(identity_id)
+}
+
+async fn delete_remote_assignment(app: &AppHandle, assignment_handle: &str) -> Result<(), String> {
+    if !canonical_hex(assignment_handle, 32) {
+        return Err("The Fast Wallet assignment is invalid.".to_owned());
     }
     let (installation_id, mut installation_auth) = installation_credentials(app)?;
     let response = client()?
@@ -549,8 +821,10 @@ pub async fn delete_assignment(
         .await
         .map_err(|_| "Hosted scan data could not be deleted.".to_owned())?;
     installation_auth.zeroize();
-    ensure_success(response, "Hosted scan data could not be deleted.").await?;
-    crate::secure_store::delete_fast_wallet_assignment_state(identity_id)
+    if response.status() != reqwest::StatusCode::NOT_FOUND {
+        ensure_success(response, "Hosted scan data could not be deleted.").await?;
+    }
+    Ok(())
 }
 
 pub async fn disable_delivery(app: &AppHandle) -> Result<(), String> {
@@ -580,11 +854,36 @@ pub fn load_assignment(identity_id: &str) -> Result<Option<AssignmentState>, Str
     Ok(Some(state))
 }
 
+pub fn load_pending_assignment(identity_id: &str) -> Result<Option<AssignmentState>, String> {
+    let Some(encoded) =
+        crate::secure_store::load_fast_wallet_pending_assignment_state(identity_id)?
+    else {
+        return Ok(None);
+    };
+    let state: AssignmentState = serde_json::from_str(&encoded)
+        .map_err(|_| "The pending Fast Wallet assignment state is invalid.".to_owned())?;
+    validate_assignment(&state)?;
+    if state.status != "pending" {
+        return Err("The pending Fast Wallet assignment state is invalid.".to_owned());
+    }
+    Ok(Some(state))
+}
+
 fn store_assignment(identity_id: &str, state: &AssignmentState) -> Result<(), String> {
     validate_assignment(state)?;
     let encoded = serde_json::to_string(state)
         .map_err(|_| "The Fast Wallet assignment state could not be encoded.".to_owned())?;
     crate::secure_store::store_fast_wallet_assignment_state(identity_id, encoded)
+}
+
+fn store_pending_assignment(identity_id: &str, state: &AssignmentState) -> Result<(), String> {
+    validate_assignment(state)?;
+    if state.status != "pending" {
+        return Err("The pending Fast Wallet assignment state is invalid.".to_owned());
+    }
+    let encoded = serde_json::to_string(state)
+        .map_err(|_| "The pending Fast Wallet assignment state could not be encoded.".to_owned())?;
+    crate::secure_store::store_fast_wallet_pending_assignment_state(identity_id, encoded)
 }
 
 fn validate_assignment(state: &AssignmentState) -> Result<(), String> {

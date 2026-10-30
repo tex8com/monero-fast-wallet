@@ -19,7 +19,9 @@ test('desktop uses the shared update lifecycle and official Tauri verifier', () 
   assert.match(adapter, /packages\/app-update-core\/src\/index/);
   assert.match(adapter, /@tauri-apps\/plugin-updater/);
   assert.match(adapter, /downloadAndInstall/);
-  assert.match(adapter, /proxy: 'socks5h:\/\/127\.0\.0\.1:9050'/);
+  assert.match(adapter, /invoke<string>\('embedded_tor_proxy_uri'\)/);
+  assert.match(adapter, /proxy,/);
+  assert.match(host, /fn embedded_tor_proxy_uri\(\)/);
   assert.match(adapter, /@tauri-apps\/plugin-process/);
   assert.match(host, /tauri_plugin_updater::Builder::new\(\)\.build\(\)/);
   assert.match(capabilities, /"updater:default"/);

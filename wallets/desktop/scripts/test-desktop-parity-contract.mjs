@@ -35,6 +35,7 @@ const desktopLedgerBleSource = readFileSync(resolve(repoRoot, 'native', 'desktop
 const windowsExports = readFileSync(resolve(desktopRoot, 'windows', 'tex8_wallet_core.def'), 'utf8');
 const projectServicesSource = readFileSync(resolve(repoRoot, 'packages', 'wallet-shared', 'src', 'projectServices.ts'), 'utf8');
 const websiteSource = readFileSync(resolve(repoRoot, 'website', 'src', 'App.jsx'), 'utf8');
+const pendingOutgoingSource = readFileSync(resolve(desktopRoot, 'src-tauri', 'src', 'pending_outgoing.rs'), 'utf8');
 
 function rustFunction(source, name) {
   const start = source.indexOf(`fn ${name}(`);
@@ -88,7 +89,10 @@ test('desktop counts complete wallet balances once and delays wallet scan UI unt
   assert.doesNotMatch(walletEngineSource, /next\.balanceAtomic = wallet->balance\(0\)/);
   assert.match(appSource, /const selectedSnapshot = wallet\?\.id/);
   assert.match(appSource, /const balanceAtomic = atomicValue\(publishedSnapshot\?\.balanceAtomic\)\.toString\(\)/);
-  assert.match(appSource, /const showWalletSync = connected && walletOpened/);
+  assert.match(
+    appSource,
+    /const showWalletSync = connected && walletOpened && network\.targetHeight !== undefined/,
+  );
   assert.match(appSource, /showWalletSync && <DesktopSyncProgressRow/);
 });
 
@@ -262,6 +266,17 @@ test('desktop Send keeps the same simple recipient-first flow as mobile', () => 
     'QR scanning must be the first, primary recipient choice like mobile',
   );
   assert.match(sendSource, /send-keypad/);
+  assert.match(sendSource, /className="send-amount-input"/);
+  assert.match(sendSource, /inputMode="decimal"/);
+  assert.match(sendSource, /onChange=\{\(event\) => updateAmount\(event\.currentTarget\.value\)\}/);
+  assert.match(stylesSource, /\.send-amount-input\s*\{/);
+  assert.match(sendSource, /useXmrPrice\(\)/);
+  assert.match(sendSource, /amountCurrency/);
+  assert.match(sendSource, /paymentXmrAmount\(amount, amountCurrency, xmrUsdPrice\)/);
+  assert.match(sendSource, /convertPaymentAmount\(current, amountCurrency, next, xmrUsdPrice\)/);
+  assert.match(sendSource, /sanitizePaymentAmountInput\(value, amountCurrency\)/);
+  assert.match(sendSource, /\(\['XMR', 'USD'\] as const\)/);
+  assert.match(sendSource, /send-amount-equivalent/);
   assert.match(sendSource, /recipient-review-card/);
   assert.match(sendSource, /send\.checkRecipientHint/);
   assert.match(sendSource, /send-success-overlay/);
@@ -295,12 +310,17 @@ test('desktop keeps a confirmed broadcast successful when local follow-up work f
 });
 
 test('desktop recipient scanning uses the Mac webcam without depending on BarcodeDetector', () => {
+  const hostSource = readFileSync(resolve(desktopRoot, 'src-tauri', 'src', 'lib.rs'), 'utf8');
   assert.match(desktopRecipientScannerSource, /navigator\.mediaDevices\?\.getUserMedia/);
   assert.match(desktopRecipientScannerSource, /import jsQR from 'jsqr'/);
   assert.match(desktopRecipientScannerSource, /context\.getImageData/);
   assert.match(desktopRecipientScannerSource, /jsQR\(pixels\.data/);
   assert.doesNotMatch(desktopRecipientScannerSource, /new BarcodeDetector|window[^\n]*BarcodeDetector/);
   assert.match(desktopInfoPlist, /NSCameraUsageDescription/);
+  assert.match(
+    hostSource,
+    /on_permission_request\(\|_, kind\| match kind \{[\s\S]*?PermissionKind::Camera[\s\S]*?PermissionResponse::Allow[\s\S]*?_ => tauri::webview::PermissionResponse::Default/,
+  );
   assert.match(stylesSource, /\.camera-scanner-overlay\s*\{[^}]*position:\s*fixed/);
   assert.match(stylesSource, /\.camera-scanner-dialog\s*\{[^}]*min-height:\s*calc\(100dvh - 36px\)/);
 });
@@ -344,7 +364,7 @@ test('desktop keeps the balance summary and separate collapsible blockchain and 
   assert.match(appSource, /complete=\{sync\.coreConfirmed\}/);
   assert.match(appSource, /home\.blockchainData/);
   assert.match(appSource, /home\.walletScan/);
-  assert.match(appSource, /className="sync-refresh"/);
+  assert.doesNotMatch(appSource, /className="sync-refresh"/);
   assert.match(appSource, /className=\{`desktop-sync-status-card \$\{expanded \? 'expanded' : 'collapsed'\}`\}/);
   assert.match(homeSource, /wallet-mini-sync/);
   assert.match(homeSource, /syncStartHeightsRef\.current\.get\(item\.id\)/);
@@ -370,9 +390,11 @@ test('desktop dashboard keeps the mobile order: chart, balance, news, then walle
   assert.ok(chart >= 0 && balance > chart && news > balance && actions > news);
 });
 
-test('desktop computes sync percentage from the wallet restore range, never the full chain', () => {
+test('desktop computes sync percentage from live remaining session work, never restore history or the full chain', () => {
   const homeSource = appSource.slice(appSource.indexOf('function Home('), appSource.indexOf('function RecentTransactions('));
-  assert.match(homeSource, /syncStartHeightForWallet\(\s*wallet\?\.restoreHeight,/);
+  assert.match(homeSource, /nextWalletSyncStartHeight\(/);
+  assert.match(homeSource, /syncStartHeightsRef\.current\.get\(wallet\?\.id \?\? walletId\)/);
+  assert.doesNotMatch(homeSource, /syncStartHeightForWallet\(\s*wallet\?\.restoreHeight,/);
   assert.match(homeSource, /presentWalletSync\(selectedSnapshot, \{ startHeight: syncStartHeight \}\)/);
   assert.match(appSource, /sync\.phase === 'finalizing'[\s\S]*\? undefined/);
   assert.match(appSource, /displaySyncPercent\(sync\.progress \?\? 0, false\)/);
@@ -466,7 +488,10 @@ test('desktop wallet-mode choices cannot collapse into an unreadable grid column
 });
 
 test('desktop presents private and Fast Wallets in one mobile-parity wallet list', () => {
-  const walletsSource = appSource.slice(appSource.indexOf('function Wallets('), appSource.indexOf('function LedgerReadOnlySetup('));
+  const walletsStart = appSource.indexOf('function Wallets(');
+  const walletsEnd = appSource.indexOf('function LedgerViewKeyExportOverlay(', walletsStart);
+  assert.ok(walletsStart >= 0 && walletsEnd > walletsStart);
+  const walletsSource = appSource.slice(walletsStart, walletsEnd);
   const receiveSource = appSource.slice(appSource.indexOf('function Receive('), appSource.indexOf('function HardwareWalletCard('));
   assert.doesNotMatch(walletsSource, /<FastWallets/);
   assert.doesNotMatch(appSource, /<FastWalletReceive appProtection=\{appProtection\} \/>/);
@@ -587,6 +612,37 @@ test('desktop Ledger Bluetooth discovery never blocks or re-enters the AppKit ma
   assert.doesNotMatch(desktopLedgerBleSource, /queue:dispatch_get_main_queue\(\)/);
 });
 
+test('every macOS Ledger wallet open reinstalls the native BLE callback contract', () => {
+  const hostSource = readFileSync(resolve(desktopRoot, 'src-tauri', 'src', 'lib.rs'), 'utf8');
+  const installerStart = desktopLedgerBleSource.indexOf('void installLedgerBleTransportCallbacks()');
+  const installerEnd = desktopLedgerBleSource.indexOf('\n}\n', installerStart) + 2;
+  assert.notEqual(installerStart, -1);
+  const installerSource = desktopLedgerBleSource.slice(installerStart, installerEnd);
+  assert.match(installerSource, /WalletEngine::setLedgerBleTransportCallbacks\(callbacks\)/);
+  assert.doesNotMatch(installerSource, /dispatch_once/);
+  for (const nativeEntryPoint of [
+    'tex8_desktop_wallet_create_from_device',
+    'tex8_desktop_wallet_open',
+    'tex8_desktop_wallet_open_with_device',
+    'tex8_desktop_wallet_reconnect_hardware',
+  ]) {
+    const start = desktopBridgeSource.indexOf(nativeEntryPoint);
+    assert.notEqual(start, -1);
+    const body = desktopBridgeSource.slice(start, desktopBridgeSource.indexOf('\n}\n', start) + 2);
+    assert.match(body, /ensureLedgerBleTransportCallbacks\(\)/);
+  }
+  const signingSession = rustFunction(hostSource, 'ensure_ledger_hardware_session');
+  assert.match(signingSession, /ledger-hardware-session-transport/);
+  assert.match(signingSession, /ledger_transport_status\(\)/);
+  assert.match(signingSession, /ledger_usb_available\(\)/);
+  assert.match(signingSession, /if device_name == "Ledger:ble"/);
+  assert.match(signingSession, /open_with_device\(/);
+  assert.match(signingSession, /previous_device\.as_deref\(\) != Some\(device_name\)/);
+  assert.match(signingSession, /ledger-transport-switch-close/);
+  assert.match(signingSession, /migrated\.ledger_transport = Some\("ble"\.to_owned\(\)\)/);
+  assert.match(signingSession, /transport_unavailable_detail/);
+});
+
 test('desktop Ledger wallet creation cannot block the AppKit main thread', () => {
   const hostSource = readFileSync(resolve(desktopRoot, 'src-tauri', 'src', 'lib.rs'), 'utf8');
   const commandSource = rustFunction(hostSource, 'create_hardware_wallet');
@@ -618,6 +674,11 @@ test('macOS Ledger BLE prepares the protocol before reporting the device ready',
   assert.match(desktopLedgerBleSource, /const BOOL connected = \[transport connect\]/);
   assert.match(desktopLedgerBleSource, /payload\[@"available"\] = @\(connected\)/);
   assert.match(desktopLedgerBleSource, /protocolMtu\.fallback/);
+  assert.match(desktopLedgerBleSource, /rememberLedgerPeripheralIdentifier\(peripheral\)/);
+  assert.match(desktopLedgerBleSource, /retrieveConnectedPeripheralsWithServices/);
+  assert.match(desktopLedgerBleSource, /retrievePeripheralsWithIdentifiers/);
+  assert.match(desktopLedgerBleSource, /os_log_info\(OS_LOG_DEFAULT, "%\{public\}s"/);
+  assert.match(desktopLedgerBleSource, /scan\.finished/);
 });
 
 test('Ledger Fast Wallet is release-gated before reading anything from Ledger', () => {
@@ -714,6 +775,36 @@ test('desktop encrypted Worker enrollment stays native, pinned, and separately a
   assert.match(secureStoreSource, /store_fast_wallet_private_worker/);
 });
 
+test('desktop promotes only the exact receipt-acknowledged assignment candidate', () => {
+  const hostSource = readFileSync(resolve(desktopRoot, 'src-tauri', 'src', 'lib.rs'), 'utf8');
+  const enableSource = rustFunction(hostSource, 'enable_encrypted_fast_wallet_alerts');
+  const receipt = enableSource.indexOf('fast-wallet.worker-receipt-verified');
+  const activation = enableSource.indexOf('fast_wallet_enrollment::activate_assignment');
+
+  assert.ok(receipt >= 0 && activation > receipt);
+  assert.match(enrollmentSource, /store_pending_assignment\(identity_id, &pending\)/);
+  assert.match(enrollmentSource, /pending\.assignment_handle != candidate\.assignment_handle/);
+  assert.match(enrollmentSource, /pending\.assignment_epoch != candidate\.assignment_epoch/);
+  assert.match(enrollmentSource, /store_assignment\(identity_id, &active\)/);
+  assert.match(enrollmentSource, /delete_fast_wallet_pending_assignment_state/);
+});
+
+test('desktop persists a grey outgoing transaction until native history becomes authoritative', () => {
+  const hostSource = readFileSync(resolve(desktopRoot, 'src-tauri', 'src', 'lib.rs'), 'utf8');
+  const commit = rustFunction(hostSource, 'commit_transaction');
+  const history = rustFunction(hostSource, 'registered_wallet_transactions');
+
+  assert.match(commit, /pending_outgoing::record/);
+  assert.match(history, /pending_outgoing::merge/);
+  assert.match(pendingOutgoingSource, /wallet\.pending-outgoing\.v1/);
+  assert.match(pendingOutgoingSource, /"pending": true/);
+  assert.match(pendingOutgoingSource, /MAX_PENDING_AGE_SECONDS/);
+  assert.match(appSource, /home-transaction-row pending/);
+  assert.match(appSource, /transaction-row\$\{item\.pending \? ' pending'/);
+  assert.match(stylesSource, /\.transaction-row\.pending/);
+  assert.match(stylesSource, /\.home-transaction-row\.pending/);
+});
+
 test('desktop shows orange transfer state before enrollment and green only after server acceptance', () => {
   const flowStart = appSource.indexOf('const createFastWalletAfterBackup = useCallback');
   const flowEnd = appSource.indexOf('const presentRecoverySeedRequest = async', flowStart);
@@ -747,7 +838,7 @@ test('desktop alerts use simple language and keep opt-out, hosted deletion, and 
   assert.match(fastSource, /Needs attention/);
   assert.match(fastSource, /Turn all alerts off/);
   assert.match(fastSource, /Delete hosted scan data/);
-  assert.match(fastSource, /Remove empty Fast Wallet/);
+  assert.match(fastSource, /Delete permanently/);
   assert.match(fastSource, /v1ReleaseFeatures\.officialWorker/);
   assert.match(fastSource, /v1ReleaseFeatures\.privateWorkerPairing/);
   assert.doesNotMatch(fastSource, /relayOrigin|workerRootId|assignmentEpoch|watchMessageId/);
@@ -790,13 +881,15 @@ test('native wallet close stops public refresh work before storing the cache', (
   const closeBody = bridgeSource.slice(closeStart, closeEnd);
   const pauseRefresh = closeBody.indexOf('wallet->pauseRefresh();');
   const stop = closeBody.indexOf('wallet->stop();');
+  const joinedRefresh = closeBody.indexOf('wallet->stopRefresh();');
   const store = closeBody.indexOf('if (!wallet->store(""))');
   assert.notEqual(pauseRefresh, -1);
   assert.notEqual(stop, -1);
+  assert.notEqual(joinedRefresh, -1);
   assert.notEqual(store, -1);
   assert.ok(pauseRefresh < stop);
-  assert.ok(stop < store);
-  assert.equal(closeBody.includes('wallet->stopRefresh();'), false);
+  assert.ok(stop < joinedRefresh);
+  assert.ok(joinedRefresh < store);
 });
 
 test('a Ledger setup reuses its approved view-key export within one Core session', () => {
@@ -844,7 +937,7 @@ test('desktop keeps the setup instruction dialog but never overlays balance reco
   assert.match(i18nSource, /approve Export view key once/);
   assert.doesNotMatch(appSource, /ledgerVerificationPhase && <LedgerViewKeyExportOverlay/);
   assert.match(appSource, /readinessPhase=\{publication\?\.phase\}/);
-  assert.match(appSource, /home\.spendOutputsChecking/);
+  assert.match(appSource, /ledgerStatus \?\? t\('home\.ledgerRequired'\)/);
   assert.match(appSource, /finally \{\s*setLedgerVerificationPhase\(null\);\s*\}/);
   assert.doesNotMatch(appSource, /mode: 'open'/);
   assert.doesNotMatch(appSource, /wallet-switch-open-flow-shown/);
@@ -1040,12 +1133,13 @@ test('every successful global unlock starts a fresh native inactivity window', (
   }
 });
 
-test('removing a saved wallet cannot be blocked by a stale native session', () => {
+test('removing a saved wallet requires fresh authorization and deletes its local data', () => {
   const hostSource = readFileSync(resolve(desktopRoot, 'src-tauri', 'src', 'lib.rs'), 'utf8');
   const removalSource = rustFunction(hostSource, 'remove_registered_wallet');
-  assert.match(removalSource, /native-close-failed registration-removal-continues/);
+  assert.match(removalSource, /require_fresh_app_authorization/);
+  assert.match(removalSource, /remove_wallet_files_completely/);
+  assert.match(removalSource, /delete_wallet_password/);
   assert.match(removalSource, /wallet_registry::remove\(&app, &input\.wallet_id\)\?/);
-  assert.doesNotMatch(removalSource, /return Err\(error\);/);
   assert.match(appSource, /invoke<void>\('remove_registered_wallet'/);
 });
 
@@ -1389,24 +1483,23 @@ test('every renderer-accessible wallet and privacy command fails closed behind t
   }
 });
 
-test('desktop removes a Fast Wallet only after native sync and zero-balance checks', () => {
+test('desktop permanently removes a Fast Wallet without sync or balance policy gates', () => {
   const hostSource = readFileSync(resolve(desktopRoot, 'src-tauri', 'src', 'lib.rs'), 'utf8');
   const removalSource = rustFunction(hostSource, 'remove_fast_wallet');
-  assert.doesNotMatch(removalSource, /seed_backup_status != "verified"/);
-  assert.match(removalSource, /authoritative zero-balance safety gate/);
+  assert.match(removalSource, /require_fresh_app_authorization/);
   assert.match(removalSource, /fast-wallet\.remove-started/);
-  assert.match(removalSource, /fast-wallet\.remove-blocked/);
+  assert.match(removalSource, /delete_assignment/);
+  assert.match(removalSource, /remove_wallet_files_completely/);
+  assert.match(removalSource, /delete_fast_wallet_password/);
+  assert.match(removalSource, /delete_fast_wallet_assignment_state/);
   assert.match(removalSource, /fast-wallet\.removed/);
-  assert.match(removalSource, /validate_fast_wallet_removal_snapshot\(&raw\)/);
-  assert.ok(
-    removalSource.indexOf('validate_fast_wallet_removal_snapshot') <
-      removalSource.indexOf('fast_wallet::remove'),
-  );
+  assert.doesNotMatch(removalSource, /snapshot\(/);
+  assert.doesNotMatch(removalSource, /balanceAtomic/);
   assert.match(appSource, /'remove_fast_wallet'/);
-  assert.match(appSource, /invoke<void>\(metadataOnly \? 'remove_fast_wallet_entry'/);
+  assert.doesNotMatch(appSource, /invoke<void>\(metadataOnly \? 'remove_fast_wallet_entry'/);
+  assert.doesNotMatch(appSource, /open_fast_wallet'[\s\S]{0,300}remove_fast_wallet/);
   assert.match(tauriBuild, /"remove_fast_wallet_entry"/);
-  assert.match(appSource, /Remove empty Fast Wallet/);
-  assert.match(appSource, /encrypted wallet files are kept for recovery/);
+  assert.match(appSource, /Delete permanently/);
   assert.match(tauriBuild, /"remove_fast_wallet"/);
   assert.match(tauriCapability, /"allow-remove-fast-wallet"/);
   assert.match(tauriCapability, /"allow-remove-fast-wallet-entry"/);

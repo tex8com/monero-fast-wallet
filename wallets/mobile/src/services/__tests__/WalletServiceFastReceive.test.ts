@@ -17,6 +17,7 @@ jest.mock('@react-native-async-storage/async-storage', () => {
 });
 
 const mockNativeWallet = {
+  checkFastWalletHosting: jest.fn(),
   getAppProtectionStatus: jest.fn(async () => ({ locked: false })),
   ensureWalletSecret: jest.fn(async () => undefined),
   deleteWalletSecret: jest.fn(async () => undefined),
@@ -144,6 +145,7 @@ import {
   upsertRegisteredWallet,
 } from '../WalletRegistry';
 import { WalletService } from '../WalletService';
+import { FastWalletPushService } from '../FastWalletPushService';
 
 const FAST_CREDENTIAL_KEY = 'monero.wallet.fast.mainnet.fast-receive-v2-7.v2';
 const FAST_SCANNER_CREDENTIAL_KEY =
@@ -252,6 +254,126 @@ describe('WalletService fast receive scanner flow', () => {
         scannerStatus: 'enabled',
         workerReceiptVerified: true,
       }),
+    ]);
+  });
+
+  it('keeps a still-valid active assignment when the replacement receipt times out', async () => {
+    const now = Math.floor(Date.now() / 1_000);
+    await upsertFastReceiveIdentity({
+      ...createFastReceiveIdentityRecord(
+        {
+          id: 'fast-receive-v2-7',
+          label: 'Fast Wallet',
+          path: '/local/fast-receive-v2-7',
+          address: '54A1renewAddress',
+          network: 'mainnet',
+          restoreHeight: 777,
+          derivationIndex: 7,
+          scannerStatus: 'enabled',
+        },
+        new Date().toISOString(),
+        { credentialKey: FAST_CREDENTIAL_KEY },
+      ),
+      status: 'enabled',
+      notificationsEnabled: true,
+      assignmentHandle: '11'.repeat(32),
+      assignmentEpoch: 1,
+      assignmentExpiresAt: now + 60,
+      workerKind: 'official',
+      watchMessageId: '55'.repeat(32),
+      workerReceiptVerified: true,
+    });
+    mockNativeWallet.submitFastWalletWatch.mockRejectedValueOnce(
+      new Error('Fast Wallet Worker acceptance timed out'),
+    );
+
+    await new WalletService().renewExpiringFastWalletAssignmentsQuietly();
+
+    await expect(loadFastReceiveIdentities()).resolves.toEqual([
+      expect.objectContaining({
+        assignmentHandle: '11'.repeat(32),
+        assignmentEpoch: 1,
+        notificationsEnabled: true,
+        scannerStatus: 'enabled',
+        workerReceiptVerified: true,
+      }),
+    ]);
+  });
+
+  it('retains the opted-in owner intent after an expired assignment renewal fails and retries later', async () => {
+    const expiresAt = Math.floor(Date.now() / 1_000) - 60;
+    await upsertFastReceiveIdentity({
+      ...createFastReceiveIdentityRecord(
+        {
+          id: 'fast-receive-v2-7',
+          label: 'Fast Wallet',
+          path: '/local/fast-receive-v2-7',
+          address: '54A1renewAddress',
+          network: 'mainnet',
+          restoreHeight: 777,
+          derivationIndex: 7,
+          scannerStatus: 'enabled',
+        },
+        new Date().toISOString(),
+        { credentialKey: FAST_CREDENTIAL_KEY },
+      ),
+      status: 'enabled',
+      notificationsEnabled: true,
+      assignmentHandle: '11'.repeat(32),
+      assignmentEpoch: 1,
+      assignmentExpiresAt: expiresAt,
+      workerKind: 'official',
+      workerReceiptVerified: true,
+    });
+    mockNativeWallet.submitFastWalletWatch.mockRejectedValueOnce(new Error('Gateway temporarily unavailable'));
+    const service = new WalletService();
+    await service.renewExpiringFastWalletAssignmentsQuietly();
+    await expect(loadFastReceiveIdentities()).resolves.toEqual([
+      expect.objectContaining({
+        status: 'registration-error',
+        scannerStatus: 'needs-attention',
+        notificationsEnabled: true,
+        assignmentExpiresAt: expiresAt,
+        assignmentHandle: '11'.repeat(32),
+      }),
+    ]);
+    await service.renewExpiringFastWalletAssignmentsQuietly();
+    expect(mockNativeWallet.sponsorFastWalletAssignment).toHaveBeenCalledTimes(2);
+    await expect(loadFastReceiveIdentities()).resolves.toEqual([
+      expect.objectContaining({
+        status: 'enabled',
+        notificationsEnabled: true,
+        assignmentHandle: '22'.repeat(32),
+        assignmentEpoch: 2,
+        workerReceiptVerified: true,
+      }),
+    ]);
+  });
+
+  it('does not renew or re-enable an expired assignment after an explicit opt-out', async () => {
+    await upsertFastReceiveIdentity({
+      ...createFastReceiveIdentityRecord(
+        {
+          id: 'fast-receive-v2-7',
+          label: 'Fast Wallet',
+          path: '/local/fast-receive-v2-7',
+          address: '54A1renewAddress',
+          network: 'mainnet',
+          restoreHeight: 777,
+          derivationIndex: 7,
+          scannerStatus: 'disabled',
+        },
+        new Date().toISOString(),
+        { credentialKey: FAST_CREDENTIAL_KEY },
+      ),
+      notificationsEnabled: false,
+      assignmentHandle: '11'.repeat(32),
+      assignmentExpiresAt: Math.floor(Date.now() / 1_000) - 60,
+    });
+    await new WalletService().renewExpiringFastWalletAssignmentsQuietly();
+    expect(mockNativeWallet.sponsorFastWalletAssignment).not.toHaveBeenCalled();
+    await expect(loadFastReceiveIdentities()).resolves.toEqual([
+      expect.objectContaining({ notificationsEnabled: false }),
     ]);
   });
 
@@ -938,5 +1060,130 @@ describe('WalletService fast receive scanner flow', () => {
       ),
     ).resolves.toMatchObject({ status: 'ok' });
     expect(mockNativeWallet.prepareTransaction).toHaveBeenCalledTimes(1);
+  });
+});
+
+
+describe('WalletService live hosting check and repair', () => {
+  const identityId = 'fast-receive-v2-7';
+  const response = (status: string, verified = false, errorCode?: string) => ({
+    status, verified, errorCode, repairAttempted: false,
+    attemptedAt: Math.floor(Date.now() / 1000),
+    checkedAt: verified ? Math.floor(Date.now() / 1000) : undefined,
+    assignmentHandle: verified ? '11'.repeat(32) : undefined,
+    assignmentEpoch: verified ? 1 : undefined,
+    workerRootId: verified ? 'aa'.repeat(32) : undefined,
+  });
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    mockNativeWallet.checkFastWalletHosting.mockReset();
+    await AsyncStorage.clear();
+    await upsertFastReceiveIdentity({
+      ...createFastReceiveIdentityRecord({
+        id: identityId, label: 'Hosting test', path: '/fixture/hosting-wallet',
+        address: '54A1fixtureAddress', network: 'mainnet', restoreHeight: 777,
+        derivationIndex: 7, scannerStatus: 'enabled',
+      }, new Date().toISOString(), { credentialKey: FAST_CREDENTIAL_KEY }),
+      status: 'enabled', assignmentHandle: '11'.repeat(32), assignmentEpoch: 1,
+      assignmentExpiresAt: Math.floor(Date.now() / 1000) + 3600,
+      workerKind: 'official', workerReceiptVerified: true, notificationsEnabled: true,
+    });
+    await upsertRegisteredWallet(createRegisteredWallet({
+      id: identityId, walletName: 'Hosting test', kind: 'fast',
+      path: '/fixture/hosting-wallet', network: 'mainnet',
+      seedBackupStatus: 'verified', credentialKey: FAST_CREDENTIAL_KEY,
+    }));
+  });
+  afterEach(() => jest.restoreAllMocks());
+
+  it('never treats cached receipts, ambiguous missing, auth failure or unsupported as live success', async () => {
+    const service = new WalletService();
+    const enroll = jest.spyOn(service as any, 'enableEncryptedFastWalletAlertsUnlocked');
+    for (const state of [response('unknown', false, 'network_error'), response('missing'), response('blocked', false, 'authentication_failed'), response('unsupported', false, 'unsupported_worker')]) {
+      mockNativeWallet.checkFastWalletHosting.mockResolvedValueOnce(state);
+      expect((await service.checkFastWalletHosting(identityId)).verified).toBe(false);
+    }
+    expect(enroll).not.toHaveBeenCalled();
+    expect((await loadFastReceiveIdentities())[0].hostingStatus?.status).toBe('unsupported');
+  });
+
+  it('repairs verified missing and requires a second fresh proof', async () => {
+    const service = new WalletService();
+    const identity = (await loadFastReceiveIdentities())[0];
+    const enroll = jest.spyOn(service as any, 'enableEncryptedFastWalletAlertsUnlocked').mockResolvedValue({ identity, identities: [identity] });
+    mockNativeWallet.checkFastWalletHosting.mockResolvedValueOnce(response('missing', true)).mockResolvedValueOnce(response('hosted', true));
+    expect(await service.checkFastWalletHosting(identityId)).toEqual(expect.objectContaining({ status: 'rehosted', verified: true, repairAttempted: true }));
+    expect(enroll).toHaveBeenCalledWith({ identityId, forceNewAssignment: true, worker: 'official', workerDescriptorHex: undefined });
+    expect(mockNativeWallet.checkFastWalletHosting).toHaveBeenCalledTimes(2);
+    expect((await loadFastReceiveIdentities())[0].hostingStatus?.status).toBe('rehosted');
+  });
+
+  it('persists permission failure without a false repaired success', async () => {
+    const service = new WalletService();
+    jest.spyOn(service as any, 'enableEncryptedFastWalletAlertsUnlocked').mockRejectedValue(new Error('Notification permission denied'));
+    mockNativeWallet.checkFastWalletHosting.mockResolvedValue(response('missing', true));
+    expect(await service.checkFastWalletHosting(identityId)).toEqual(expect.objectContaining({ status: 'blocked', verified: false, repairAttempted: true, errorCode: 'notification_permission_required' }));
+    const stored = (await loadFastReceiveIdentities())[0].hostingStatus;
+    expect(stored?.status).toBe('blocked');
+    expect(stored?.checkedAt).toBeUndefined();
+  });
+
+  it('retains missing when upload was accepted but no live hosting exists', async () => {
+    const service = new WalletService();
+    const identity = (await loadFastReceiveIdentities())[0];
+    jest.spyOn(service as any, 'enableEncryptedFastWalletAlertsUnlocked').mockResolvedValue({ identity, identities: [identity] });
+    mockNativeWallet.checkFastWalletHosting.mockResolvedValue(response('missing', true));
+    expect(await service.checkFastWalletHosting(identityId)).toEqual(expect.objectContaining({ status: 'missing', repairAttempted: true, errorCode: 'missing_after_repair' }));
+  });
+
+  it('coalesces duplicate button presses into one check', async () => {
+    const service = new WalletService();
+    let complete!: (value: unknown) => void;
+    mockNativeWallet.checkFastWalletHosting.mockReturnValue(new Promise(resolve => { complete = resolve; }));
+    const first = service.checkFastWalletHosting(identityId);
+    const second = service.checkFastWalletHosting(identityId);
+    expect(second).toBe(first);
+    complete(response('hosted', true));
+    await first;
+    expect(mockNativeWallet.checkFastWalletHosting).toHaveBeenCalledTimes(1);
+  });
+
+  it('blocks no native assignment when Registry still contains an admitted assignment', async () => {
+    const service = new WalletService();
+    const enroll = jest.spyOn(service as any, 'enableEncryptedFastWalletAlertsUnlocked');
+    mockNativeWallet.checkFastWalletHosting.mockResolvedValue(response('missing', false, 'no_assignment'));
+    expect(await service.checkFastWalletHosting(identityId)).toEqual(expect.objectContaining({ status: 'blocked', errorCode: 'assignment_state_inconsistent', verified: false }));
+    expect(enroll).not.toHaveBeenCalled();
+  });
+
+  it('rejects a native proof for B while Registry still identifies A', async () => {
+    const service = new WalletService();
+    mockNativeWallet.checkFastWalletHosting.mockResolvedValue({ ...response('hosted', true), assignmentHandle: '22'.repeat(32), assignmentEpoch: 2 });
+    expect(await service.checkFastWalletHosting(identityId)).toEqual(expect.objectContaining({ status: 'blocked', errorCode: 'assignment_state_inconsistent', verified: false }));
+  });
+
+  it('never attaches proof A to assignment B changed during the native await', async () => {
+    const service = new WalletService();
+    mockNativeWallet.checkFastWalletHosting.mockImplementationOnce(async () => {
+      const previous = (await loadFastReceiveIdentities())[0];
+      await upsertFastReceiveIdentity({ ...previous, assignmentHandle: '22'.repeat(32), assignmentEpoch: 2, watchMessageId: '44'.repeat(32) });
+      return response('hosted', true);
+    });
+    expect(await service.checkFastWalletHosting(identityId)).toEqual(expect.objectContaining({ status: 'unknown', errorCode: 'assignment_changed', verified: false }));
+    const current = (await loadFastReceiveIdentities())[0];
+    expect(current.assignmentHandle).toBe('22'.repeat(32));
+    expect(current.hostingStatus?.status).toBe('unknown');
+  });
+
+  it.each([
+    ['Notification permission denied', 'blocked', 'notification_permission_required'],
+    ['apns-authorization-error: notification settings unavailable', 'unknown', 'notification_service_error'],
+  ])('persists an initial enrollment preflight failure: %s', async (message, status, errorCode) => {
+    jest.spyOn(FastWalletPushService, 'enableFastWalletNotifications').mockRejectedValueOnce(new Error(message));
+    await expect(new WalletService().enableEncryptedFastWalletAlerts({ identityId, worker: 'official' })).rejects.toThrow(message);
+    expect((await loadFastReceiveIdentities())[0].hostingStatus).toEqual(expect.objectContaining({
+      status, errorCode, verified: false, repairAttempted: false,
+    }));
+    expect(mockNativeWallet.sponsorFastWalletAssignment).not.toHaveBeenCalled();
   });
 });

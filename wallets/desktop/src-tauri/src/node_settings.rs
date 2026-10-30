@@ -12,7 +12,7 @@ const SETTINGS_VERSION: u8 = 1;
 
 /// Public node connection metadata. Passwords are never serialized here; the
 /// boolean only indicates that an OS-keychain credential exists.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NodeProfile {
     pub mode: String,
@@ -59,7 +59,7 @@ pub fn default_profile(network: &str) -> Result<NodeProfile, String> {
         trusted: true,
         use_ssl: false,
         username: String::new(),
-        proxy_address: crate::tor_transport::TOR_SOCKS_ADDRESS.to_owned(),
+        proxy_address: crate::tor_transport::socks_address(),
         password_stored: false,
         updated_at: now(),
     })
@@ -77,9 +77,15 @@ pub fn load(app: &AppHandle, network: &str) -> Result<NodeProfile, String> {
 }
 
 pub fn save(app: &AppHandle, mut profile: NodeProfile) -> Result<NodeProfile, String> {
-    profile.updated_at = now();
-    validate_profile(&profile)?;
     let mut settings = read(app)?;
+    let previous_revision = settings
+        .profiles
+        .iter()
+        .find(|existing| existing.network == profile.network)
+        .map(|existing| existing.updated_at)
+        .unwrap_or_default();
+    profile.updated_at = now().max(previous_revision.saturating_add(1));
+    validate_profile(&profile)?;
     if let Some(index) = settings
         .profiles
         .iter()
@@ -332,7 +338,7 @@ mod tests {
         assert_eq!(profile.mode, "custom");
         assert_eq!(profile.daemon_address, "node.example:18081");
         assert!(profile.grpc_endpoint.is_empty());
-        assert_eq!(profile.proxy_address, "127.0.0.1:9050");
+        assert!(profile.proxy_address.starts_with("127.0.0.1:"));
     }
 
     #[test]

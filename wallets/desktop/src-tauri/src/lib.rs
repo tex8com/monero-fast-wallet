@@ -4,21 +4,29 @@ mod community_preferences;
 mod compute_preferences;
 mod derivation_performance;
 mod desktop_notifications;
+#[cfg(any(target_os = "macos", test))]
+mod apns_registration;
+mod notification_test;
 mod diagnostics;
+mod daemon_health;
 mod enthusiast_v1;
 mod fast_wallet;
 mod fast_wallet_enrollment;
+mod fast_wallet_hosting;
+mod ledger_operation;
 mod linux_notification_agent;
 mod mfw_name_resolver;
 mod mfw_names;
 mod native_wallet;
 mod node_settings;
 mod payment_links;
+mod pending_outgoing;
 mod platform_auth;
 mod release_features;
 mod secure_store;
 mod security_settings;
 mod spool_preferences;
+mod tor_probe;
 pub mod tor_transport;
 mod vanity_service;
 mod wallet_core;
@@ -102,9 +110,15 @@ fn lock_native_wallet<'a>(
         .0
         .lock()
         .map_err(|_| "Native wallet is busy.".to_owned())?;
-    diagnostics::record(
+    diagnostics::record_sampled(
         app,
         "wallet.native-lock-acquired",
+        operation,
+        if started.elapsed() >= Duration::from_millis(250) {
+            0
+        } else {
+            10
+        },
         &[
             ("operation", operation.to_owned()),
             ("waitMs", started.elapsed().as_millis().to_string()),
@@ -769,6 +783,8 @@ struct RenameWalletInput {
 #[serde(rename_all = "camelCase")]
 struct RemoveRegisteredWalletInput {
     wallet_id: String,
+    #[serde(default)]
+    app_password: String,
 }
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -921,6 +937,16 @@ struct EncryptedFastWalletAlertsInput {
     identity_id: String,
     worker: String,
     #[serde(default)]
+    force_new_assignment: bool,
+    #[serde(default)]
+    app_password: String,
+}
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CheckFastWalletHostingInput {
+    identity_id: String,
+    worker: Option<String>,
+    #[serde(default)]
     app_password: String,
 }
 #[derive(Debug, Deserialize)]
@@ -1016,11 +1042,7 @@ async fn disable_notification_installation(
     protection: State<'_, AppProtectionState>,
 ) -> Result<desktop_notifications::NotificationInstallationStatus, String> {
     require_app_unlocked(&protection)?;
-    let current = desktop_notifications::status(&app)?;
-    if current.installation.gateway_status == "active" {
-        fast_wallet_enrollment::disable_delivery(&app).await?;
-    }
-    desktop_notifications::disable_installation(&app)
+    desktop_notifications::disable_delivery(&app).await
 }
 
 #[tauri::command]
@@ -1030,6 +1052,51 @@ fn consume_pending_notification_open(
 ) -> Result<Option<desktop_notifications::NotificationEvent>, String> {
     require_app_unlocked(&protection)?;
     desktop_notifications::consume_pending_open(&app)
+}
+
+#[tauri::command]
+async fn request_test_push_notification(
+    app: AppHandle,
+    protection: State<'_, AppProtectionState>,
+) -> Result<desktop_notifications::TestPushStatus, String> {
+    require_app_unlocked(&protection)?;
+    desktop_notifications::request_test_push(&app).await
+}
+
+#[tauri::command]
+async fn test_push_notification_status(
+    app: AppHandle,
+    protection: State<'_, AppProtectionState>,
+) -> Result<desktop_notifications::TestPushStatus, String> {
+    require_app_unlocked(&protection)?;
+    desktop_notifications::test_push_status(&app).await
+}
+
+#[tauri::command]
+async fn open_notification_settings(
+    app: AppHandle,
+    protection: State<'_, AppProtectionState>,
+) -> Result<(), String> {
+    require_app_unlocked(&protection)?;
+    desktop_notifications::open_notification_settings(&app).await
+}
+
+#[tauri::command]
+async fn open_focus_settings(
+    app: AppHandle,
+    protection: State<'_, AppProtectionState>,
+) -> Result<(), String> {
+    require_app_unlocked(&protection)?;
+    desktop_notifications::open_focus_settings(&app).await
+}
+
+#[tauri::command]
+fn consume_pending_notification_events(
+    app: AppHandle,
+    protection: State<'_, AppProtectionState>,
+) -> Result<Vec<desktop_notifications::NotificationEvent>, String> {
+    require_app_unlocked(&protection)?;
+    desktop_notifications::consume_pending_events(&app)
 }
 
 #[tauri::command]
@@ -2672,7 +2739,7 @@ fn create_hardware_wallet_blocking(
             });
         }
     };
-    let registration = wallet_registry::hardware_wallet(
+    let mut registration = wallet_registry::hardware_wallet(
         &wallet_name,
         &wallet_network,
         Some(restore_height),
@@ -2680,6 +2747,7 @@ fn create_hardware_wallet_blocking(
         (role != "standard").then_some(role),
         None,
     );
+    registration.ledger_transport = Some(if uses_ledger_ble { "ble" } else { "usb" }.to_owned());
     let response = finish_wallet_operation_with_password(
         app,
         state,
@@ -2691,7 +2759,7 @@ fn create_hardware_wallet_blocking(
     )?;
     if create_fast {
         let fast_wallet_name = format!("{wallet_name}-fast");
-        let fast_registration = wallet_registry::hardware_wallet(
+        let mut fast_registration = wallet_registry::hardware_wallet(
             &fast_wallet_name,
             &wallet_network,
             Some(restore_height),
@@ -2699,6 +2767,7 @@ fn create_hardware_wallet_blocking(
             Some("fast"),
             Some(&response.wallet.id),
         );
+        fast_registration.ledger_transport = response.wallet.ledger_transport.clone();
         let fast_registration = wallet_registry::upsert_inactive(app, fast_registration)?;
         sessions
             .0
@@ -3002,13 +3071,6 @@ fn compare_ledger_signing_account_state(
     LedgerSigningAccountComparison::Match
 }
 
-fn safe_ledger_rebuild_restore_height(restore_height: Option<u64>) -> u64 {
-    // Zero delegates the fallback boundary to the native rebuild contract,
-    // which derives it from the already identity-checked open companion and
-    // fails closed if that wallet has no usable refresh height.
-    restore_height.unwrap_or(0)
-}
-
 fn ledger_signing_account_states(
     app: &AppHandle,
     state: &NativeWalletState,
@@ -3030,33 +3092,6 @@ fn ledger_signing_account_states(
     Ok((companion, hardware))
 }
 
-fn synchronize_ledger_hardware_to_height(
-    app: &AppHandle,
-    state: &NativeWalletState,
-    hardware_wallet_id: &str,
-    companion_height: u64,
-) -> Result<(), String> {
-    lock_native_wallet(app, state, "ledger-signing-refresh-start")?
-        .start_refresh(hardware_wallet_id)?;
-    let deadline = Instant::now() + Duration::from_secs(5 * 60);
-    let ready = (|| loop {
-        let raw = lock_native_wallet(app, state, "ledger-signing-readiness")?
-            .snapshot(hardware_wallet_id)?;
-        let (height, _) = wallet_snapshot_height_and_sync(&raw)?;
-        if height >= companion_height {
-            return Ok(());
-        }
-        if Instant::now() >= deadline {
-            return Err("The Ledger signing wallet did not synchronize in time.".to_owned());
-        }
-        std::thread::sleep(Duration::from_millis(750));
-    })();
-    let stop_result = lock_native_wallet(app, state, "ledger-signing-refresh-stop")
-        .and_then(|native| native.stop_refresh(hardware_wallet_id));
-    ready?;
-    stop_result
-}
-
 fn ledger_wallet_height(
     app: &AppHandle,
     state: &NativeWalletState,
@@ -3065,109 +3100,6 @@ fn ledger_wallet_height(
 ) -> Result<u64, String> {
     let raw = lock_native_wallet(app, state, operation)?.snapshot(wallet_id)?;
     wallet_snapshot_height_and_sync(&raw).map(|(height, _)| height)
-}
-
-fn synchronize_ledger_companion_to_height(
-    app: &AppHandle,
-    state: &NativeWalletState,
-    companion_wallet_id: &str,
-    target_height: u64,
-) -> Result<(), String> {
-    // The viewing companion is the normal continuously synchronized session.
-    // Starting it is idempotent; unlike the temporary hardware session, leave
-    // it running after it catches up.
-    lock_native_wallet(app, state, "ledger-signing-companion-refresh-start")?
-        .start_refresh(companion_wallet_id)?;
-    let deadline = Instant::now() + Duration::from_secs(5 * 60);
-    loop {
-        let height = ledger_wallet_height(
-            app,
-            state,
-            companion_wallet_id,
-            "ledger-signing-companion-readiness",
-        )?;
-        if height >= target_height {
-            return Ok(());
-        }
-        if Instant::now() >= deadline {
-            return Err(
-                "The encrypted Ledger viewing companion did not synchronize in time.".to_owned(),
-            );
-        }
-        std::thread::sleep(Duration::from_millis(750));
-    }
-}
-
-fn ledger_signing_account_states_at_shared_height(
-    app: &AppHandle,
-    state: &NativeWalletState,
-    companion_wallet_id: &str,
-    hardware_wallet_id: &str,
-    account_index: u32,
-) -> Result<(LedgerSigningAccountState, LedgerSigningAccountState), String> {
-    let deadline = Instant::now() + Duration::from_secs(5 * 60);
-    loop {
-        let companion_height = ledger_wallet_height(
-            app,
-            state,
-            companion_wallet_id,
-            "ledger-signing-companion-height",
-        )?;
-        let hardware_height = ledger_wallet_height(
-            app,
-            state,
-            hardware_wallet_id,
-            "ledger-signing-hardware-height",
-        )?;
-        if companion_height < hardware_height {
-            // A candidate ahead of the reference is not a spend-state
-            // mismatch. Refresh the companion without Ledger, then re-read.
-            synchronize_ledger_companion_to_height(
-                app,
-                state,
-                companion_wallet_id,
-                hardware_height,
-            )?;
-        } else if hardware_height < companion_height {
-            synchronize_ledger_hardware_to_height(
-                app,
-                state,
-                hardware_wallet_id,
-                companion_height,
-            )?;
-        } else {
-            let states = ledger_signing_account_states(
-                app,
-                state,
-                companion_wallet_id,
-                hardware_wallet_id,
-                account_index,
-            )?;
-            // The companion normally remains live. Accept the values only if
-            // neither wallet advanced while the account fields were read.
-            let companion_after = ledger_wallet_height(
-                app,
-                state,
-                companion_wallet_id,
-                "ledger-signing-companion-height-confirm",
-            )?;
-            let hardware_after = ledger_wallet_height(
-                app,
-                state,
-                hardware_wallet_id,
-                "ledger-signing-hardware-height-confirm",
-            )?;
-            if companion_after == companion_height && hardware_after == hardware_height {
-                return Ok(states);
-            }
-        }
-        if Instant::now() >= deadline {
-            return Err(
-                "The Ledger signing wallet and encrypted companion did not reach a common scan height in time."
-                    .to_owned(),
-            );
-        }
-    }
 }
 
 fn prime_ledger_hardware_from_open_companion(
@@ -3195,7 +3127,9 @@ fn prime_ledger_hardware_from_open_companion(
     lock_native_wallet(app, state, "ledger-signing-prime-from-companion")?
         .prime_hardware_from_view_only(hardware_wallet_id, &companion_wallet_id)
         .map_err(|error| {
-            format!("The encrypted Ledger viewing wallet does not match this Ledger. {error}")
+            // Native code reports a true public-key mismatch itself. A BLE
+            // exchange failure is not evidence of a different Ledger.
+            format!("The Ledger viewing-key preparation failed. {error}")
         })?;
     diagnostics::record(
         app,
@@ -3214,115 +3148,82 @@ fn synchronize_and_verify_ledger_signing_session(
     account_index: u32,
     diagnostic_flow: &str,
 ) -> Result<(), String> {
-    // Prime again immediately before every signing refresh. This is
-    // intentionally idempotent and prevents startRefresh from falling back to
-    // another Ledger view-key export when an encrypted companion exists.
-    let companion_wallet_id = prime_ledger_hardware_from_open_companion(
-        app,
-        state,
-        sessions,
-        source,
-        hardware_wallet_id,
-        diagnostic_flow,
-    )?
+    let registry = wallet_registry::list(app)?;
+    let companion_wallet_id = {
+        let open_sessions = sessions
+            .0
+            .lock()
+            .map_err(|_| "Wallet session state is busy.".to_owned())?;
+        ledger_view_only_companion_session_id(&registry, &open_sessions, &source.id)?
+    }
     .ok_or_else(|| {
         "This Ledger wallet has no open encrypted viewing companion. Open and synchronize its companion before sending."
             .to_owned()
     })?;
-    let companion_height = {
-        let raw = lock_native_wallet(app, state, "ledger-signing-companion-snapshot")?
-            .snapshot(&companion_wallet_id)?;
-        synchronized_wallet_height(&raw)?
-    };
 
-    // The common path remains incremental. A healthy signing cache reaches the
-    // companion height and proves the exact account spend state without any
-    // destructive rebuild.
-    synchronize_ledger_hardware_to_height(app, state, hardware_wallet_id, companion_height)?;
-    let (companion_state, hardware_state) = ledger_signing_account_states_at_shared_height(
-        app,
-        state,
-        &companion_wallet_id,
-        hardware_wallet_id,
-        account_index,
-    )?;
-    match compare_ledger_signing_account_state(&companion_state, &hardware_state) {
-        LedgerSigningAccountComparison::Match => {}
-        LedgerSigningAccountComparison::IdentityMismatch => {
+    // Freeze the canonical scanner at one exact state. Core then atomically
+    // adopts its cursor and public cache, re-derives every owned output and Key
+    // Image on the connected Ledger, and rejects any copied spend-state
+    // mismatch. No second historical scan is required.
+    lock_native_wallet(app, state, "ledger-signing-companion-freeze")?
+        .stop_refresh(&companion_wallet_id)?;
+    let verification = (|| {
+        prime_ledger_hardware_from_open_companion(
+            app,
+            state,
+            sessions,
+            source,
+            hardware_wallet_id,
+            diagnostic_flow,
+        )?
+        .ok_or_else(|| "The encrypted Ledger viewing companion closed unexpectedly.".to_owned())?;
+
+        let companion_height = ledger_wallet_height(
+            app,
+            state,
+            &companion_wallet_id,
+            "ledger-signing-adopted-companion-height",
+        )?;
+        let hardware_height = ledger_wallet_height(
+            app,
+            state,
+            hardware_wallet_id,
+            "ledger-signing-adopted-hardware-height",
+        )?;
+        if hardware_height != companion_height {
             return Err(
+                "The Ledger signing wallet did not adopt the exact viewing-wallet scan height."
+                    .to_owned(),
+            );
+        }
+        let (companion_state, hardware_state) = ledger_signing_account_states(
+            app,
+            state,
+            &companion_wallet_id,
+            hardware_wallet_id,
+            account_index,
+        )?;
+        match compare_ledger_signing_account_state(&companion_state, &hardware_state) {
+            LedgerSigningAccountComparison::Match => Ok(()),
+            LedgerSigningAccountComparison::IdentityMismatch => Err(
                 "The connected Ledger does not match the selected wallet account.".to_owned(),
-            );
+            ),
+            LedgerSigningAccountComparison::SpendStateMismatch => Err(
+                "The securely adopted Ledger spend state does not match its encrypted viewing companion."
+                    .to_owned(),
+            ),
         }
-        LedgerSigningAccountComparison::SpendStateMismatch => {
-            // Only an authenticated identity match with a divergent spend state
-            // may rebuild. The refresh above is already stopped, and this branch
-            // executes at most once per signing request.
-            let restore_height = safe_ledger_rebuild_restore_height(source.restore_height);
-            diagnostics::record(
-                app,
-                "ledger.hardware-signing-cache-rebuild-started",
-                &[("flow", diagnostic_flow.to_owned())],
-            );
-            lock_native_wallet(app, state, "ledger-signing-cache-rebuild")?
-                .rebuild_hardware_wallet_cache_from_view_only(
-                    hardware_wallet_id,
-                    &companion_wallet_id,
-                    restore_height,
-                )?;
-            diagnostics::record(
-                app,
-                "ledger.hardware-signing-cache-rebuild-complete",
-                &[("flow", diagnostic_flow.to_owned())],
-            );
-
-            // Re-read the synchronized companion after the potentially long
-            // rebuild so a newly observed block cannot be mistaken for parity.
-            let rebuilt_target_height = {
-                let raw = lock_native_wallet(
-                    app,
-                    state,
-                    "ledger-signing-companion-snapshot-after-rebuild",
-                )?
-                .snapshot(&companion_wallet_id)?;
-                synchronized_wallet_height(&raw)?
-            };
-            synchronize_ledger_hardware_to_height(
-                app,
-                state,
-                hardware_wallet_id,
-                rebuilt_target_height,
-            )?;
-            let (companion_after_rebuild, hardware_after_rebuild) =
-                ledger_signing_account_states_at_shared_height(
-                    app,
-                    state,
-                    &companion_wallet_id,
-                    hardware_wallet_id,
-                    account_index,
-                )?;
-            match compare_ledger_signing_account_state(
-                &companion_after_rebuild,
-                &hardware_after_rebuild,
-            ) {
-                LedgerSigningAccountComparison::Match => {}
-                LedgerSigningAccountComparison::IdentityMismatch => {
-                    return Err(
-                        "The connected Ledger does not match the selected wallet account."
-                            .to_owned(),
-                    );
-                }
-                LedgerSigningAccountComparison::SpendStateMismatch => {
-                    return Err(
-                        "The Ledger signing wallet spend state still does not match its encrypted companion after one safe rebuild."
-                            .to_owned(),
-                    );
-                }
-            }
-        }
+    })();
+    let resume = lock_native_wallet(app, state, "ledger-signing-companion-resume")
+        .and_then(|native| native.start_refresh(&companion_wallet_id));
+    if let Err(error) = verification {
+        let _ = resume;
+        return Err(error);
     }
+    resume?;
     diagnostics::record(
         app,
-        "ledger.hardware-signing-session-ready",
+        "ledger.hardware-signing-scan-state-adopted",
         &[("flow", diagnostic_flow.to_owned())],
     );
     Ok(())
@@ -3336,6 +3237,57 @@ fn ensure_ledger_hardware_session(
     diagnostic_flow: &str,
 ) -> Result<String, String> {
     let signing_session_key = ledger_hardware_session_key(&source.id);
+    ledger_operation::report(app, "connecting", 0, 0, Duration::ZERO, Duration::ZERO);
+    let usb_present =
+        lock_native_wallet(app, state, "ledger-usb-presence")?.ledger_usb_available()?;
+    let device_name = if cfg!(target_os = "macos") && !usb_present {
+        "Ledger:ble"
+    } else {
+        "Ledger"
+    };
+    let transport = if device_name == "Ledger:ble" {
+        "ble"
+    } else {
+        "usb"
+    };
+    diagnostics::record(
+        app,
+        "ledger.hardware-transport-selected",
+        &[
+            ("flow", diagnostic_flow.to_owned()),
+            ("transport", transport.to_owned()),
+        ],
+    );
+    // Change the device driver only between complete operations. Opening the
+    // encrypted wallet and priming its companion still verify the identity.
+    if let Some(wallet_id) = wallet_session_id(sessions, &signing_session_key)? {
+        let status =
+            lock_native_wallet(app, state, "ledger-transport-verify")?.hardware_status(&wallet_id);
+        let previous_device = status
+            .as_ref()
+            .ok()
+            .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+            .and_then(|value| {
+                value
+                    .get("deviceName")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned)
+            });
+        if status.is_ok() && previous_device.as_deref() != Some(device_name) {
+            lock_native_wallet(app, state, "ledger-transport-switch-close")?
+                .close(&wallet_id, true)?;
+            sessions
+                .0
+                .lock()
+                .map_err(|_| "Wallet session state is busy.".to_owned())?
+                .remove(&signing_session_key);
+            diagnostics::record(
+                app,
+                "ledger.hardware-transport-session-reset",
+                &[("transport", transport.to_owned())],
+            );
+        }
+    }
     if let Some(wallet_id) = wallet_session_id(sessions, &signing_session_key)? {
         let status = lock_native_wallet(app, state, "ledger-hardware-session-validate")?
             .hardware_status(&wallet_id);
@@ -3401,19 +3353,95 @@ fn ensure_ledger_hardware_session(
         "ledger.hardware-session-reopen-started",
         &[("flow", diagnostic_flow.to_owned())],
     );
+    let mut transport_unavailable_detail = None;
+    #[cfg(target_os = "macos")]
+    if device_name == "Ledger:ble" {
+        let transport_started = Instant::now();
+        diagnostics::record(
+            app,
+            "ledger.hardware-session-transport-started",
+            &[("flow", diagnostic_flow.to_owned())],
+        );
+        let transport_result = lock_native_wallet(app, state, "ledger-hardware-session-transport")?
+            .ledger_transport_status();
+        let transport_ready = transport_result
+            .as_ref()
+            .ok()
+            .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+            .is_some_and(|value| {
+                value.get("available").and_then(serde_json::Value::as_bool) == Some(true)
+                    && value
+                        .get("deviceCount")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or(0)
+                        > 0
+            });
+        diagnostics::record(
+            app,
+            if transport_ready {
+                "ledger.hardware-session-transport-ready"
+            } else {
+                "ledger.hardware-session-transport-unavailable"
+            },
+            &[
+                ("flow", diagnostic_flow.to_owned()),
+                (
+                    "elapsedMs",
+                    transport_started.elapsed().as_millis().to_string(),
+                ),
+            ],
+        );
+        if transport_ready && source.ledger_transport.is_none() {
+            let mut migrated = source.clone();
+            migrated.ledger_transport = Some("ble".to_owned());
+            let _ = wallet_registry::upsert(app, migrated);
+        }
+        if !transport_ready {
+            let detail = transport_result
+                .as_ref()
+                .ok()
+                .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+                .and_then(|value| value.get("message")?.as_str().map(str::to_owned))
+                .filter(|message| !message.trim().is_empty())
+                .unwrap_or_else(|| "No ready Ledger Bluetooth connection was found.".to_owned());
+            if source.ledger_transport.as_deref() == Some("ble") {
+                return Err(format!(
+                    "Connect and unlock the Ledger, then open the Monero app on it. {detail}"
+                ));
+            }
+            transport_unavailable_detail = Some(detail);
+        }
+    }
     let path = wallet_path(app, &source.wallet_name)?;
     let mut password = secure_store::load_wallet_password_current(&source.id)?.ok_or_else(|| {
         "This Ledger wallet's protected local credential is unavailable. Remove and add this Ledger wallet again."
             .to_owned()
     })?;
-    let opened = lock_native_wallet(app, state, "ledger-hardware-session-open")?.open(
+    let opened = lock_native_wallet(app, state, "ledger-hardware-session-open")?.open_with_device(
         &path,
         &password,
         network(&source.network)?,
         source.restore_height.unwrap_or(0),
+        device_name,
     );
     password.zeroize();
-    let wallet_id = opened?;
+    let wallet_id = match opened {
+        Ok(wallet_id) => wallet_id,
+        Err(error) => {
+            diagnostics::record(
+                app,
+                "ledger.hardware-session-reopen-failed",
+                &[
+                    ("flow", diagnostic_flow.to_owned()),
+                    ("stage", "open".to_owned()),
+                ],
+            );
+            let detail = transport_unavailable_detail.as_deref().unwrap_or(&error);
+            return Err(format!(
+                "Connect and unlock the Ledger, then open the Monero app on it. {detail}"
+            ));
+        }
+    };
     let reconnect = lock_native_wallet(app, state, "ledger-hardware-session-reconnect")?
         .reconnect_hardware(&wallet_id);
     if let Err(error) = reconnect {
@@ -3422,7 +3450,11 @@ fn ensure_ledger_hardware_session(
         diagnostics::record(
             app,
             "ledger.hardware-session-reopen-failed",
-            &[("flow", diagnostic_flow.to_owned())],
+            &[
+                ("flow", diagnostic_flow.to_owned()),
+                ("stage", "reconnect".to_owned()),
+                ("error", error.clone()),
+            ],
         );
         return Err(format!(
             "Connect and unlock the Ledger, then open the Monero app on it. {error}"
@@ -3486,6 +3518,7 @@ async fn reconcile_ledger_balance(
     require_app_unlocked(&protection)?;
     let background_app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
+        let _ledger_operation = ledger_operation::acquire()?;
         // Ledger I/O can wait for the device and the native wallet mutex can
         // legitimately be occupied by sync. Neither wait may run on AppKit's
         // WebView IPC thread or macOS will report the entire app as hung.
@@ -4204,30 +4237,42 @@ fn rename_wallet(
     wallet_registry::rename_wallet(&app, &input.wallet_id, &input.display_name)
 }
 #[tauri::command]
-fn remove_registered_wallet(
+async fn remove_registered_wallet(
     app: AppHandle,
     state: State<'_, NativeWalletState>,
     sessions: State<'_, WalletSessionState>,
     protection: State<'_, AppProtectionState>,
-    input: RemoveRegisteredWalletInput,
+    mut input: RemoveRegisteredWalletInput,
 ) -> Result<(), String> {
     require_app_unlocked(&protection)?;
-    // Remove any live native session before hiding its registration. This
-    // mirrors mobile's "remove from app" behavior while deliberately keeping
-    // the encrypted wallet file and Ledger/seed intact.
+    require_fresh_app_authorization(
+        app.clone(),
+        &mut input.app_password,
+        "Permanently delete this wallet and its local data",
+    )
+    .await?;
     let registry = wallet_registry::list(&app)?;
-    let removed_ids = registry
+    let removed_wallets = registry
         .wallets
         .iter()
         .filter(|wallet| {
             wallet.id == input.wallet_id
                 || wallet.source_wallet_id.as_deref() == Some(input.wallet_id.as_str())
         })
-        .map(|wallet| wallet.id.clone())
+        .cloned()
         .collect::<Vec<_>>();
-    if removed_ids.is_empty() {
+    if removed_wallets.is_empty() {
         return Err("Saved wallet was not found.".to_owned());
     }
+    let removed_ids = removed_wallets
+        .iter()
+        .map(|wallet| wallet.id.clone())
+        .collect::<Vec<_>>();
+    diagnostics::record(
+        &app,
+        "wallet.delete-started",
+        &[("registrations", removed_ids.len().to_string())],
+    );
     let mut native_close_failures = 0_u8;
     if let Some(signing_session_id) = sessions
         .0
@@ -4235,16 +4280,30 @@ fn remove_registered_wallet(
         .map_err(|_| "Wallet session state is busy.".to_owned())?
         .remove(&ledger_hardware_session_key(&input.wallet_id))
     {
-        match state.0.try_lock() {
+        let close_deferred = match state.0.try_lock() {
             Ok(native) => {
-                if native.close(&signing_session_id, false).is_err() {
-                    native_close_failures = native_close_failures.saturating_add(1);
+                if let Err(error) = native.close(&signing_session_id, false) {
+                    eprintln!(
+                        "MONERO_DESKTOP_WALLET_DELETE ledger-signing-close-warning deletion-continues error={error}"
+                    );
                 }
+                false
             }
             Err(_) => {
-                native_close_failures = native_close_failures.saturating_add(1);
                 diagnostics::record(&app, "wallet.remove-ledger-signing-close-deferred", &[]);
+                true
             }
+        };
+        if close_deferred {
+            native_close_failures = native_close_failures.saturating_add(1);
+            sessions
+                .0
+                .lock()
+                .map_err(|_| "Wallet session state is busy.".to_owned())?
+                .insert(
+                    ledger_hardware_session_key(&input.wallet_id),
+                    signing_session_id,
+                );
         }
     }
     for removed_id in &removed_ids {
@@ -4264,35 +4323,42 @@ fn remove_registered_wallet(
                 diagnostics::record(&app, "wallet.remove-shared-container-retained", &[]);
                 continue;
             }
-            // Removing a local registration is intentionally immediate. A
-            // background node handshake may own the Core for many seconds;
-            // waiting for it here would freeze the confirmation dialog even
-            // though the user only asked to hide this local entry. The live
-            // session becomes unreachable immediately and is cleaned up on
-            // the next lock or process exit.
-            let close_result = match state.0.try_lock() {
-                Ok(native) => native.close(&session_id, false),
+            let close_deferred = match state.0.try_lock() {
+                Ok(native) => {
+                    if let Err(error) = native.close(&session_id, false) {
+                        eprintln!(
+                            "MONERO_DESKTOP_WALLET_DELETE native-close-warning deletion-continues error={error}"
+                        );
+                    }
+                    false
+                }
                 Err(TryLockError::WouldBlock) => {
                     diagnostics::record(&app, "wallet.remove-native-close-deferred", &[]);
-                    Err("Native Core is synchronizing in the background.".to_owned())
+                    true
                 }
-                Err(TryLockError::Poisoned(_)) => Err("Native wallet is busy.".to_owned()),
+                Err(TryLockError::Poisoned(_)) => true,
             };
-            if let Err(error) = close_result {
-                // `WalletEngine::close()` removes the native session from its
-                // registry before it persists the cache. A later cache-store
-                // failure must therefore not make an obsolete local entry
-                // impossible to remove from the UI. The encrypted wallet file
-                // and recovery material remain untouched either way.
+            if close_deferred {
                 native_close_failures = native_close_failures.saturating_add(1);
+                sessions
+                    .0
+                    .lock()
+                    .map_err(|_| "Wallet session state is busy.".to_owned())?
+                    .insert(removed_id.clone(), session_id);
                 eprintln!(
-                    "MONERO_DESKTOP_WALLET_REMOVE native-close-failed registration-removal-continues error={error}"
+                    "MONERO_DESKTOP_WALLET_DELETE native-close-deferred deletion-retry-required"
                 );
             }
         }
     }
+    if native_close_failures > 0 {
+        return Err(
+            "The wallet is still busy with background work. Wait a moment and delete it again."
+                .to_owned(),
+        );
+    }
     for removed_id in &removed_ids {
-        let _ = secure_store::delete_wallet_password(removed_id);
+        secure_store::delete_wallet_password(removed_id)?;
     }
     let removed_view_only_source_ids = registry
         .wallets
@@ -4308,20 +4374,25 @@ fn remove_registered_wallet(
         })
         .collect::<Vec<_>>();
     for source_id in removed_view_only_source_ids {
-        let _ = secure_store::delete_ledger_private_view_key(&source_id);
+        secure_store::delete_ledger_private_view_key(&source_id)?;
     }
     if registry
         .wallets
         .iter()
         .any(|wallet| wallet.id == input.wallet_id && wallet.kind == "hardware")
     {
-        let _ = secure_store::delete_ledger_private_view_key(&input.wallet_id);
+        secure_store::delete_ledger_private_view_key(&input.wallet_id)?;
+    }
+    for wallet in &removed_wallets {
+        let path = wallet_path(&app, &wallet.wallet_name)?;
+        remove_wallet_files_completely(&path)?;
     }
     wallet_registry::remove(&app, &input.wallet_id)?;
     eprintln!(
         "MONERO_DESKTOP_WALLET_REMOVE complete registrations={} native_close_failures={native_close_failures}",
         removed_ids.len()
     );
+    diagnostics::record(&app, "wallet.deleted", &[]);
     Ok(())
 }
 #[tauri::command]
@@ -4839,6 +4910,9 @@ async fn renew_expiring_fast_wallet_assignments(app: &AppHandle) -> Result<(), S
                     .assignment_expires_at
                     .is_some_and(|expires_at| expires_at <= renewal_deadline))
     }) {
+        let Ok(_operation) = fast_wallet_hosting::HostingCheckGuard::acquire(&record.id) else { continue; };
+        // The selection above may predate an interactive update.
+        record = fast_wallet::get(app, &record.id)?;
         let result = async {
             let previous = fast_wallet_enrollment::load_assignment(&record.id)?
                 .ok_or_else(|| "The local payment-alert assignment is missing.".to_owned())?;
@@ -4880,7 +4954,25 @@ async fn renew_expiring_fast_wallet_assignments(app: &AppHandle) -> Result<(), S
                 password.zeroize();
                 sealed?
             };
+            diagnostics::record(
+                app,
+                "fast-wallet.assignment-candidate",
+                &[
+                    ("assignmentEpoch", assignment.assignment_epoch.to_string()),
+                    ("phase", "pending".to_owned()),
+                ],
+            );
             let message_id = fast_wallet_enrollment::submit_watch(&worker, &envelope).await?;
+            diagnostics::record(
+                app,
+                "fast-wallet.worker-receipt-verified",
+                &[
+                    ("assignmentEpoch", assignment.assignment_epoch.to_string()),
+                    ("verified", "true".to_owned()),
+                ],
+            );
+            let assignment =
+                fast_wallet_enrollment::activate_assignment(app, &record.id, &assignment).await?;
             Ok::<_, String>((assignment, message_id))
         }
         .await;
@@ -5010,161 +5102,39 @@ fn close_fast_wallet(
     result
 }
 
-fn validate_fast_wallet_removal_snapshot(raw: &str) -> Result<(), String> {
-    let snapshot: serde_json::Value = serde_json::from_str(raw)
-        .map_err(|_| "The Fast Wallet balance could not be verified safely.".to_owned())?;
-    let synchronized = snapshot
-        .get("synchronized")
-        .and_then(serde_json::Value::as_bool)
-        .ok_or_else(|| "The Fast Wallet synchronization state is unknown.".to_owned())?;
-    if !synchronized {
-        return Err(
-            "The Fast Wallet cannot be removed until local synchronization is complete.".to_owned(),
-        );
-    }
-    let balance = snapshot
-        .get("balanceAtomic")
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| "The Fast Wallet balance is unknown.".to_owned())?
-        .parse::<u128>()
-        .map_err(|_| "The Fast Wallet balance is unknown.".to_owned())?;
-    if balance != 0 {
-        return Err(
-            "This Fast Wallet still contains Monero. Send the remaining balance before removing it."
-                .to_owned(),
-        );
-    }
-    Ok(())
-}
-
 #[tauri::command]
-fn remove_fast_wallet(
+async fn remove_fast_wallet(
     app: AppHandle,
     state: State<'_, NativeWalletState>,
     sessions: State<'_, FastWalletSessionState>,
     protection: State<'_, AppProtectionState>,
-    input: FastWalletIdInput,
+    mut input: AuthorizedFastWalletIdInput,
 ) -> Result<(), String> {
     require_app_unlocked(&protection)?;
+    fast_wallet::validate_id(&input.identity_id)?;
+    let _operation = fast_wallet_hosting::HostingCheckGuard::acquire(&input.identity_id)?;
     let record = fast_wallet::get(&app, &input.identity_id)?;
-    fast_wallet::require_independent_software(&record)?;
+    require_fresh_app_authorization(
+        app.clone(),
+        &mut input.app_password,
+        "Permanently delete this Fast Wallet and its scan data",
+    )
+    .await?;
     diagnostics::record(
         &app,
         "fast-wallet.remove-started",
         &[("seedBackupStatus", record.seed_backup_status.clone())],
     );
-    // An empty, fully synchronized Fast Wallet may be discarded even when
-    // its recovery words were never confirmed. Requiring a backup made fresh
-    // test wallets impossible to remove and did not protect funds: the native
-    // snapshot check below is the authoritative zero-balance safety gate.
-    if record.assignment_handle.is_some()
-        || fast_wallet_enrollment::load_assignment(&record.id)?.is_some()
-    {
-        diagnostics::record(
-            &app,
-            "fast-wallet.remove-blocked",
-            &[("reason", "hosted-scan-data-present".to_owned())],
-        );
-        return Err(
-            "Delete this Fast Wallet's hosted scan data before removing the local wallet."
-                .to_owned(),
-        );
-    }
-    let wallet_id = match sessions
-        .0
-        .lock()
-        .map_err(|_| "Fast Wallet session state is busy.".to_owned())?
-        .get(&record.id)
-        .cloned()
-    {
-        Some(wallet_id) => wallet_id,
-        None => {
-            diagnostics::record(
-                &app,
-                "fast-wallet.remove-blocked",
-                &[("reason", "wallet-not-open".to_owned())],
-            );
-            return Err("Open and synchronize this Fast Wallet before removing it.".to_owned());
-        }
-    };
-    let raw = match state
-        .0
-        .lock()
-        .map_err(|_| "Native wallet is busy.".to_owned())?
-        .snapshot(&wallet_id)
-    {
-        Ok(raw) => raw,
-        Err(error) => {
-            diagnostics::record(
-                &app,
-                "fast-wallet.remove-blocked",
-                &[
-                    ("reason", "snapshot-failed".to_owned()),
-                    ("error", error.clone()),
-                ],
-            );
-            return Err(error);
-        }
-    };
-    if let Err(error) = validate_fast_wallet_removal_snapshot(&raw) {
-        diagnostics::record(
-            &app,
-            "fast-wallet.remove-blocked",
-            &[
-                ("reason", "snapshot-not-removable".to_owned()),
-                ("error", error.clone()),
-            ],
-        );
-        return Err(error);
-    }
-    state
-        .0
-        .lock()
-        .map_err(|_| "Native wallet is busy.".to_owned())?
-        .close(&wallet_id, true)?;
-    sessions
-        .0
-        .lock()
-        .map_err(|_| "Fast Wallet session state is busy.".to_owned())?
-        .remove(&record.id);
-
-    // Durable public metadata is removed before best-effort local cleanup. If
-    // cleanup is interrupted, an encrypted zero-balance file may remain, but a
-    // funded or unverified wallet is never made unrecoverable.
-    fast_wallet::remove(&app, &record.id)?;
-    let _ = secure_store::delete_fast_wallet_password(&record.id);
-    let path = fast_wallet::wallet_path(&app, &record.id)?;
-    remove_temporary_wallet_files(&path);
-    diagnostics::record(&app, "fast-wallet.removed", &[]);
-    Ok(())
-}
-
-/// Remove a Fast Wallet entry that cannot yet pass the permanent-removal
-/// safety gate.  This is intentionally a metadata-only action: the encrypted
-/// wallet file and its recovery material stay on disk so an unbacked or legacy
-/// wallet can never be made unrecoverable by a list-management click.
-#[tauri::command]
-fn remove_fast_wallet_entry(
-    app: AppHandle,
-    state: State<'_, NativeWalletState>,
-    sessions: State<'_, FastWalletSessionState>,
-    protection: State<'_, AppProtectionState>,
-    input: FastWalletIdInput,
-) -> Result<(), String> {
-    require_app_unlocked(&protection)?;
-    let record = fast_wallet::get(&app, &input.identity_id)?;
-    if record.assignment_handle.is_some()
-        || fast_wallet_enrollment::load_assignment(&record.id)?.is_some()
-    {
-        diagnostics::record(
-            &app,
-            "fast-wallet.entry-remove-blocked",
-            &[("reason", "hosted-scan-data-present".to_owned())],
-        );
-        return Err(
-            "Delete this Fast Wallet's hosted scan data before removing its local entry."
-                .to_owned(),
-        );
+    let stored_assignment = fast_wallet_enrollment::load_assignment(&record.id)?;
+    let assignment_handle = record.assignment_handle.as_deref().or_else(|| {
+        stored_assignment
+            .as_ref()
+            .map(|state| state.assignment_handle.as_str())
+    });
+    if let Some(assignment_handle) = assignment_handle {
+        diagnostics::record(&app, "fast-wallet.remove-hosted-data-started", &[]);
+        fast_wallet_enrollment::delete_assignment(&app, &record.id, assignment_handle).await?;
+        diagnostics::record(&app, "fast-wallet.remove-hosted-data-complete", &[]);
     }
     let wallet_id = sessions
         .0
@@ -5172,29 +5142,37 @@ fn remove_fast_wallet_entry(
         .map_err(|_| "Fast Wallet session state is busy.".to_owned())?
         .get(&record.id)
         .cloned();
-    if let Some(wallet_id) = wallet_id.as_ref() {
+    if let Some(wallet_id) = wallet_id {
         state
             .0
             .lock()
             .map_err(|_| "Native wallet is busy.".to_owned())?
-            .close(wallet_id, true)?;
+            .close(&wallet_id, false)?;
         sessions
             .0
             .lock()
             .map_err(|_| "Fast Wallet session state is busy.".to_owned())?
             .remove(&record.id);
     }
+    let path = fast_wallet::wallet_path(&app, &record.id)?;
+    remove_wallet_files_completely(&path)?;
+    secure_store::delete_fast_wallet_password(&record.id)?;
+    secure_store::delete_fast_wallet_assignment_state(&record.id)?;
     fast_wallet::remove(&app, &record.id)?;
-    diagnostics::record(
-        &app,
-        "fast-wallet.entry-removed",
-        &[
-            ("legacy", (record.status == "legacy-blocked").to_string()),
-            ("seedBackupStatus", record.seed_backup_status),
-            ("filesRetained", "true".to_owned()),
-        ],
-    );
+    diagnostics::record(&app, "fast-wallet.removed", &[]);
     Ok(())
+}
+
+/// Compatibility alias for older renderers. Removal is always complete.
+#[tauri::command]
+async fn remove_fast_wallet_entry(
+    app: AppHandle,
+    state: State<'_, NativeWalletState>,
+    sessions: State<'_, FastWalletSessionState>,
+    protection: State<'_, AppProtectionState>,
+    input: AuthorizedFastWalletIdInput,
+) -> Result<(), String> {
+    remove_fast_wallet(app, state, sessions, protection, input).await
 }
 
 fn show_native_recovery_seed_backup(wallet_label: &str, seed: &str, fast_wallet: bool) -> bool {
@@ -5521,6 +5499,39 @@ async fn enable_encrypted_fast_wallet_alerts(
     app: AppHandle,
     state: State<'_, NativeWalletState>,
     protection: State<'_, AppProtectionState>,
+    input: EncryptedFastWalletAlertsInput,
+) -> Result<fast_wallet::FastWalletRecord, String> {
+    require_app_unlocked(&protection)?;
+    fast_wallet::validate_id(&input.identity_id)?;
+    let _enrollment = fast_wallet_hosting::HostingCheckGuard::acquire(&input.identity_id)?;
+    let identity_id = input.identity_id.clone();
+    let attempted_at = now();
+    let result =
+        enable_encrypted_fast_wallet_alerts_inner(app.clone(), state, protection, input).await;
+    let observation = match &result {
+        Ok(_) => {
+            fast_wallet_hosting::HostingStatus::unknown(attempted_at, "hosting_check_required")
+        }
+        Err(error) => fast_wallet_hosting::HostingStatus::failure(
+            attempted_at,
+            fast_wallet_hosting::enrollment_error_code(error),
+            false,
+        ),
+    };
+    if let Ok(mut record) = fast_wallet::get(&app, &identity_id) {
+        record.hosting_status = Some(observation);
+        let updated = fast_wallet::update(&app, record);
+        if result.is_ok() {
+            return updated;
+        }
+    }
+    result
+}
+
+async fn enable_encrypted_fast_wallet_alerts_inner(
+    app: AppHandle,
+    state: State<'_, NativeWalletState>,
+    protection: State<'_, AppProtectionState>,
     mut input: EncryptedFastWalletAlertsInput,
 ) -> Result<fast_wallet::FastWalletRecord, String> {
     require_app_unlocked(&protection)?;
@@ -5642,6 +5653,7 @@ async fn enable_encrypted_fast_wallet_alerts(
         );
         return Err(error);
     }
+    let previous_record = record.clone();
     record.alert_status = "setting-up".to_owned();
     record.notifications_enabled = false;
     record = fast_wallet::update(&app, record)?;
@@ -5654,6 +5666,10 @@ async fn enable_encrypted_fast_wallet_alerts(
             fast_wallet_enrollment::load_private_worker(&record.network, current_time)
         };
         let worker = worker_result.map_err(|error| ("worker-descriptor", error))?;
+        if input.force_new_assignment {
+            fast_wallet_enrollment::retire_pending_for_repair(&app, &record.id).await
+                .map_err(|error| ("pending-retirement", error))?;
+        }
         let assignment =
             fast_wallet_enrollment::sponsor_assignment(&app, &record.id, &worker, current_time)
                 .await
@@ -5695,9 +5711,28 @@ async fn enable_encrypted_fast_wallet_alerts(
             );
         password.zeroize();
         let envelope = envelope.map_err(|error| ("encryption", error))?;
+        diagnostics::record(
+            &app,
+            "fast-wallet.assignment-candidate",
+            &[
+                ("assignmentEpoch", assignment.assignment_epoch.to_string()),
+                ("phase", "pending".to_owned()),
+            ],
+        );
         let message_id = fast_wallet_enrollment::submit_watch(&worker, &envelope)
             .await
             .map_err(|error| ("relay-upload", error))?;
+        diagnostics::record(
+            &app,
+            "fast-wallet.worker-receipt-verified",
+            &[
+                ("assignmentEpoch", assignment.assignment_epoch.to_string()),
+                ("verified", "true".to_owned()),
+            ],
+        );
+        let assignment = fast_wallet_enrollment::activate_assignment(&app, &record.id, &assignment)
+            .await
+            .map_err(|error| ("assignment-activation", error))?;
         Ok::<_, (&'static str, String)>((assignment, message_id))
     }
     .await;
@@ -5723,8 +5758,17 @@ async fn enable_encrypted_fast_wallet_alerts(
             Ok(record)
         }
         Err((phase, error)) => {
-            record.alert_status = "needs-attention".to_owned();
-            record.notifications_enabled = false;
+            if fast_wallet_enrollment::load_assignment(&record.id)?
+                .is_some_and(|assignment| assignment.expires_at > now())
+            {
+                record = previous_record;
+                record.alert_status = "on".to_owned();
+                record.notifications_enabled = true;
+                record.worker_receipt_verified = true;
+            } else {
+                record.alert_status = "needs-attention".to_owned();
+                record.notifications_enabled = false;
+            }
             let _ = fast_wallet::update(&app, record);
             diagnostics::record(
                 &app,
@@ -5741,6 +5785,163 @@ async fn enable_encrypted_fast_wallet_alerts(
             Err(error)
         }
     }
+}
+
+/// A fresh Worker proof controls repair. Cached display metadata never does.
+#[tauri::command]
+async fn check_fast_wallet_hosting(
+    app: AppHandle,
+    state: State<'_, NativeWalletState>,
+    protection: State<'_, AppProtectionState>,
+    mut input: CheckFastWalletHostingInput,
+) -> Result<fast_wallet::FastWalletRecord, String> {
+    use fast_wallet_hosting::{HostingCheckGuard, HostingStatus};
+    require_app_unlocked(&protection)?;
+    fast_wallet::validate_id(&input.identity_id)?;
+    let _single_flight = HostingCheckGuard::acquire(&input.identity_id)?;
+    let attempted_at = now();
+    let started = Instant::now();
+    let record = fast_wallet::get(&app, &input.identity_id)?;
+    let operation = async {
+        if fast_wallet::require_independent_software(&record).is_err() {
+            return HostingStatus::failure(attempted_at, "legacy_wallet_unsupported", false);
+        }
+        let assignment = match fast_wallet_enrollment::load_assignment(&record.id) {
+            Ok(assignment) => assignment,
+            Err(_) => return HostingStatus::failure(attempted_at, "assignment_invalid", false),
+        };
+        if assignment.is_none()
+            && (record.assignment_handle.is_some()
+                || record.assignment_epoch.is_some()
+                || record.watch_message_id.is_some()
+                || record.worker_receipt_verified)
+        {
+            return HostingStatus::failure(attempted_at, "assignment_state_missing", false);
+        }
+        let pending = match fast_wallet_enrollment::load_pending_assignment(&record.id) {
+            Ok(pending) => pending,
+            Err(_) => return HostingStatus::failure(attempted_at, "assignment_invalid", false),
+        };
+        let observer = assignment.as_ref().or(pending.as_ref());
+        let worker_choice = if let Some(assignment) = observer {
+            // Even an unactivated candidate pins its original observer. A
+            // lost private-worker pairing must never select the official one.
+            if (assignment.expires_at <= now() || record.assignment_handle.is_none())
+                && fast_wallet_enrollment::worker_for_assignment(&record.network, assignment, now())
+                    .await
+                    .is_err()
+            {
+                return HostingStatus::failure(attempted_at, "worker_descriptor_invalid", false);
+            }
+            match fast_wallet_enrollment::paired_private_worker_roots() {
+                Ok(roots) if roots.iter().any(|root| root == &assignment.worker_root_id) => {
+                    "private".to_owned()
+                }
+                Ok(_) => "official".to_owned(),
+                Err(_) => {
+                    return HostingStatus::failure(attempted_at, "worker_descriptor_invalid", false)
+                }
+            }
+        } else {
+            input
+                .worker
+                .clone()
+                .unwrap_or_else(|| "official".to_owned())
+        };
+        let initial_proof = if let Some(assignment) =
+            assignment.as_ref().filter(|value| value.expires_at > now())
+        {
+            match fast_wallet_enrollment::check_hosting(
+                &app,
+                &record.network,
+                assignment,
+                attempted_at,
+            )
+            .await
+            {
+                Ok(status) if status.status == "hosted" => return status,
+                Ok(status) => Some(status),
+                Err(code) => return HostingStatus::failure(attempted_at, code, false),
+            }
+        } else {
+            None
+        };
+        // Only a verified 'missing' proof or the device-held absence/expiry of
+        // its own assignment can authorize the normal guarded enrollment flow.
+        if initial_proof
+            .as_ref()
+            .is_some_and(|status| status.status != "missing" || !status.verified)
+        {
+            return HostingStatus::failure(attempted_at, "proof_invalid", false);
+        }
+        if record.seed_backup_status != "verified" {
+            return HostingStatus::failure(attempted_at, "backup_required", false);
+        }
+        // This command already owns the shared identity operation guard.
+        let enrollment = enable_encrypted_fast_wallet_alerts_inner(
+            app.clone(),
+            state,
+            protection,
+            EncryptedFastWalletAlertsInput {
+                identity_id: record.id.clone(),
+                worker: worker_choice,
+                force_new_assignment: true,
+                app_password: std::mem::take(&mut input.app_password),
+            },
+        )
+        .await;
+        if let Err(error) = enrollment {
+            return HostingStatus::failure(
+                attempted_at,
+                fast_wallet_hosting::enrollment_error_code(&error),
+                true,
+            );
+        }
+        let assignment = match fast_wallet_enrollment::load_assignment(&record.id) {
+            Ok(Some(assignment)) => assignment,
+            _ => return HostingStatus::failure(attempted_at, "assignment_invalid", true),
+        };
+        match fast_wallet_enrollment::check_hosting(
+            &app,
+            &record.network,
+            &assignment,
+            attempted_at,
+        )
+        .await
+        {
+            Ok(mut status) => {
+                status.repair_attempted = true;
+                if status.status == "hosted" {
+                    status.status = "rehosted".to_owned();
+                }
+                status
+            }
+            Err(code) => HostingStatus::failure(attempted_at, code, true),
+        }
+    };
+    let observation = operation.await;
+    input.app_password.zeroize();
+    diagnostics::record(
+        &app,
+        "fast-wallet.hosting-check-finished",
+        &[
+            ("result", observation.status.clone()),
+            ("verified", observation.verified.to_string()),
+            ("elapsedMs", started.elapsed().as_millis().to_string()),
+            (
+                "safeErrorCode",
+                observation
+                    .error_code
+                    .clone()
+                    .unwrap_or_else(|| "none".to_owned()),
+            ),
+        ],
+    );
+    // Reload after the async work: enrollment and other wallet actions may
+    // have changed the record while the status request was in flight.
+    let mut latest = fast_wallet::get(&app, &input.identity_id)?;
+    latest.hosting_status = Some(observation);
+    fast_wallet::update(&app, latest)
 }
 
 #[tauri::command]
@@ -5780,6 +5981,8 @@ async fn delete_hosted_fast_wallet_data(
     mut input: AuthorizedFastWalletIdInput,
 ) -> Result<fast_wallet::FastWalletRecord, String> {
     require_app_unlocked(&protection)?;
+    fast_wallet::validate_id(&input.identity_id)?;
+    let _operation = fast_wallet_hosting::HostingCheckGuard::acquire(&input.identity_id)?;
     let mut record = fast_wallet::get(&app, &input.identity_id)?;
     fast_wallet::require_independent_software(&record)?;
     let assignment = fast_wallet_enrollment::load_assignment(&record.id)?
@@ -5799,6 +6002,7 @@ async fn delete_hosted_fast_wallet_data(
     record.assignment_expires_at = None;
     record.watch_message_id = None;
     record.worker_receipt_verified = false;
+    record.hosting_status = Some(fast_wallet_hosting::HostingStatus::unknown(now(), "hosting_check_required"));
     fast_wallet::update(&app, record)
 }
 
@@ -6231,9 +6435,8 @@ fn load_node_settings(
     node_settings::load(&app, &network)
 }
 #[tauri::command]
-fn save_node_settings(
+async fn save_node_settings(
     app: AppHandle,
-    state: State<'_, NativeWalletState>,
     protection: State<'_, AppProtectionState>,
     mut input: NodeSettingsInput,
 ) -> Result<node_settings::NodeProfile, String> {
@@ -6270,6 +6473,16 @@ fn save_node_settings(
         input.password.zeroize();
     }
     let profile = node_settings::save(&app, profile)?;
+    if existing != profile {
+        // A route includes its proxy/mode, not just its destination address.
+        // Do not retain a result from the previous route while it is retested.
+        if let Ok(mut routes) = tor_connectivity_routes().lock() {
+            routes.remove(&profile.network);
+        }
+        if let Ok(mut routes) = connectivity_routes().lock() {
+            routes.remove(&profile.network);
+        }
+    }
     if let Some(wallet_id) = input.wallet_id {
         // Never resolve the wallet-operation daemon locally. Monero Core sends
         // the unchanged hostname through SOCKS4a, so .onion resolution stays
@@ -6280,32 +6493,124 @@ fn save_node_settings(
         } else {
             String::new()
         };
-        let mut password = if profile.password_stored {
-            secure_store::load_node_daemon_password(&profile.network)?.unwrap_or_default()
-        } else {
+        let proxy_address = if profile.proxy_address.trim().is_empty() {
             String::new()
+        } else {
+            tor_transport::socks_address()
         };
-        let applied = state
-            .0
-            .lock()
-            .map_err(|_| "Native wallet is busy.".to_owned())
-            .and_then(|native| {
-                native.set_daemon(native_wallet::DaemonConfig {
-                    wallet_id: &wallet_id,
-                    address: &daemon_address,
-                    trusted: profile.trusted,
-                    use_ssl: profile.use_ssl,
-                    username: &profile.username,
-                    password: &password,
-                    proxy_address: &profile.proxy_address,
-                })?;
-                // Passing an empty endpoint explicitly tears down a prior MFN
-                // stream when this open wallet is switched back to standard
-                // Monero RPC.
-                native.set_grpc_endpoint(&wallet_id, &grpc_endpoint)
-            });
-        password.zeroize();
-        applied?;
+        let background_app = app.clone();
+        let applied_profile = profile.clone();
+        diagnostics::record(
+            &app,
+            "wallet.node-settings-apply-queued",
+            &[("revision", profile.updated_at.to_string())],
+        );
+        tauri::async_runtime::spawn_blocking(move || {
+            const MAX_ATTEMPTS: u32 = 1_200;
+            for attempt in 1..=MAX_ATTEMPTS {
+                let protection = background_app.state::<AppProtectionState>();
+                if require_app_unlocked(&protection).is_err() {
+                    diagnostics::record(
+                        &background_app,
+                        "wallet.node-settings-apply-cancelled",
+                        &[("reason", "app-locked".to_owned())],
+                    );
+                    return;
+                }
+                let latest = match node_settings::load(&background_app, &applied_profile.network) {
+                    Ok(latest) => latest,
+                    Err(error) => {
+                        diagnostics::record(
+                            &background_app,
+                            "wallet.node-settings-apply-failed",
+                            &[("reason", error)],
+                        );
+                        return;
+                    }
+                };
+                if latest != applied_profile {
+                    diagnostics::record(
+                        &background_app,
+                        "wallet.node-settings-apply-cancelled",
+                        &[("reason", "superseded".to_owned())],
+                    );
+                    return;
+                }
+                let mut password = if applied_profile.password_stored {
+                    match secure_store::load_node_daemon_password(&applied_profile.network) {
+                        Ok(password) => password.unwrap_or_default(),
+                        Err(error) => {
+                            diagnostics::record(
+                                &background_app,
+                                "wallet.node-settings-apply-failed",
+                                &[("reason", error)],
+                            );
+                            return;
+                        }
+                    }
+                } else {
+                    String::new()
+                };
+                let state = background_app.state::<NativeWalletState>();
+                let applied =
+                    try_lock_native_wallet(&background_app, &state, "node-settings-apply")
+                        .and_then(|native| {
+                            native.set_daemon(native_wallet::DaemonConfig {
+                                wallet_id: &wallet_id,
+                                address: &daemon_address,
+                                trusted: applied_profile.trusted,
+                                use_ssl: applied_profile.use_ssl,
+                                username: &applied_profile.username,
+                                password: &password,
+                                proxy_address: &proxy_address,
+                            })?;
+                            // Passing an empty endpoint explicitly tears down a prior MFN
+                            // stream when this open wallet is switched back to standard
+                            // Monero RPC.
+                            native.set_grpc_endpoint(&wallet_id, &grpc_endpoint)
+                        });
+                password.zeroize();
+                match applied {
+                    Ok(()) => {
+                        diagnostics::record(
+                            &background_app,
+                            "wallet.node-settings-apply-completed",
+                            &[
+                                ("attempt", attempt.to_string()),
+                                ("revision", applied_profile.updated_at.to_string()),
+                            ],
+                        );
+                        return;
+                    }
+                    Err(error)
+                        if error == "Wallet is connecting in the background."
+                            || error.contains("node change must be retried") =>
+                    {
+                        diagnostics::record_sampled(
+                            &background_app,
+                            "wallet.node-settings-apply-retrying",
+                            &applied_profile.network,
+                            10,
+                            &[("attempt", attempt.to_string())],
+                        );
+                        std::thread::sleep(Duration::from_millis(750));
+                    }
+                    Err(error) => {
+                        diagnostics::record(
+                            &background_app,
+                            "wallet.node-settings-apply-failed",
+                            &[("reason", error)],
+                        );
+                        return;
+                    }
+                }
+            }
+            diagnostics::record(
+                &background_app,
+                "wallet.node-settings-apply-failed",
+                &[("reason", "retry-limit".to_owned())],
+            );
+        });
     }
     Ok(profile)
 }
@@ -6338,7 +6643,24 @@ async fn diagnose_connection_routes(
     } else {
         disabled_connection_route()
     };
+    // The manual check and the periodically refreshed cards share one result.
+    // A settings edit while the probe was running invalidates that old route.
+    if node_settings::load(&app, &input.network).is_ok_and(|current| current == profile) {
+        set_tor_connectivity(&input.network, connectivity_from_probe(&tor));
+        set_clearnet_connectivity(&input.network, connectivity_from_probe(&clearnet));
+    }
     Ok(ConnectionRoutesDiagnostic { tor, clearnet })
+}
+
+fn connectivity_from_probe(probe: &ConnectionRouteProbe) -> ConnectivityRouteState {
+    ConnectivityRouteState {
+        phase: if probe.connected { "connected" } else if probe.endpoint.is_empty() { "idle" } else { "error" }.to_owned(),
+        connected: probe.connected,
+        endpoint: probe.endpoint.clone(),
+        checked_at_ms: connectivity_now_ms(),
+        elapsed_ms: probe.elapsed_ms,
+        error: probe.error.clone(),
+    }
 }
 
 fn disabled_connection_route() -> ConnectionRouteProbe {
@@ -6351,67 +6673,16 @@ fn disabled_connection_route() -> ConnectionRouteProbe {
 }
 
 fn probe_tor_route(endpoint: &str) -> ConnectionRouteProbe {
-    probe_route(endpoint, |host, port, timeout| {
-        let mut stream = TcpStream::connect_timeout(
-            &tor_transport::TOR_SOCKS_ADDRESS
-                .parse()
-                .map_err(|_| "The local Tor proxy address is invalid.".to_owned())?,
-            timeout,
-        )
-        .map_err(|error| format!("{} ({error})", tor_transport::diagnostic_status()))?;
-        stream
-            .set_read_timeout(Some(timeout))
-            .map_err(|error| error.to_string())?;
-        stream
-            .set_write_timeout(Some(timeout))
-            .map_err(|error| error.to_string())?;
-        stream
-            .write_all(&[5, 1, 0])
-            .map_err(|error| error.to_string())?;
-        let mut greeting = [0_u8; 2];
-        stream
-            .read_exact(&mut greeting)
-            .map_err(|error| format!("{} ({error})", tor_transport::diagnostic_status()))?;
-        if greeting != [5, 0] {
-            return Err("Tor SOCKS proxy rejected anonymous authentication.".to_owned());
-        }
-        let host_bytes = host.as_bytes();
-        if host_bytes.is_empty() || host_bytes.len() > 255 || !host_bytes.is_ascii() {
-            return Err("The Tor destination host is invalid.".to_owned());
-        }
-        let mut request = Vec::with_capacity(host_bytes.len() + 7);
-        request.extend_from_slice(&[5, 1, 0, 3, host_bytes.len() as u8]);
-        request.extend_from_slice(host_bytes);
-        request.extend_from_slice(&port.to_be_bytes());
-        stream
-            .write_all(&request)
-            .map_err(|error| error.to_string())?;
-        let mut response = [0_u8; 4];
-        stream
-            .read_exact(&mut response)
-            .map_err(|error| error.to_string())?;
-        if response[0] != 5 || response[1] != 0 {
-            return Err(format!(
-                "Tor could not open the selected route (SOCKS {}).",
-                response[1]
-            ));
-        }
-        let remaining = match response[3] {
-            1 => 4 + 2,
-            3 => {
-                let mut length = [0_u8; 1];
-                stream
-                    .read_exact(&mut length)
-                    .map_err(|error| error.to_string())?;
-                usize::from(length[0]) + 2
-            }
-            4 => 16 + 2,
-            _ => return Err("Tor returned an invalid SOCKS response.".to_owned()),
-        };
-        let mut ignored = vec![0_u8; remaining];
-        stream
-            .read_exact(&mut ignored)
-            .map_err(|error| error.to_string())?;
+    // A fresh Onion circuit/descriptor can take longer than a direct TCP
+    // handshake. Keep one bounded budget for SOCKS, then verify the daemon.
+    probe_route_with_timeout(endpoint, Duration::from_secs(60), |host, port, timeout| {
+        let proxy = tor_transport::socks_address()
+            .parse()
+            .map_err(|_| "The local Tor proxy address is invalid.".to_owned())?;
+        let mut stream = tor_probe::connect(proxy, host, port, timeout)?;
+        let daemon_timeout = Duration::from_secs(15);
+        stream.set_read_timeout(Some(daemon_timeout)).map_err(|error| error.to_string())?;
+        stream.set_write_timeout(Some(daemon_timeout)).map_err(|error| error.to_string())?;
         probe_monero_daemon_api(&mut stream, host)
     })
 }
@@ -6471,44 +6742,17 @@ fn probe_monero_daemon_api(stream: &mut TcpStream, host: &str) -> Result<(), Str
     stream
         .write_all(request.as_bytes())
         .map_err(|error| format!("Daemon health request: {error}"))?;
-    let response = read_bounded_response(stream, 32 * 1024)?;
-    let text = String::from_utf8_lossy(&response);
-    let status_ok = text.starts_with("HTTP/1.1 200 ") || text.starts_with("HTTP/1.0 200 ");
-    if !status_ok || !text.contains("\"height\"") {
-        return Err(
-            "The selected Monero daemon did not return a valid /get_height response.".to_owned(),
-        );
+    let timeout = stream.read_timeout().map_err(|error| error.to_string())?
+        .unwrap_or(Duration::from_secs(8));
+    let body = daemon_health::read_response(stream, 32 * 1024, timeout)?;
+    let result: serde_json::Value = serde_json::from_slice(&body)
+        .map_err(|_| "The selected Monero daemon returned invalid /get_height JSON.".to_owned())?;
+    if result.get("height").and_then(serde_json::Value::as_u64).filter(|height| *height > 0).is_none()
+        || result.get("status").is_some_and(|status| status.as_str() != Some("OK"))
+    {
+        return Err("The selected Monero daemon did not return a valid /get_height response.".to_owned());
     }
     Ok(())
-}
-
-fn read_bounded_response(stream: &mut TcpStream, limit: usize) -> Result<Vec<u8>, String> {
-    let mut response = Vec::new();
-    let mut chunk = [0_u8; 2048];
-    while response.len() < limit {
-        match stream.read(&mut chunk) {
-            Ok(0) => break,
-            Ok(bytes) => {
-                response.extend_from_slice(&chunk[..bytes]);
-                if response.windows(8).any(|window| window == b"\"height\"") {
-                    break;
-                }
-            }
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                ) && !response.is_empty() =>
-            {
-                break;
-            }
-            Err(error) => return Err(format!("Health response: {error}")),
-        }
-    }
-    if response.is_empty() {
-        return Err("The health endpoint returned no response.".to_owned());
-    }
-    Ok(response)
 }
 
 fn probe_grpc_transport(stream: &mut TcpStream) -> Result<(), String> {
@@ -6587,7 +6831,7 @@ fn mark_connectivity_checking(
 }
 
 fn start_desktop_connectivity_monitor(app: AppHandle) {
-    for network in ["mainnet", "testnet", "stagenet"] {
+    for (probe_index, network) in ["mainnet", "testnet", "stagenet"].into_iter().enumerate() {
         let tor_app = app.clone();
         let tor_network = network.to_owned();
         let tor_error_network = tor_network.clone();
@@ -6596,6 +6840,9 @@ fn start_desktop_connectivity_monitor(app: AppHandle) {
             .name(tor_thread_name)
             .spawn(move || {
                 let mut last_logged_result: Option<(bool, Option<String>)> = None;
+                // Do not hit the shared Tor proxy with all three network
+                // probes in the same millisecond at application startup.
+                std::thread::sleep(Duration::from_secs((probe_index as u64) * 2));
                 loop {
                     match node_settings::load(&tor_app, &tor_network) {
                     Ok(profile) => {
@@ -6616,6 +6863,9 @@ fn start_desktop_connectivity_monitor(app: AppHandle) {
                         } else {
                             probe_tor_route(&profile.daemon_address)
                         };
+                        if !node_settings::load(&tor_app, &tor_network).is_ok_and(|current| current == profile) {
+                            continue;
+                        }
                         let current_result = (probe.connected, probe.error.clone());
                         if last_logged_result.as_ref() != Some(&current_result) {
                             eprintln!(
@@ -6753,6 +7003,9 @@ fn start_desktop_connectivity_monitor(app: AppHandle) {
                                 );
                             }
                             let probe = probe_clearnet_route(&profile.grpc_endpoint);
+                            if !node_settings::load(&app, &network).is_ok_and(|current| current == profile) {
+                                continue;
+                            }
                             let current_result = (probe.connected, probe.error.clone());
                             if last_logged_result.as_ref() != Some(&current_result) {
                                 eprintln!(
@@ -6866,6 +7119,7 @@ fn connectivity_status(
         .lock()
         .ok()
         .and_then(|routes| routes.get(&input.network).cloned())
+        .filter(|state| state.endpoint == profile.daemon_address)
         .unwrap_or(ConnectivityRouteState {
             phase: if daemon_uses_tor {
                 tor_runtime.phase
@@ -6886,6 +7140,7 @@ fn connectivity_status(
         .lock()
         .ok()
         .and_then(|routes| routes.get(&input.network).cloned())
+        .filter(|state| profile.mode == "optimized-grpc" && state.endpoint == profile.grpc_endpoint)
         .unwrap_or(ConnectivityRouteState {
             phase: if profile.mode == "optimized-grpc" {
                 "starting".to_owned()
@@ -6910,6 +7165,11 @@ fn connectivity_status(
     })
 }
 
+#[tauri::command]
+fn embedded_tor_proxy_uri() -> String {
+    tor_transport::proxy_uri()
+}
+
 fn connectivity_now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -6923,10 +7183,17 @@ fn probe_route<F>(endpoint: &str, connect: F) -> ConnectionRouteProbe
 where
     F: FnOnce(&str, u16, Duration) -> Result<(), String>,
 {
+    probe_route_with_timeout(endpoint, Duration::from_secs(8), connect)
+}
+
+fn probe_route_with_timeout<F>(endpoint: &str, timeout: Duration, connect: F) -> ConnectionRouteProbe
+where
+    F: FnOnce(&str, u16, Duration) -> Result<(), String>,
+{
     let label = endpoint.trim().to_owned();
     let started = Instant::now();
     let result = parse_connection_endpoint(&label)
-        .and_then(|(host, port)| connect(&host, port, Duration::from_secs(8)));
+        .and_then(|(host, port)| connect(&host, port, timeout));
     match result {
         Ok(()) => ConnectionRouteProbe {
             connected: true,
@@ -6982,6 +7249,7 @@ fn set_daemon(
         input.password.zeroize();
         return Err(error);
     }
+    let proxy_address = tor_transport::socks_address();
     let result = state
         .0
         .lock()
@@ -6995,7 +7263,7 @@ fn set_daemon(
             password: &input.password,
             // This legacy command is still permissioned for compatibility,
             // but it may never create a direct daemon route.
-            proxy_address: tor_transport::TOR_SOCKS_ADDRESS,
+            proxy_address: &proxy_address,
         });
     input.password.zeroize();
     result
@@ -7039,19 +7307,28 @@ fn stop_wallet_refresh(
         .stop_refresh(&input.wallet_id)
 }
 #[tauri::command]
-fn wallet_address(
-    state: State<'_, NativeWalletState>,
+async fn wallet_address(
+    app: AppHandle,
     protection: State<'_, AppProtectionState>,
     input: WalletIdInput,
 ) -> Result<String, String> {
     require_app_unlocked(&protection)?;
     let account_index = checked_account_index(input.account_index)?;
     let address_index = checked_account_index(input.address_index)?;
-    state
-        .0
-        .lock()
-        .map_err(|_| "Native wallet is busy.".to_owned())?
-        .address(&input.wallet_id, account_index, address_index)
+    let background_app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let protection = background_app.state::<AppProtectionState>();
+        require_app_unlocked(&protection)?;
+        let state = background_app.state::<NativeWalletState>();
+        let address = lock_native_wallet(&background_app, &state, "wallet-address")?.address(
+            &input.wallet_id,
+            account_index,
+            address_index,
+        );
+        address
+    })
+    .await
+    .map_err(|_| "The wallet address worker stopped unexpectedly.".to_owned())?
 }
 #[tauri::command]
 fn validate_recipient_address(
@@ -7142,88 +7419,120 @@ fn list_mfw_names(
 }
 
 #[tauri::command]
-fn resolve_mfw_name_for_payment(
-    state: State<'_, NativeWalletState>,
+async fn resolve_mfw_name_for_payment(
+    app: AppHandle,
     protection: State<'_, AppProtectionState>,
     input: ResolveMfwNameInput,
 ) -> Result<String, String> {
     require_app_unlocked(&protection)?;
     let network_code = network(&input.network)?;
-    let address = mfw_name_resolver::resolve_payment(&input.name, &input.network)?;
-    state
-        .0
-        .lock()
-        .map_err(|_| "Native wallet is busy.".to_owned())?
-        .validate_recipient_address(&address, network_code)
+    let background_app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let protection = background_app.state::<AppProtectionState>();
+        require_app_unlocked(&protection)?;
+        let address = mfw_name_resolver::resolve_payment(&input.name, &input.network)?;
+        let state = background_app.state::<NativeWalletState>();
+        let validated = lock_native_wallet(&background_app, &state, "resolve-mfw-payment")?
+            .validate_recipient_address(&address, network_code);
+        validated
+    })
+    .await
+    .map_err(|_| "The MFW payment resolver stopped unexpectedly.".to_owned())?
 }
 
 #[tauri::command]
-fn check_mfw_name_availability(
+async fn check_mfw_name_availability(
+    app: AppHandle,
     protection: State<'_, AppProtectionState>,
     input: CheckMfwNameAvailabilityInput,
 ) -> Result<mfw_name_resolver::Availability, String> {
     require_app_unlocked(&protection)?;
     network(&input.network)?;
-    mfw_name_resolver::availability(&input.name, &input.network)
+    let background_app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let protection = background_app.state::<AppProtectionState>();
+        require_app_unlocked(&protection)?;
+        mfw_name_resolver::availability(&input.name, &input.network)
+    })
+    .await
+    .map_err(|_| "The MFW availability check stopped unexpectedly.".to_owned())?
 }
 
 #[tauri::command]
-fn suggest_mfw_names(
+async fn suggest_mfw_names(
+    app: AppHandle,
     protection: State<'_, AppProtectionState>,
     input: SuggestMfwNamesInput,
 ) -> Result<mfw_name_resolver::SuggestionResponse, String> {
     require_app_unlocked(&protection)?;
-    mfw_name_resolver::suggest(&input.prefix)
+    let background_app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let protection = background_app.state::<AppProtectionState>();
+        require_app_unlocked(&protection)?;
+        mfw_name_resolver::suggest(&input.prefix)
+    })
+    .await
+    .map_err(|_| "The MFW suggestion check stopped unexpectedly.".to_owned())?
 }
 
 #[tauri::command]
-fn discover_mfw_names_for_wallet(
+async fn discover_mfw_names_for_wallet(
     app: AppHandle,
-    state: State<'_, NativeWalletState>,
     protection: State<'_, AppProtectionState>,
     input: DiscoverMfwNamesInput,
 ) -> Result<Vec<mfw_names::OwnedNameRecord>, String> {
     require_app_unlocked(&protection)?;
-    release_features::require(
-        "mfwNameRegistration",
-        "MFW name reverse discovery is not enabled in this release.",
-    )?;
-    let account_index = checked_account_index(input.account_index)?;
-    let address_index = checked_account_index(input.address_index)?;
-    let address = state
-        .0
-        .lock()
-        .map_err(|_| "Native wallet is busy.".to_owned())?
-        .address(&input.wallet_id, account_index, address_index)?;
-    let discovered = mfw_name_resolver::reverse_for_wallet(&address, &input.network)?;
-    for candidate in discovered {
-        let resolution = candidate.resolution;
-        let name_id =
-            mfw_names::identity_id(&input.wallet_registration_id, &resolution.canonical_name)?;
-        if let Ok(existing) = mfw_names::get(&app, &name_id) {
-            if existing.owner_authority == "local" {
-                continue;
-            }
-        }
-        let mut record = mfw_names::new_record(
-            name_id,
-            resolution.canonical_name,
-            input.wallet_registration_id.clone(),
-            format!("{account_index}-{address_index}"),
-            candidate.address,
-            input.network.clone(),
-            mfw_names::estimated_term_years(resolution.record_height, resolution.expiry_height)?,
-            resolution.owner_public_key_hex,
+    let background_app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let protection = background_app.state::<AppProtectionState>();
+        require_app_unlocked(&protection)?;
+        release_features::require(
+            "mfwNameRegistration",
+            "MFW name reverse discovery is not enabled in this release.",
         )?;
-        record.stage = "active".to_owned();
-        record.sequence = resolution.sequence;
-        record.owner_authority = "recovery-required".to_owned();
-        record.source_txid_hex = Some(resolution.source_txid_hex);
-        record.expiry_height = Some(resolution.expiry_height);
-        record.last_chain_tip_height = Some(resolution.chain_tip_height);
-        mfw_names::upsert(&app, record)?;
-    }
-    mfw_names::list(&app)
+        let account_index = checked_account_index(input.account_index)?;
+        let address_index = checked_account_index(input.address_index)?;
+        let state = background_app.state::<NativeWalletState>();
+        let address = lock_native_wallet(&background_app, &state, "discover-mfw-names")?.address(
+            &input.wallet_id,
+            account_index,
+            address_index,
+        )?;
+        let discovered = mfw_name_resolver::reverse_for_wallet(&address, &input.network)?;
+        for candidate in discovered {
+            let resolution = candidate.resolution;
+            let name_id =
+                mfw_names::identity_id(&input.wallet_registration_id, &resolution.canonical_name)?;
+            if let Ok(existing) = mfw_names::get(&background_app, &name_id) {
+                if existing.owner_authority == "local" {
+                    continue;
+                }
+            }
+            let mut record = mfw_names::new_record(
+                name_id,
+                resolution.canonical_name,
+                input.wallet_registration_id.clone(),
+                format!("{account_index}-{address_index}"),
+                candidate.address,
+                input.network.clone(),
+                mfw_names::estimated_term_years(
+                    resolution.record_height,
+                    resolution.expiry_height,
+                )?,
+                resolution.owner_public_key_hex,
+            )?;
+            record.stage = "active".to_owned();
+            record.sequence = resolution.sequence;
+            record.owner_authority = "recovery-required".to_owned();
+            record.source_txid_hex = Some(resolution.source_txid_hex);
+            record.expiry_height = Some(resolution.expiry_height);
+            record.last_chain_tip_height = Some(resolution.chain_tip_height);
+            mfw_names::upsert(&background_app, record)?;
+        }
+        mfw_names::list(&background_app)
+    })
+    .await
+    .map_err(|_| "The MFW name discovery worker stopped unexpectedly.".to_owned())?
 }
 
 fn mfw_transaction_wallet_id(
@@ -7272,6 +7581,7 @@ async fn prepare_mfw_name_registration(
     require_app_unlocked(&protection)?;
     let background_app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
+        let _ledger_operation = ledger_operation::acquire()?;
         // Ledger transport and the signing-wallet catch-up can legitimately take
         // minutes. Keep all three MFW preparation paths off the WebView IPC thread.
         let protection = background_app.state::<AppProtectionState>();
@@ -7423,6 +7733,7 @@ async fn prepare_mfw_name_claim(
     require_app_unlocked(&protection)?;
     let background_app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
+        let _ledger_operation = ledger_operation::acquire()?;
         let protection = background_app.state::<AppProtectionState>();
         require_app_unlocked(&protection)?;
         let state = background_app.state::<NativeWalletState>();
@@ -7496,6 +7807,7 @@ async fn prepare_mfw_name_transition(
     require_app_unlocked(&protection)?;
     let background_app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
+        let _ledger_operation = ledger_operation::acquire()?;
         let protection = background_app.state::<AppProtectionState>();
         require_app_unlocked(&protection)?;
         let state = background_app.state::<NativeWalletState>();
@@ -8386,7 +8698,19 @@ async fn registered_wallet_transactions(
     // main Activity and dashboard views. Return every account so outgoing
     // history cannot disappear merely because it belongs to another account.
     // Account-scoped address tools continue to use `wallet_transactions`.
-    try_lock_native_wallet(&app, &state, "registered-wallet-transactions")?.transactions(&wallet_id)
+    let authoritative = try_lock_native_wallet(&app, &state, "registered-wallet-transactions")?
+        .transactions(&wallet_id)?;
+    match pending_outgoing::merge(&registration.id, &authoritative, now()) {
+        Ok(merged) => Ok(merged),
+        Err(error) => {
+            diagnostics::record(
+                &app,
+                "wallet.pending-outgoing-merge-failed",
+                &[("error", error)],
+            );
+            Ok(authoritative)
+        }
+    }
 }
 #[tauri::command]
 async fn prepare_transaction(
@@ -8397,6 +8721,7 @@ async fn prepare_transaction(
     require_app_unlocked(&protection)?;
     let background_app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
+        let _ledger_operation = ledger_operation::acquire()?;
         // Transaction construction can perform daemon I/O and, for hardware
         // wallets, wait for Ledger transport. Keep the WebView event loop free
         // so the spinner, Cancel/Back controls and window remain responsive.
@@ -8496,6 +8821,14 @@ async fn prepare_transaction(
             } else {
                 input.wallet_id.clone()
             };
+            ledger_operation::report(
+                &background_app,
+                "constructing",
+                0,
+                0,
+                started.elapsed(),
+                Duration::ZERO,
+            );
             let raw = lock_native_wallet(&background_app, &state, "transaction-prepare")?
                 .prepare_transaction(
                     &transaction_wallet_id,
@@ -8546,7 +8879,10 @@ async fn prepare_transaction(
             } else {
                 "wallet.transaction-prepare-failed"
             },
-            &[("elapsedMs", started.elapsed().as_millis().to_string())],
+            &[
+                ("elapsedMs", started.elapsed().as_millis().to_string()),
+                ("error", result.as_ref().err().cloned().unwrap_or_default()),
+            ],
         );
         result
     })
@@ -8656,10 +8992,37 @@ async fn commit_transaction(
         .lock()
         .map_err(|_| "Native wallet is busy.".to_owned())?
         .commit_transaction(&transaction_wallet_id, &input.pending_id)?;
+    let committed: serde_json::Value = serde_json::from_str(&raw)
+        .map_err(|_| "The native broadcast result was invalid.".to_owned())?;
+    let committed_ok = committed.get("status").and_then(serde_json::Value::as_str) == Some("ok");
+    if committed_ok && approval.mfw.is_none() {
+        if let Some(registration_id) = input.registration_id.as_deref() {
+            match pending_outgoing::record(
+                registration_id,
+                &committed,
+                &approval.address,
+                &approval.amount_atomic,
+                &approval.fee_atomic,
+                now(),
+            ) {
+                Ok(stored) => diagnostics::record(
+                    &app,
+                    "wallet.pending-outgoing-recorded",
+                    &[(
+                        "outcome",
+                        if stored { "stored" } else { "skipped" }.to_owned(),
+                    )],
+                ),
+                Err(error) => diagnostics::record(
+                    &app,
+                    "wallet.pending-outgoing-store-failed",
+                    &[("error", error)],
+                ),
+            }
+        }
+    }
     if let Some(mfw) = approval.mfw {
-        let committed: serde_json::Value = serde_json::from_str(&raw)
-            .map_err(|_| "The native MFW broadcast result was invalid.".to_owned())?;
-        if committed.get("status").and_then(serde_json::Value::as_str) != Some("ok") {
+        if !committed_ok {
             return Err(committed
                 .get("error")
                 .and_then(serde_json::Value::as_str)
@@ -9320,6 +9683,26 @@ fn remove_temporary_wallet_files(path: &str) {
     let _ = fs::remove_file(format!("{path}.keys"));
 }
 
+fn remove_wallet_files_completely(path: &str) -> Result<(), String> {
+    for candidate in [
+        path.to_owned(),
+        format!("{path}.keys"),
+        format!("{path}.address.txt"),
+    ] {
+        match fs::remove_file(&candidate) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => {
+                return Err(
+                    "The wallet data could not be deleted completely. Close other wallet processes and try again."
+                        .to_owned(),
+                )
+            }
+        }
+    }
+    Ok(())
+}
+
 fn wallet_file_path_is_available(path: &str) -> bool {
     // Removing a wallet from the app intentionally keeps its encrypted files.
     // A future add must therefore skip both the cache and key-file names,
@@ -9703,6 +10086,11 @@ fn schedule_wallet_sync(app: AppHandle, wallet_id: String, network_name: String)
             ],
         );
         let state = app.state::<NativeWalletState>();
+        let proxy_address = if profile.proxy_address.trim().is_empty() {
+            String::new()
+        } else {
+            tor_transport::socks_address()
+        };
         let configure_result =
             lock_native_wallet(&app, &state, "node-configuration").and_then(|native| {
                 native.set_daemon(native_wallet::DaemonConfig {
@@ -9712,7 +10100,7 @@ fn schedule_wallet_sync(app: AppHandle, wallet_id: String, network_name: String)
                     use_ssl: profile.use_ssl,
                     username: &profile.username,
                     password: &node_password,
-                    proxy_address: &profile.proxy_address,
+                    proxy_address: &proxy_address,
                 })?;
                 if profile.mode != "optimized-grpc" {
                     // The coordinator is network-wide. Explicitly clearing an
@@ -9950,6 +10338,14 @@ pub fn run() {
     // wallet window and exits before it can initialize Keychain, native wallet,
     // or biometric state a second time.
     let builder = tauri::Builder::default()
+        // The recipient scanner is the only desktop feature that requests
+        // camera access. Let WebKit continue to the native macOS permission
+        // dialog while every unrelated webview permission keeps its platform
+        // default. The OS-level TCC decision remains authoritative.
+        .on_permission_request(|_, kind| match kind {
+            tauri::webview::PermissionKind::Camera => tauri::webview::PermissionResponse::Allow,
+            _ => tauri::webview::PermissionResponse::Default,
+        })
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.show();
@@ -9992,6 +10388,7 @@ pub fn run() {
         )
         .manage(community::CommunityState::new().expect("Community client initialization"))
         .setup(|app| {
+            diagnostics::start_native_drain(app.handle().clone());
             desktop_notifications::initialize_notification_open_handler();
             // Tor initializes on its own runtime. Bootstrapping must never
             // delay the first desktop frame or opening a saved wallet.
@@ -10205,6 +10602,7 @@ pub fn run() {
             auto_lock_settings,
             set_auto_lock_timeout,
             fetch_private_service,
+            embedded_tor_proxy_uri,
             create_payment_link,
             wallet_ui_diagnostic,
             ledger_transport_status,
@@ -10237,6 +10635,7 @@ pub fn run() {
             list_community_fast_wallet_workers,
             select_community_fast_wallet_worker,
             enable_encrypted_fast_wallet_alerts,
+            check_fast_wallet_hosting,
             turn_off_fast_wallet_alerts,
             delete_hosted_fast_wallet_data,
             enable_fast_wallet,
@@ -10246,6 +10645,11 @@ pub fn run() {
             request_notification_installation,
             disable_notification_installation,
             consume_pending_notification_open,
+            consume_pending_notification_events,
+            request_test_push_notification,
+            test_push_notification_status,
+            open_notification_settings,
+            open_focus_settings,
             background_notification_agent_config_path,
             create_vanity_quote,
             latest_vanity_order_id,
@@ -10348,12 +10752,12 @@ mod tests {
     use super::{
         bind_ledger_session_ids, compare_ledger_signing_account_state, ledger_hardware_session_key,
         ledger_signing_source_registration, ledger_view_only_companion_session_id,
-        mark_connectivity_checking, require_app_unlocked, safe_ledger_rebuild_restore_height,
+        mark_connectivity_checking, remove_wallet_files_completely, require_app_unlocked,
         serialized_transactions_for_account, shared_native_session_for_physical_registration,
-        validate_fast_wallet_removal_snapshot, verified_registration_account_index,
-        wallet_file_path_is_available, wallet_session_id, AppProtectionState,
-        ConnectivityRouteState, LedgerSigningAccountComparison, LedgerSigningAccountState,
-        WalletSessionRecoveryClaim, WalletSessionRecoveryState, WalletSessionState,
+        verified_registration_account_index, wallet_file_path_is_available, wallet_session_id,
+        AppProtectionState, ConnectivityRouteState, LedgerSigningAccountComparison,
+        LedgerSigningAccountState, WalletSessionRecoveryClaim, WalletSessionRecoveryState,
+        WalletSessionState,
     };
     use std::{
         collections::HashMap,
@@ -10635,17 +11039,6 @@ mod tests {
     }
 
     #[test]
-    fn ledger_cache_rebuild_delegates_a_missing_boundary_to_native_core() {
-        assert_eq!(
-            safe_ledger_rebuild_restore_height(Some(3_500_000)),
-            3_500_000
-        );
-        assert_eq!(safe_ledger_rebuild_restore_height(None), 0);
-        assert_eq!(safe_ledger_rebuild_restore_height(Some(0)), 0);
-        assert_eq!(safe_ledger_rebuild_restore_height(Some(1)), 1);
-    }
-
-    #[test]
     fn ledger_fast_account_uses_its_standard_hardware_signing_source() {
         let standard = crate::wallet_registry::hardware_wallet(
             "ledger-1",
@@ -10784,25 +11177,26 @@ mod tests {
     }
 
     #[test]
-    fn fast_wallet_removal_requires_a_synchronized_zero_balance() {
-        assert!(validate_fast_wallet_removal_snapshot(
-            r#"{"synchronized":true,"balanceAtomic":"0"}"#,
-        )
-        .is_ok());
-        assert!(validate_fast_wallet_removal_snapshot(
-            r#"{"synchronized":false,"balanceAtomic":"0"}"#,
-        )
-        .unwrap_err()
-        .contains("synchronization"));
-        assert!(validate_fast_wallet_removal_snapshot(
-            r#"{"synchronized":true,"balanceAtomic":"1"}"#,
-        )
-        .unwrap_err()
-        .contains("still contains Monero"));
-        assert!(validate_fast_wallet_removal_snapshot(
-            r#"{"synchronized":true,"balanceAtomic":"unknown"}"#,
-        )
-        .unwrap_err()
-        .contains("unknown"));
+    fn complete_wallet_removal_deletes_all_known_files_and_is_idempotent() {
+        let directory =
+            std::env::temp_dir().join(format!("mfw-delete-wallet-files-{}", std::process::id()));
+        fs::create_dir_all(&directory).unwrap();
+        let path = directory
+            .join("wallet.wallet")
+            .to_string_lossy()
+            .into_owned();
+        for candidate in [
+            path.clone(),
+            format!("{path}.keys"),
+            format!("{path}.address.txt"),
+        ] {
+            fs::write(candidate, "test").unwrap();
+        }
+        remove_wallet_files_completely(&path).unwrap();
+        remove_wallet_files_completely(&path).unwrap();
+        assert!(!std::path::Path::new(&path).exists());
+        assert!(!std::path::Path::new(&format!("{path}.keys")).exists());
+        assert!(!std::path::Path::new(&format!("{path}.address.txt")).exists());
+        fs::remove_dir_all(directory).unwrap();
     }
 }

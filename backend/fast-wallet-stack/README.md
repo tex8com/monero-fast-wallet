@@ -22,6 +22,36 @@ the release material on an offline/admin Mac with
 `worker-root-signing.key`, and keep that root key offline for descriptor
 rotation.
 
+The descriptor is intentionally valid for only 30 days. Renew it before expiry
+without rotating the Worker identity, online signing key, HPKE key, encrypted
+watch database, or existing assignments:
+
+```sh
+cargo run --release --manifest-path native/fast-wallet-protocol/Cargo.toml \
+  --example renew_official_worker_descriptor -- \
+  /path/to/existing-private-material \
+  /path/to/new-empty-output \
+  https://xmr.tex8.com mainnet
+```
+
+Only the resulting `worker-descriptor.hex` belongs on the server. The renewal
+fails closed unless the existing signed descriptor matches all three private
+keys, the network and the relay origin. Keep every key file offline.
+
+Stage that public file on the server and activate it atomically with the
+dedicated deployment administrator account:
+
+```sh
+backend/fast-wallet-stack/deploy/activate-renewed-worker-descriptor.sh \
+  /path/to/worker-descriptor.hex \
+  /path/to/fast-wallet-worker
+```
+
+The activation keeps a rollback copy, updates the Gateway and Worker files as
+one operation, optionally installs the matching diagnostics-enabled Worker,
+restarts only the three dependent services, and rolls back if their health
+checks fail. Omit the second argument for a descriptor-only renewal.
+
 ## Co-located TEX8 ports
 
 | Process | Bind | Public ingress |

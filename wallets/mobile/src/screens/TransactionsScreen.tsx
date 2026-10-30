@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   FlatList,
@@ -20,14 +20,13 @@ import type { WalletTransaction } from '../services/NativeMoneroWallet';
 import { useWalletState } from '../services/WalletState';
 import { walletDisplayName } from '../services/WalletRegistry';
 import { transactionsForWalletAddress } from '../services/WalletAddressActivity';
-import { walletService } from '../services/WalletService';
 import { colors, spacing } from '../theme/colors';
 
 export default function TransactionsScreen({ navigation, route }: any) {
   const insets = useSafeAreaInsets();
   const { t } = useI18n();
   const {
-    refreshSnapshot,
+    refreshTransactions,
     registeredWallet,
     session,
     transactions,
@@ -38,6 +37,8 @@ export default function TransactionsScreen({ navigation, route }: any) {
   const [allTransactions, setAllTransactions] = useState<WalletTransaction[]>(
     transactions,
   );
+  const currentSessionIdRef = useRef(session?.walletId);
+  currentSessionIdRef.current = session?.walletId;
   const routeAddressFilter = route?.params?.addressFilter;
   const addressFilter = useMemo(
     () =>
@@ -76,6 +77,10 @@ export default function TransactionsScreen({ navigation, route }: any) {
     session?.walletId,
   ]);
 
+  useEffect(() => {
+    setAllTransactions(transactions);
+  }, [transactions]);
+
   const refresh = useCallback(async () => {
     if (!session) {
       setAllTransactions([]);
@@ -88,19 +93,20 @@ export default function TransactionsScreen({ navigation, route }: any) {
     setHistoryLoading(true);
     setHistoryFailed(false);
     try {
-      const [, nextTransactions] = await Promise.all([
-        refreshSnapshot(),
-        walletService.getTransactionsForAllAccounts(session, 0),
-      ]);
-      setAllTransactions(nextTransactions);
+      const nextTransactions = await refreshTransactions();
+      if (currentSessionIdRef.current === session.walletId) {
+        setAllTransactions(nextTransactions);
+      }
     } catch (error) {
-      setHistoryFailed(true);
+      if (currentSessionIdRef.current === session.walletId) setHistoryFailed(true);
       throw error;
     } finally {
-      setRefreshing(false);
-      setHistoryLoading(false);
+      if (currentSessionIdRef.current === session.walletId) {
+        setRefreshing(false);
+        setHistoryLoading(false);
+      }
     }
-  }, [refreshSnapshot, session]);
+  }, [refreshTransactions, session]);
 
   useFocusEffect(
     useCallback(() => {

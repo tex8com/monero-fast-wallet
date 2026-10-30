@@ -145,6 +145,20 @@ export default function SendScreen({ navigation, route }: any) {
     WalletSession | undefined
   >();
   const [sending, setSending] = useState(false);
+  const preparationInFlightRef = useRef(false);
+  const submissionInFlightRef = useRef(false);
+  const preparedSourceRef = useRef<{
+    pendingId: string;
+    registrationId: string | undefined;
+    network: WalletSession['network'];
+    originalSessionId: string;
+    signingSessionId: string;
+    address: string;
+  } | undefined>(undefined);
+  const [activePreparationStartedAtMs, setActivePreparationStartedAtMs] = useState<
+    number | undefined
+  >();
+  const [normalApprovalInvalid, setNormalApprovalInvalid] = useState(false);
   const [sendSuccessReceipt, setSendSuccessReceipt] = useState<
     SendSuccessReceipt | undefined
   >();
@@ -226,7 +240,23 @@ export default function SendScreen({ navigation, route }: any) {
   // Total Balance can span several Monero accounts, while one Core
   // transaction spends from exactly one account. WalletService publishes the
   // richest live account as this fail-closed transaction scope.
-  const unlockedAtomic = toAtomicBigInt(snapshot?.spendUnlockedBalanceAtomic);
+  const hasSpendAccountScope = Boolean(
+    snapshot &&
+      Number.isSafeInteger(snapshot.spendAccountIndex) &&
+      (snapshot.spendAccountIndex ?? -1) >= 0 &&
+      snapshot.spendPrimaryAddress &&
+      snapshot.spendBalanceAtomic !== undefined &&
+      snapshot.spendUnlockedBalanceAtomic !== undefined,
+  );
+  const unlockedAtomic = hasSpendAccountScope
+    ? toAtomicBigInt(snapshot?.spendUnlockedBalanceAtomic)
+    : 0n;
+  const accountBalanceAtomic = hasSpendAccountScope
+    ? toAtomicBigInt(snapshot?.spendBalanceAtomic)
+    : 0n;
+  const lockedAtomic = accountBalanceAtomic > unlockedAtomic
+    ? accountBalanceAtomic - unlockedAtomic
+    : 0n;
   const enteredAmountXmr = paymentXmrAmount(amount, amountCurrency, price);
   const amountAtomic = parseXmrToAtomic(enteredAmountXmr ?? '');
   const hasAmount = amountAtomic !== undefined && amountAtomic > 0n;
@@ -238,6 +268,10 @@ export default function SendScreen({ navigation, route }: any) {
   const usd =
     hasAmount && price > 0 ? (amountNumber * price).toFixed(2) : '0.00';
   const walletSynchronized = walletSnapshotIsSynchronized(snapshot);
+  const availableBalanceKnown = walletSynchronized && hasSpendAccountScope;
+  const sweepAvailable = Boolean(
+    availableBalanceKnown && session && unlockedAtomic > 0n && !sending,
+  );
   const sendEnabled =
     Boolean(walletSynchronized && session) &&
     address.trim().length > 0 &&
@@ -304,6 +338,19 @@ export default function SendScreen({ navigation, route }: any) {
   const activeSendElapsedSeconds = activeSendStartedAtMs
     ? Math.max(0, Math.floor((approvalNowMs - activeSendStartedAtMs) / 1_000))
     : 0;
+  const activePreparationElapsedSeconds = activePreparationStartedAtMs !== undefined
+    ? Math.max(0, Math.floor((approvalNowMs - activePreparationStartedAtMs) / 1_000))
+    : 0;
+  const normalApprovalExpiresAtMs = preparedTx?.approvalExpiresAtMs;
+  const normalApprovalExpired = Boolean(
+    preparedTx && !mfwNamePreset && !sending &&
+      (normalApprovalExpiresAtMs === undefined ||
+        !Number.isFinite(normalApprovalExpiresAtMs) ||
+        normalApprovalExpiresAtMs <= approvalNowMs),
+  );
+  const normalApprovalSecondsRemaining = normalApprovalExpiresAtMs !== undefined
+    ? Math.max(0, Math.ceil((normalApprovalExpiresAtMs - approvalNowMs) / 1_000))
+    : 0;
   const routePrivatePhonePreset = useMemo(
     () =>
       validatePrivatePhoneSendPreset(
@@ -318,6 +365,26 @@ export default function SendScreen({ navigation, route }: any) {
       ),
     [route?.params?.paymentLinkSendPreset],
   );
+  // This records render state only, never diagnostics. Native preparation may
+  // finish after a route or global wallet-session change while its UI is busy.
+  const currentPreparationIntentRef = useRef({
+    sessionId: session?.walletId, registrationId: registeredWallet?.id,
+    network: session?.network, address: address.trim(), pendingId: preparedTx?.id, key: '',
+  });
+  currentPreparationIntentRef.current = {
+    sessionId: session?.walletId,
+    registrationId: registeredWallet?.id,
+    network: session?.network,
+    address: address.trim(),
+    pendingId: preparedTx?.id,
+    key: JSON.stringify([
+      registeredWallet?.id, registeredWallet?.kind, session?.network,
+      address.trim(), amount, amountCurrency, sweepAll,
+      recipientReview?.address, recipientReview?.source, recipientReview?.resolvedAt,
+      mfwNamePreset?.flowId, routeMfwNamePreset?.flowId,
+      routePrivatePhonePreset?.flowId, routePaymentLinkPreset?.flowId,
+    ]),
+  };
   const mfwAutocomplete = useMemo(
     () => mfwNameAutocompleteSuggestions(address, resolverMfwNames),
     [address, resolverMfwNames],
@@ -411,11 +478,11 @@ export default function SendScreen({ navigation, route }: any) {
   ]);
 
   useEffect(() => {
-    if (!mfwNamePreset && !sending) return;
+    if (!mfwNamePreset && !preparedTx && !sending) return;
     setApprovalNowMs(Date.now());
     const interval = setInterval(() => setApprovalNowMs(Date.now()), 1_000);
     return () => clearInterval(interval);
-  }, [mfwNamePreset, sending]);
+  }, [mfwNamePreset, preparedTx, sending]);
 
   useEffect(() => {
     const preset = routePrivatePhonePreset;
@@ -588,19 +655,55 @@ export default function SendScreen({ navigation, route }: any) {
       // Recent transactions are refreshed by WalletState while a wallet is
       // open. Doing an immediate refresh on focus avoids stale activity after
       // switching tabs without exposing a separate manual refresh button.
+      // This refresh already reads snapshot, history, then snapshot as one
+      // coherent sample. Starting the history wrapper too races that same work.
       refreshSnapshot().catch(() => undefined);
-      refreshTransactions().catch(() => undefined);
 
       return () => {
         mounted = false;
       };
-    }, [refreshSnapshot, refreshTransactions]),
+    }, [refreshSnapshot]),
   );
 
+  const sourceChangesBlocked = () =>
+    sending || preparationInFlightRef.current || submissionInFlightRef.current;
+
   const clearPreparedTransaction = () => {
+    preparedSourceRef.current = undefined;
     setPreparedTx(undefined);
     setPreparedSession(undefined);
+    setNormalApprovalInvalid(false);
     setSendStatus(undefined);
+  };
+
+  const discardNormalPreparation = useCallback((message: string) => {
+    preparedSourceRef.current = undefined;
+    setPreparedTx(undefined);
+    setPreparedSession(undefined);
+    setNormalApprovalInvalid(true);
+    setSendStatus(undefined);
+    setSendError(message);
+    setStep('amount');
+  }, []);
+
+  const expireNormalApproval = useCallback(() => {
+    discardNormalPreparation(t('mfwNames.approvalExpired'));
+  }, [discardNormalPreparation, t]);
+
+  useEffect(() => {
+    if (normalApprovalExpired) expireNormalApproval();
+  }, [expireNormalApproval, normalApprovalExpired]);
+
+  const updateAmount = (value: string) => {
+    if (sourceChangesBlocked()) return;
+    const next = sanitizePaymentAmountInput(value, amountCurrency);
+    if (next.length > 24) {
+      return;
+    }
+    setAmount(next);
+    setSweepAll(false);
+    setSendError(undefined);
+    clearPreparedTransaction();
   };
 
   const enterAmountKey = (key: string) => {
@@ -617,17 +720,11 @@ export default function SendScreen({ navigation, route }: any) {
     } else {
       next = `${amount}${key}`;
     }
-    next = sanitizePaymentAmountInput(next, amountCurrency);
-    if (next.length > 24) {
-      return;
-    }
-    setAmount(next);
-    setSweepAll(false);
-    setSendError(undefined);
-    clearPreparedTransaction();
+    updateAmount(next);
   };
 
   const changeAmountCurrency = (next: PaymentAmountCurrency) => {
+    if (sourceChangesBlocked()) return;
     if (next === amountCurrency) {
       return;
     }
@@ -640,7 +737,7 @@ export default function SendScreen({ navigation, route }: any) {
   };
 
   const selectWallet = async (wallet: WalletOption) => {
-    if (wallet.disabled) {
+    if (sourceChangesBlocked() || wallet.disabled) {
       return;
     }
 
@@ -663,6 +760,9 @@ export default function SendScreen({ navigation, route }: any) {
   };
 
   const prepareForReview = async () => {
+    // Ref ownership changes synchronously, before a second tap can reuse the
+    // previous render's enabled button and start another native preparation.
+    if (preparationInFlightRef.current || submissionInFlightRef.current || sending) return;
     if (!session) {
       setSendError(t('send.openWalletBeforeSending'));
       return;
@@ -691,8 +791,15 @@ export default function SendScreen({ navigation, route }: any) {
       return;
     }
 
+    const preparationIntent = currentPreparationIntentRef.current;
+    preparationInFlightRef.current = true;
     setSending(true);
+    setNormalApprovalInvalid(false);
     const preparationStartedAt = Date.now();
+    setApprovalNowMs(preparationStartedAt);
+    setActivePreparationStartedAtMs(
+      registeredWallet?.kind !== 'hardware' ? preparationStartedAt : undefined,
+    );
     let ledgerPhaseSequence = 0;
     setSendError(undefined);
     setSendStatus(undefined);
@@ -700,6 +807,16 @@ export default function SendScreen({ navigation, route }: any) {
     const ensureNotCancelled = () => {
       if (ledgerSigningCancelledRef.current) {
         throw new LedgerSigningCancelledError();
+      }
+    };
+    const ensurePreparationIntentCurrent = (signingSession: WalletSession) => {
+      const current = currentPreparationIntentRef.current;
+      // The deliberate Ledger companion -> signing handoff may change only
+      // the native session. A software-session replacement is never accepted.
+      const sameSession = current.sessionId === preparationIntent.sessionId ||
+        (Boolean(signingSession.hardwareDevice) && current.sessionId === signingSession.walletId);
+      if (current.key !== preparationIntent.key || !sameSession) {
+        throw new Error(t('send.preparationChanged'));
       }
     };
     const publishProgress = (progress: LedgerSigningProgress) => {
@@ -747,6 +864,7 @@ export default function SendScreen({ navigation, route }: any) {
             .catch(() => undefined);
         }, 500);
       }
+      ensurePreparationIntentCurrent(signingSession);
       const nextTransaction = await walletService.prepareTransaction(
         signingSession,
         {
@@ -757,11 +875,20 @@ export default function SendScreen({ navigation, route }: any) {
         },
       );
       ensureNotCancelled();
+      ensurePreparationIntentCurrent(signingSession);
       if (nextTransaction.status !== 'ok' || !nextTransaction.id) {
         throw new Error(
           nextTransaction.error || t('send.transactionPreparationFailed'),
         );
       }
+      preparedSourceRef.current = {
+        pendingId: nextTransaction.id,
+        registrationId: registeredWallet?.id,
+        network: signingSession.network,
+        originalSessionId: session.walletId,
+        signingSessionId: signingSession.walletId,
+        address: address.trim(),
+      };
       setPreparedTx(nextTransaction);
       setPreparedSession(signingSession);
       setSendStatus(undefined);
@@ -788,6 +915,8 @@ export default function SendScreen({ navigation, route }: any) {
       if (hardwareStatusTimer) {
         clearInterval(hardwareStatusTimer);
       }
+      preparationInFlightRef.current = false;
+      setActivePreparationStartedAtMs(undefined);
       setSending(false);
     }
   };
@@ -806,12 +935,39 @@ export default function SendScreen({ navigation, route }: any) {
   };
 
   const handleSend = async () => {
+    if (submissionInFlightRef.current || preparationInFlightRef.current || sending) return;
     const transactionSession = preparedSession ?? session;
     if (!transactionSession || !preparedTx) {
       setSendError(t('send.transactionPreparationFailed'));
       return;
     }
 
+    if (!mfwNamePreset) {
+      const reviewed = preparedSourceRef.current;
+      const current = currentPreparationIntentRef.current;
+      if (!reviewed || reviewed.pendingId !== preparedTx.id ||
+        reviewed.pendingId !== current.pendingId ||
+        reviewed.registrationId !== current.registrationId ||
+        reviewed.network !== current.network || reviewed.address !== current.address ||
+        (current.sessionId !== reviewed.originalSessionId &&
+          current.sessionId !== reviewed.signingSessionId)) {
+        // Send remains mounted across tabs. Never submit a review from the
+        // prior wallet after an external selection or session replacement.
+        discardNormalPreparation(t('send.preparationChanged'));
+        return;
+      }
+    }
+    // Check the actual clock as well as the rendered countdown: expiry can
+    // occur between the last timer tick and this user action.
+    if (!mfwNamePreset && (
+      preparedTx.approvalExpiresAtMs === undefined ||
+      !Number.isFinite(preparedTx.approvalExpiresAtMs) ||
+      preparedTx.approvalExpiresAtMs <= Date.now()
+    )) {
+      expireNormalApproval();
+      return;
+    }
+    submissionInFlightRef.current = true;
     setSending(true);
     const sendStartedAt = Date.now();
     setActiveSendStartedAtMs(sendStartedAt);
@@ -977,6 +1133,7 @@ export default function SendScreen({ navigation, route }: any) {
           transactionId,
           refreshing: true,
         });
+        preparedSourceRef.current = undefined;
         setAddress('');
         setAmount('');
         setPreparedTx(undefined);
@@ -1053,6 +1210,7 @@ export default function SendScreen({ navigation, route }: any) {
       }
 
       try {
+        preparedSourceRef.current = undefined;
         setAddress('');
         setAmount('');
         setPreparedTx(undefined);
@@ -1117,13 +1275,18 @@ export default function SendScreen({ navigation, route }: any) {
         recordPostBroadcastFailure('unexpectedFollowUp', error);
         setSendError(undefined);
         setSendStatus(t('send.transactionBroadcastRefreshPending'));
-      } else if (completedNamePreset && transactionApprovalIsMissing(error)) {
-        setMfwApprovalInvalid(true);
-        setSendError(t('mfwNames.approvalExpired'));
+      } else if (transactionApprovalIsMissing(error)) {
+        if (completedNamePreset) {
+          setMfwApprovalInvalid(true);
+          setSendError(t('mfwNames.approvalExpired'));
+        } else {
+          expireNormalApproval();
+        }
       } else {
         setSendError(error instanceof Error ? error.message : String(error));
       }
     } finally {
+      submissionInFlightRef.current = false;
       setSending(false);
       setActiveSendStartedAtMs(undefined);
     }
@@ -1245,7 +1408,15 @@ export default function SendScreen({ navigation, route }: any) {
           </Text>
 
           <View style={s.confirmAmountCard}>
-            <Text style={s.confirmAmount}>{reviewAmount} XMR</Text>
+            <Text
+              adjustsFontSizeToFit
+              minimumFontScale={0.55}
+              numberOfLines={1}
+              selectable
+              style={s.confirmAmount}
+            >
+              {reviewAmount} XMR
+            </Text>
             <Text style={s.confirmUsd}>≈ ${usd} USD</Text>
           </View>
 
@@ -1346,18 +1517,21 @@ export default function SendScreen({ navigation, route }: any) {
                 })}
               </Text>
             </View>
-          ) : mfwNamePreset ? (
+          ) : mfwNamePreset || preparedTx ? (
             <Text
               accessibilityLiveRegion="polite"
+              testID="send-approval-countdown"
               style={[
                 s.approvalCountdown,
-                mfwApprovalExpired && s.approvalCountdownExpired,
+                (mfwApprovalExpired || normalApprovalExpired) && s.approvalCountdownExpired,
               ]}
             >
-              {mfwApprovalExpired
+              {mfwApprovalExpired || normalApprovalExpired
                 ? t('mfwNames.approvalExpired')
                 : t('mfwNames.approvalExpiresIn', {
-                    seconds: mfwApprovalSecondsRemaining,
+                    seconds: mfwNamePreset
+                      ? mfwApprovalSecondsRemaining
+                      : normalApprovalSecondsRemaining,
                   })}
             </Text>
           ) : null}
@@ -2039,15 +2213,17 @@ export default function SendScreen({ navigation, route }: any) {
         </View>
 
         {sendWalletOptions.length > 0 ? (
+          <View pointerEvents={sending ? 'none' : 'auto'}>
           <WalletSelector
             activeWalletId={registeredWallet?.id}
             snapshots={walletSnapshotMap}
             titleKey="walletSelector.sendFrom"
             wallets={sendWalletOptions}
-            onAdd={() => navigation.navigate('WalletSetup')}
-            onManage={() => navigation.navigate('Wallets')}
+            onAdd={() => { if (!sourceChangesBlocked()) navigation.navigate('WalletSetup'); }}
+            onManage={() => { if (!sourceChangesBlocked()) navigation.navigate('Wallets'); }}
             onSelect={selectWallet}
           />
+          </View>
         ) : null}
 
         <View style={s.recipientSummaryCard}>
@@ -2071,7 +2247,10 @@ export default function SendScreen({ navigation, route }: any) {
           </View>
           <TouchableOpacity
             accessibilityRole="button"
+            disabled={sending}
+            testID="send-change-recipient"
             onPress={() => {
+              if (sourceChangesBlocked()) return;
               setRecipientReview(undefined);
               setStep('manual-recipient');
             }}
@@ -2088,8 +2267,10 @@ export default function SendScreen({ navigation, route }: any) {
                 {(['XMR', 'USD'] as const).map(currency => (
                   <TouchableOpacity
                     accessibilityRole="radio"
+                    disabled={sending}
                     accessibilityState={{
                       selected: amountCurrency === currency,
+                      disabled: sending,
                     }}
                     activeOpacity={0.75}
                     key={currency}
@@ -2115,22 +2296,65 @@ export default function SendScreen({ navigation, route }: any) {
               <TouchableOpacity
                 accessibilityLabel={t('send.all')}
                 accessibilityRole="button"
+                accessibilityState={{ disabled: !sweepAvailable, selected: sweepAll }}
+                disabled={!sweepAvailable}
+                style={[
+                  s.maxButton,
+                  sweepAll && s.maxButtonActive,
+                  !sweepAvailable && s.maxButtonDisabled,
+                ]}
                 onPress={() => {
-                  setAmount('');
+                  if (!sweepAvailable || sourceChangesBlocked()) return;
+                  // Preview the confirmed account maximum. Core still computes
+                  // the exact fee-adjusted amount through its sweep-all path.
+                  setAmountCurrency('XMR');
+                  setAmount(formatAtomicXmr(unlockedAtomic, { maxFractionDigits: 12 }));
                   setSweepAll(true);
                   setSendError(undefined);
                   clearPreparedTransaction();
                 }}
               >
-                <Text style={s.maxText}>{t('send.all')}</Text>
+                <Text style={[s.maxText, sweepAll && s.maxTextActive]}>
+                  {t('send.all')}
+                </Text>
               </TouchableOpacity>
             </View>
           </View>
-          <Text style={s.amountInput}>
-            {amount || (amountCurrency === 'XMR' ? '0.0000' : '0.00')}
-          </Text>
+          <View style={s.availableBalanceRow} testID="send-available-balance">
+            <Text style={s.availableBalanceLabel}>{t('send.available')}</Text>
+            <Text style={s.availableBalanceValue}>
+              {availableBalanceKnown
+                ? `${formatAtomicXmr(unlockedAtomic, { maxFractionDigits: 12 })} XMR`
+                : t('home.loadingBalance')}
+            </Text>
+          </View>
+          {availableBalanceKnown && lockedAtomic > 0n ? (
+            <Text style={s.balanceNotice} testID="send-locked-balance">
+              {t('home.lockedBalance', {
+                amount: formatAtomicXmr(lockedAtomic, { maxFractionDigits: 12 }),
+              })}
+            </Text>
+          ) : null}
+          <TextInput
+            accessibilityLabel={t('send.amount')}
+            editable={!sending}
+            inputMode="decimal"
+            keyboardType="decimal-pad"
+            maxLength={24}
+            onChangeText={updateAmount}
+            placeholder={amountCurrency === 'XMR' ? '0.0000' : '0.00'}
+            placeholderTextColor={colors.textPrimary}
+            selectionColor={colors.orange}
+            style={s.amountInput}
+            value={amount}
+          />
           <Text style={s.xmrLabel}>{amountCurrency}</Text>
           <Text style={s.usdLabel}>{amountEquivalent}</Text>
+          {sweepAll ? (
+            <Text style={s.balanceNotice} testID="send-sweep-all-notice">
+              {t('send.sweepAll')}
+            </Text>
+          ) : null}
 
           <View style={s.keypad}>
             {[
@@ -2154,6 +2378,7 @@ export default function SendScreen({ navigation, route }: any) {
                   key === 'backspace' ? t('action.delete') : key
                 }
                 style={s.keypadKey}
+                disabled={sending}
                 onPress={() => enterAmountKey(key)}
                 activeOpacity={0.72}
               >
@@ -2165,18 +2390,26 @@ export default function SendScreen({ navigation, route }: any) {
           </View>
         </View>
 
+        {activePreparationStartedAtMs !== undefined ? (
+          <View style={s.submissionProgress} testID="send-preparation-progress">
+            <ActivityIndicator color={colors.orange} size="small" />
+            <Text accessibilityLiveRegion="polite" style={s.submissionProgressText}>
+              {t('send.preparationProgress', { seconds: activePreparationElapsedSeconds })}
+            </Text>
+          </View>
+        ) : null}
         {sendStatus ? <Text style={s.statusText}>{sendStatus}</Text> : null}
         {sendError ? <Text style={s.errorText}>{sendError}</Text> : null}
         {!snapshot ? (
           <Text style={s.errorText}>{t('send.openWalletBeforePreparing')}</Text>
         ) : !walletSynchronized ? (
           <Text style={s.errorText}>{t('send.waitForSync')}</Text>
-        ) : hasAmount && !amountAvailable ? (
+        ) : hasSpendAccountScope && hasAmount && !amountAvailable ? (
           <Text style={s.errorText}>{t('send.amountAboveBalance')}</Text>
         ) : null}
 
         <TouchableOpacity
-          accessibilityLabel={t('send.sendXmr')}
+          accessibilityLabel={normalApprovalInvalid ? t('send.prepareAgain') : t('send.sendXmr')}
           accessibilityRole="button"
           disabled={!sendEnabled || sending}
           onPress={prepareForReview}
@@ -2196,7 +2429,13 @@ export default function SendScreen({ navigation, route }: any) {
           >
             <Icon name="send" size={20} color="#FFF" strokeWidth={2} />
             <Text style={s.primaryBtnText}>
-              {sending ? t('action.working') : t('send.sendXmr')}
+              {activePreparationStartedAtMs !== undefined
+                ? t('send.preparingTransaction', { seconds: activePreparationElapsedSeconds })
+                : sending
+                ? t('action.working')
+                : normalApprovalInvalid
+                ? t('send.prepareAgain')
+                : t('send.sendXmr')}
             </Text>
           </LinearGradient>
         </TouchableOpacity>
@@ -2661,6 +2900,32 @@ const s = StyleSheet.create({
     letterSpacing: 0.5,
     textTransform: 'uppercase',
   },
+  availableBalanceRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    marginBottom: 8,
+  },
+  availableBalanceLabel: { color: colors.textSecondary, fontSize: 13 },
+  availableBalanceValue: {
+    color: colors.textPrimary,
+    flexShrink: 1,
+    fontSize: 14,
+    fontWeight: '800',
+    textAlign: 'right',
+  },
+  balanceNotice: {
+    color: colors.textSecondary,
+    fontSize: 12,
+    lineHeight: 18,
+    marginBottom: 8,
+    textAlign: 'center',
+  },
+  maxButton: { borderRadius: radius.full, paddingHorizontal: 10, paddingVertical: 7 },
+  maxButtonActive: { backgroundColor: colors.orange },
+  maxButtonDisabled: { opacity: 0.45 },
+  maxTextActive: { color: '#FFF' },
   maxText: {
     color: colors.orange,
     fontSize: 12,
@@ -2796,6 +3061,9 @@ const s = StyleSheet.create({
     fontSize: 42,
     fontWeight: '900',
     textAlign: 'center',
+    width: '100%',
+    minHeight: 56,
+    paddingHorizontal: 0,
     paddingVertical: 2,
     letterSpacing: 0,
   },
@@ -2970,7 +3238,14 @@ const s = StyleSheet.create({
     borderColor: colors.border,
     marginBottom: 14,
   },
-  confirmAmount: { color: colors.textPrimary, fontSize: 36, fontWeight: '900' },
+  confirmAmount: {
+    color: colors.textPrimary,
+    fontSize: 36,
+    fontWeight: '900',
+    paddingHorizontal: 12,
+    textAlign: 'center',
+    width: '100%',
+  },
   confirmUsd: {
     color: colors.textSecondary,
     fontSize: 15,

@@ -33,6 +33,11 @@ pub struct RegisteredWallet {
     pub role: Option<String>,
     #[serde(default)]
     pub source_wallet_id: Option<String>,
+    /// Public transport metadata only. Legacy registrations omit this field;
+    /// the host then performs a best-effort BLE readiness check before falling
+    /// back to the wallet file's native transport selection.
+    #[serde(default)]
+    pub ledger_transport: Option<String>,
     /// Set only after Monero Core has verified Ledger-signed key images and
     /// refreshed the local read-only wallet's spent/unspent state.
     #[serde(default)]
@@ -80,6 +85,7 @@ pub fn software_wallet(
         address_index: None,
         role: None,
         source_wallet_id: None,
+        ledger_transport: None,
         ledger_key_images_verified_at: None,
         ledger_key_images_verified_height: None,
         created_at: timestamp,
@@ -108,6 +114,7 @@ pub fn hardware_wallet(
         address_index: None,
         role: role.map(str::to_owned),
         source_wallet_id: source_wallet_id.map(str::to_owned),
+        ledger_transport: None,
         ledger_key_images_verified_at: None,
         ledger_key_images_verified_height: None,
         created_at: timestamp,
@@ -138,6 +145,7 @@ pub fn ledger_read_only_wallet(
         address_index: None,
         role: None,
         source_wallet_id: Some(source_wallet_id.to_owned()),
+        ledger_transport: None,
         ledger_key_images_verified_at: None,
         ledger_key_images_verified_height: None,
         created_at: timestamp,
@@ -402,6 +410,13 @@ fn validate_wallet(wallet: &RegisteredWallet) -> Result<(), String> {
     let account_index = wallet.account_index.unwrap_or(0);
     let address_index = wallet.address_index.unwrap_or(0);
     let safe_account = account_index <= 1_000_000 && address_index <= 1_000_000;
+    let safe_ledger_transport = match wallet.kind.as_str() {
+        "hardware" => matches!(
+            wallet.ledger_transport.as_deref(),
+            None | Some("usb") | Some("ble")
+        ),
+        _ => wallet.ledger_transport.is_none(),
+    };
     let safe_role = match wallet.kind.as_str() {
         "software" => {
             account_index == 0
@@ -443,6 +458,7 @@ fn validate_wallet(wallet: &RegisteredWallet) -> Result<(), String> {
         || !safe_network
         || !safe_backup
         || !safe_account
+        || !safe_ledger_transport
         || !safe_role
         || !safe_display_name
     {

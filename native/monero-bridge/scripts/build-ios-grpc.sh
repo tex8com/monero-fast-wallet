@@ -107,6 +107,8 @@ for label in "${targets[@]}"; do
   rm -rf "${build_dir}"
 
   echo "==> configure gRPC ${grpc_version} for ${label}"
+  # SDK 27 declares pipe2, but it is unavailable at the supported iOS 15.1
+  # deployment target. Keep c-ares on its existing pipe + fcntl fallback.
   cmake -S "${grpc_source_dir}" -B "${build_dir}" -G Ninja \
     -DCMAKE_SYSTEM_NAME=iOS \
     "-DCMAKE_OSX_SYSROOT=${sdk_path}" \
@@ -118,6 +120,7 @@ for label in "${targets[@]}"; do
     -DBUILD_SHARED_LIBS=OFF \
     -DgRPC_INSTALL=ON \
     -DgRPC_BUILD_TESTS=OFF \
+    -DHAVE_PIPE2=OFF \
     -DgRPC_BUILD_CODEGEN=OFF \
     -DgRPC_BUILD_GRPC_CPP_PLUGIN=OFF \
     -DgRPC_BUILD_GRPC_CSHARP_PLUGIN=OFF \

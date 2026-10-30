@@ -202,20 +202,23 @@ test('the Monero patch series carries the CPU batch through Rust and wallet2', (
   assert.match(moneroNamePatch, /canonical varint/);
   assert.match(
     moneroLock,
-    /^patched_tree=0389d585c9c742eda74b5e9912997d2ba5393503$/m,
+    /^patched_tree=37d6a1a4a39c2fd128fdf9befd82381339951c58$/m,
   );
   assert.match(
     moneroLock,
-    /^previous_patched_tree=5c0b09ed55682c0f6d60b9cbd4db91d5dacc0388$/m,
+    /^previous_patched_tree=a8908a19fb5bed793049e3b167ddc61fb8e13b46$/m,
   );
-  assert.match(moneroLock, /^previous_patch_count=92$/m);
+  assert.match(moneroLock, /^previous_patch_count=98$/m);
   assert.match(prepareMac, /-DMFW_MONERO_PATCH_COUNT="\$\{monero_patch_count\}"/);
   assert.match(prepareMac, /-DMFW_PRODUCT_COMMIT="\$\{product_commit\}"/);
   assert.match(prepareMac, /-DMFW_PRODUCT_DIRTY="\$\{product_dirty\}"/);
   assert.match(prepareMac, /-DMFW_FEATURE_MANIFEST_HASH="\$\{feature_manifest_hash\}"/);
   assert.match(fastWalletProtocolCargo, /crate-type = \["rlib", "staticlib", "cdylib"\]/);
   assert.match(prepareMac, /libfast_wallet_protocol\.dylib/);
-  assert.match(prepareMac, /install_name,@rpath\/libfast_wallet_protocol\.dylib/);
+  assert.match(
+    prepareMac,
+    /install_name_tool -id '@rpath\/libfast_wallet_protocol\.dylib'/,
+  );
   assert.match(prepareMonero, /rev-parse HEAD\^\{tree\}/);
   assert.match(prepareMonero, /monero_patch_actual_tree.*monero_patch_expected_tree/s);
   assert.match(prepareMonero, /monero_patch_previous_tree/);

@@ -169,18 +169,23 @@ export default function RecipientQrScanner({
               <ActivityIndicator color={colors.orange} size="large" />
             </View>
           ) : state === 'ready' && appIsActive ? (
-            <Camera
-              style={styles.camera}
-              cameraType={CameraType.Back}
-              scanBarcode
-              allowedBarcodeTypes={['qr']}
-              scanThrottleDelay={500}
-              showFrame
-              frameColor={colors.orange}
-              laserColor={colors.orange}
-              onReadCode={handleReadCode}
-              onError={() => setState('failed')}
-            />
+            <>
+              <Camera
+                style={styles.camera}
+                cameraType={CameraType.Back}
+                scanBarcode
+                allowedBarcodeTypes={['qr']}
+                scanThrottleDelay={500}
+                // CameraKit's native frame also restricts detection to a small
+                // barcode rectangle. Scan the full preview and draw only a guide.
+                showFrame={false}
+                onReadCode={handleReadCode}
+                onError={() => setState('failed')}
+              />
+              <View pointerEvents="none" style={styles.scanGuideOverlay}>
+                <View style={styles.scanGuide} />
+              </View>
+            </>
           ) : state === 'ready' ? (
             <View style={styles.centerState}>
               <Text style={styles.stateText}>
@@ -254,6 +259,23 @@ const styles = StyleSheet.create({
     borderRadius: radius.lg,
   },
   camera: {flex: 1},
+  scanGuideOverlay: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  scanGuide: {
+    aspectRatio: 1,
+    borderColor: colors.orange,
+    borderRadius: radius.lg,
+    borderWidth: 2,
+    maxWidth: 320,
+    width: '80%',
+  },
   centerState: {
     alignItems: 'center',
     flex: 1,

@@ -1,5 +1,9 @@
 import type { FastReceiveIdentity, MoneroNetwork } from './NativeMoneroWallet';
 import {
+  parseFastWalletHostingView,
+  type FastWalletHostingView,
+} from '../../../../packages/wallet-shared/src/fastWalletHosting';
+import {
   loadProtectedMetadata,
   storeProtectedMetadata,
 } from './ProtectedMetadataStorage';
@@ -55,6 +59,7 @@ export interface FastReceiveIdentityRecord {
   watchMessageId?: string;
   /** Set only after the native Core verifies the Worker's signed receipt. */
   workerReceiptVerified?: boolean;
+  hostingStatus?: FastWalletHostingView;
   createdAt: string;
   updatedAt: string;
 }
@@ -138,6 +143,18 @@ export async function loadFastReceiveIdentities(): Promise<
 export async function saveFastReceiveIdentities(
   identities: FastReceiveIdentityRecord[],
 ): Promise<FastReceiveIdentityRecord[]> {
+  return withFastReceiveRegistryMutation(() => writeFastReceiveIdentities(identities));
+}
+
+let fastReceiveRegistryTail: Promise<unknown> = Promise.resolve();
+
+function withFastReceiveRegistryMutation<T>(operation: () => Promise<T>): Promise<T> {
+  const result = fastReceiveRegistryTail.then(operation, operation);
+  fastReceiveRegistryTail = result.then(() => undefined, () => undefined);
+  return result;
+}
+
+async function writeFastReceiveIdentities(identities: FastReceiveIdentityRecord[]): Promise<FastReceiveIdentityRecord[]> {
   const normalized = identities.map(normalizeFastReceiveIdentity);
   await storeProtectedMetadata(
     FAST_RECEIVE_IDENTITIES_STORAGE_KEY,
@@ -149,22 +166,59 @@ export async function saveFastReceiveIdentities(
 export async function upsertFastReceiveIdentity(
   identity: FastReceiveIdentityRecord,
 ): Promise<FastReceiveIdentityRecord[]> {
+  return withFastReceiveRegistryMutation(async () => {
   const current = await loadFastReceiveIdentities();
   const normalized = normalizeFastReceiveIdentity(identity);
   const next = current.some(item => item.id === normalized.id)
     ? current.map(item => (item.id === normalized.id ? normalized : item))
     : [...current, normalized];
 
-  return saveFastReceiveIdentities(next);
+  return writeFastReceiveIdentities(next);
+  });
 }
 
 export async function removeFastReceiveIdentity(
   identityId: string,
 ): Promise<FastReceiveIdentityRecord[]> {
+  return withFastReceiveRegistryMutation(async () => {
   const current = await loadFastReceiveIdentities();
-  return saveFastReceiveIdentities(
+  return writeFastReceiveIdentities(
     current.filter(identity => identity.id !== identityId),
   );
+  });
+}
+
+/** Binds a proof to the assignment snapshot used for its native query. */
+export function sameFastWalletHostingAssignment(
+  left: FastReceiveIdentityRecord | undefined,
+  right: FastReceiveIdentityRecord | undefined,
+): boolean {
+  return Boolean(left && right && left.id === right.id
+    && left.assignmentHandle === right.assignmentHandle
+    && left.assignmentEpoch === right.assignmentEpoch
+    && left.watchMessageId === right.watchMessageId
+    && left.workerKind === right.workerKind
+    && left.workerDescriptorHex === right.workerDescriptorHex
+    && left.hostingStatus?.workerRootId === right.hostingStatus?.workerRootId);
+}
+
+export function storeFastWalletHostingStatus(
+  identityId: string,
+  view: FastWalletHostingView,
+  expected?: FastReceiveIdentityRecord,
+): Promise<FastWalletHostingView> {
+  return withFastReceiveRegistryMutation(async () => {
+    const current = await loadFastReceiveIdentities();
+    const latest = current.find(item => item.id === identityId);
+    if (latest?.hostingStatus && latest.hostingStatus.attemptedAt > view.attemptedAt) return latest.hostingStatus;
+    const result: FastWalletHostingView = expected && !sameFastWalletHostingAssignment(expected, latest)
+      ? { status: 'unknown', attemptedAt: view.attemptedAt, verified: false,
+          repairAttempted: view.repairAttempted, errorCode: 'assignment_changed' }
+      : view;
+    if (latest) await writeFastReceiveIdentities(current.map(item => item.id === identityId
+      ? { ...item, hostingStatus: result, updatedAt: new Date().toISOString() } : item));
+    return result;
+  });
 }
 
 /**
@@ -182,6 +236,15 @@ export function applyGlobalFastWalletDeliveryState(
     notificationsEnabled: enabled && Boolean(identity.assignmentHandle),
     updatedAt,
   }));
+}
+
+export function setGlobalFastWalletDeliveryState(
+  enabled: boolean,
+  updatedAt: string,
+): Promise<FastReceiveIdentityRecord[]> {
+  return withFastReceiveRegistryMutation(async () => writeFastReceiveIdentities(
+    applyGlobalFastWalletDeliveryState(await loadFastReceiveIdentities(), enabled, updatedAt),
+  ));
 }
 
 export function createFastReceiveIdentityRecord(
@@ -304,6 +367,7 @@ function normalizeFastReceiveIdentity(
     ),
     watchMessageId: cleanOptionalHex(identity.watchMessageId, 32),
     workerReceiptVerified: identity.workerReceiptVerified === true,
+    hostingStatus: parseFastWalletHostingView(identity.hostingStatus),
     createdAt: cleanRequired(identity.createdAt, 'createdAt'),
     updatedAt: cleanRequired(identity.updatedAt, 'updatedAt'),
   };
@@ -399,6 +463,7 @@ function parseFastReceiveIdentity(
     workerDescriptorHex,
     watchMessageId,
     workerReceiptVerified,
+    hostingStatus: parseFastWalletHostingView(value.hostingStatus),
     createdAt,
     updatedAt,
   });

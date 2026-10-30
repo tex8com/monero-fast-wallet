@@ -1,0 +1,330 @@
+From c1651837c5ebddd332eb5b7206da8916ee6b5464 Mon Sep 17 00:00:00 2001
+From: TEX8 Monero Patch Integrator <monero-patches@tex8.local>
+Date: Wed, 28 Oct 2026 17:14:45 -0500
+Subject: [PATCH] wallet: preserve confirmed spend state across stale pool
+ snapshots
+
+---
+ src/wallet/api/wallet.cpp          |   4 +
+ src/wallet/confirmed_spent_state.h | 125 +++++++++++++++++++++++++++++
+ src/wallet/wallet2.cpp             |  47 +++++++++--
+ src/wallet/wallet2.h               |   5 +-
+ 4 files changed, 174 insertions(+), 7 deletions(-)
+ create mode 100644 src/wallet/confirmed_spent_state.h
+
+diff --git a/src/wallet/api/wallet.cpp b/src/wallet/api/wallet.cpp
+index e66ba9313..0e02af913 100644
+--- a/src/wallet/api/wallet.cpp
++++ b/src/wallet/api/wallet.cpp
+@@ -3067,6 +3067,10 @@ void WalletImpl::doRefresh()
+ 
+ void WalletImpl::startRefresh()
+ {
++    // stopRefresh() transfers ownership to an external/shared scanner by
++    // joining this worker. Transaction helpers must not reactivate its flag.
++    if (m_refreshThreadDone)
++        return;
+     if (!m_refreshEnabled) {
+         LOG_PRINT_L2(__FUNCTION__ << ": refresh started/resumed...");
+         m_refreshEnabled = true;
+diff --git a/src/wallet/confirmed_spent_state.h b/src/wallet/confirmed_spent_state.h
+new file mode 100644
+index 000000000..db45648a7
+--- /dev/null
++++ b/src/wallet/confirmed_spent_state.h
+@@ -0,0 +1,125 @@
++// Copyright (c) 2026, The Monero Project
++// All rights reserved.
++// SPDX-License-Identifier: BSD-3-Clause
++
++#pragma once
++
++#include <cstddef>
++#include <cstdint>
++#include <unordered_map>
++#include <unordered_set>
++
++namespace tools { namespace confirmed_spent_state {
++
++inline bool valid_height(std::uint64_t height, std::uint64_t chain_size)
++{
++  return height > 0 && height < chain_size;
++}
++
++// A pool observation is weaker than a locally confirmed spend. Keep the
++// confirmation height so detach_blockchain can undo it at the correct fork.
++inline std::uint64_t spend_height(bool already_spent, std::uint64_t previous,
++    std::uint64_t requested)
++{
++  return already_spent && previous > 0 && requested == 0 ? previous : requested;
++}
++
++inline bool may_clear_pending_spend(std::uint64_t spent_height)
++{
++  return spent_height == 0;
++}
++
++template<class TransactionId, class Payments>
++std::unordered_set<TransactionId> payment_ids(const Payments &payments,
++    std::uint64_t chain_size)
++{
++  std::unordered_set<TransactionId> result;
++  result.reserve(payments.size());
++  for (const auto &payment : payments)
++    if (valid_height(payment.second.m_block_height, chain_size))
++      result.insert(payment.second.m_tx_hash);
++  return result;
++}
++
++template<class TransactionId, class Confirmed>
++bool outgoing_is_confirmed(const TransactionId &id, const Confirmed &confirmed,
++    std::uint64_t chain_size)
++{
++  const auto outgoing = confirmed.find(id);
++  return outgoing != confirmed.end() && valid_height(outgoing->second.m_block_height, chain_size);
++}
++
++template<class TransactionId, class Confirmed, class PaymentIds>
++bool is_confirmed(const TransactionId &id, const Confirmed &confirmed,
++    const PaymentIds &payments, std::uint64_t chain_size)
++{
++  return outgoing_is_confirmed(id, confirmed, chain_size) || payments.count(id) != 0;
++}
++
++template<class PendingPayments, class Confirmed, class PaymentIds>
++std::size_t erase_confirmed_pending_payments(PendingPayments &pending,
++    const Confirmed &confirmed, const PaymentIds &payments, std::uint64_t chain_size)
++{
++  std::size_t removed = 0;
++  for (auto entry = pending.begin(); entry != pending.end(); )
++  {
++    if (is_confirmed(entry->second.m_pd.m_tx_hash, confirmed, payments, chain_size))
++    {
++      entry = pending.erase(entry);
++      ++removed;
++    }
++    else
++      ++entry;
++  }
++  return removed;
++}
++
++struct repair_result
++{
++  std::size_t outputs = 0;
++  std::size_t redundant_pending = 0;
++};
++
++// Repair only facts already established by locally confirmed transactions.
++// Never guess ownership, query a daemon, or derive a balance from history sums.
++// Reorg handling removes detached confirmed records before future processing.
++template<class Transfers, class KeyImages, class Confirmed, class Pending, class SetSpent>
++repair_result repair(Transfers &transfers, const KeyImages &key_images,
++    const Confirmed &confirmed, Pending &pending, std::uint64_t chain_size,
++    SetSpent set_spent)
++{
++  repair_result result;
++  std::unordered_map<std::size_t, std::uint64_t> confirmed_heights;
++  for (const auto &transaction : confirmed)
++  {
++    const auto height = transaction.second.m_block_height;
++    if (!valid_height(height, chain_size))
++      continue;
++    for (const auto &ring : transaction.second.m_rings)
++    {
++      const auto known = key_images.find(ring.first);
++      if (known == key_images.end() || known->second >= transfers.size())
++        continue;
++      const auto &transfer = transfers[known->second];
++      if (!transfer.m_key_image_known || transfer.m_key_image_partial ||
++          transfer.m_key_image != ring.first || transfer.m_block_height >= height)
++        continue;
++      const auto inserted = confirmed_heights.emplace(known->second, height);
++      if (!inserted.second && height < inserted.first->second)
++        inserted.first->second = height;
++    }
++    result.redundant_pending += pending.erase(transaction.first);
++  }
++  for (const auto &entry : confirmed_heights)
++  {
++    const auto &transfer = transfers[entry.first];
++    if (!transfer.m_spent || transfer.m_spent_height != entry.second)
++    {
++      set_spent(entry.first, entry.second);
++      ++result.outputs;
++    }
++  }
++  return result;
++}
++
++}} // namespace tools::confirmed_spent_state
+diff --git a/src/wallet/wallet2.cpp b/src/wallet/wallet2.cpp
+index de1b135e2..381a2d97c 100644
+--- a/src/wallet/wallet2.cpp
++++ b/src/wallet/wallet2.cpp
+@@ -56,6 +56,7 @@ using namespace epee;
+ #include "cryptonote_core/tx_sanity_check.h"
+ #include "wallet_rpc_helpers.h"
+ #include "wallet2.h"
++#include "confirmed_spent_state.h"
+ #include "wallet_args.h"
+ #include "cryptonote_basic/cryptonote_format_utils.h"
+ #include "net/parse.h"
+@@ -2129,6 +2130,7 @@ void wallet2::set_spent(size_t idx, uint64_t height)
+ {
+   CHECK_AND_ASSERT_THROW_MES(idx < m_transfers.size(), "Invalid index");
+   transfer_details &td = m_transfers[idx];
++  height = confirmed_spent_state::spend_height(td.m_spent, td.m_spent_height, height);
+   LOG_PRINT_L2("Setting SPENT at " << height << ": ki " << td.m_key_image << ", amount " << print_money(td.m_amount));
+   td.m_spent = true;
+   td.m_spent_height = height;
+@@ -2432,9 +2434,16 @@ bool wallet2::spends_one_of_ours(const cryptonote::transaction &tx) const
+   return false;
+ }
+ //----------------------------------------------------------------------------------------------------
+-void wallet2::process_new_transaction(const crypto::hash &txid, const cryptonote::transaction& tx, const std::vector<uint64_t> &o_indices, uint64_t height, uint8_t block_version, uint64_t ts, bool miner_tx, bool pool, bool double_spend_seen, const tx_cache_data &tx_cache_data, std::map<std::pair<uint64_t, uint64_t>, size_t> *output_tracker_cache, bool ignore_callbacks)
++void wallet2::process_new_transaction(const crypto::hash &txid, const cryptonote::transaction& tx, const std::vector<uint64_t> &o_indices, uint64_t height, uint8_t block_version, uint64_t ts, bool miner_tx, bool pool, bool double_spend_seen, const tx_cache_data &tx_cache_data, std::map<std::pair<uint64_t, uint64_t>, size_t> *output_tracker_cache, bool ignore_callbacks, const std::unordered_set<crypto::hash> *confirmed_pool_payment_txids)
+ {
+   PERF_TIMER(process_new_transaction);
++  // Normal pool/explicit scan callers supply a fresh per-batch lookup. The
++  // fallback keeps any direct caller correct without a persistent stale cache.
++  if (pool && (confirmed_pool_payment_txids
++      ? confirmed_spent_state::is_confirmed(txid, m_confirmed_txs, *confirmed_pool_payment_txids, m_blockchain.size())
++      : confirmed_spent_state::is_confirmed(txid, m_confirmed_txs,
++          confirmed_spent_state::payment_ids<crypto::hash>(m_payments, m_blockchain.size()), m_blockchain.size())))
++    return;
+   // In this function, tx (probably) only contains the base information
+   // (that is, the prunable stuff may or may not be included)
+   if (!miner_tx && !pool)
+@@ -4884,8 +4893,10 @@ void wallet2::remove_obsolete_pool_txs(const std::vector<crypto::hash> &tx_hashe
+ // Code that is common to 'update_pool_state_by_pool_query' and 'update_pool_state_from_pool_data':
+ // Check wether a tx in the pool is worthy of processing because we did not see it
+ // yet or because it is "interesting" out of special circumstances
+-bool wallet2::accept_pool_tx_for_processing(const crypto::hash &txid)
++bool wallet2::accept_pool_tx_for_processing(const crypto::hash &txid, const std::unordered_set<crypto::hash> &confirmed_payment_txids)
+ {
++  if (confirmed_spent_state::is_confirmed(txid, m_confirmed_txs, confirmed_payment_txids, m_blockchain.size()))
++    return false;
+   bool txid_found_in_up = false;
+   for (const auto &up: m_unconfirmed_payments)
+   {
+@@ -4948,6 +4959,8 @@ bool wallet2::accept_pool_tx_for_processing(const crypto::hash &txid)
+ // Process an unconfirmed transfer after we know whether it's in the pool or not
+ void wallet2::process_unconfirmed_transfer(bool incremental, const crypto::hash &txid, wallet2::unconfirmed_transfer_details &tx_details, bool seen_in_pool, std::chrono::system_clock::time_point now, bool refreshed)
+ {
++  if (confirmed_spent_state::outgoing_is_confirmed(txid, m_confirmed_txs, m_blockchain.size()))
++    return;
+   const auto set_tx_key_images_spent = [&](const bool spent)
+   {
+     for (size_t vini = 0; vini < tx_details.m_tx.vin.size(); ++vini)
+@@ -4966,6 +4979,8 @@ void wallet2::process_unconfirmed_transfer(bool incremental, const crypto::hash
+       const transfer_details &td = m_transfers.at(i);
+       if (td.m_key_image != key_image)
+         continue;
++      if (!spent && !confirmed_spent_state::may_clear_pending_spend(td.m_spent_height))
++        continue;
+       if (td.m_spent == spent)
+         continue;
+ 
+@@ -5098,6 +5113,9 @@ void wallet2::update_pool_state_by_pool_query(std::vector<std::tuple<cryptonote:
+   }
+   MTRACE("update_pool_state_by_pool_query got pool");
+ 
++  const auto confirmed_payment_txids = confirmed_spent_state::payment_ids<crypto::hash>(m_payments, m_blockchain.size());
++  confirmed_spent_state::erase_confirmed_pending_payments(m_unconfirmed_payments,
++    m_confirmed_txs, confirmed_payment_txids, m_blockchain.size());
+   // remove any pending tx that's not in the pool
+   const auto now = std::chrono::system_clock::now();
+   std::unordered_map<crypto::hash, wallet2::unconfirmed_transfer_details>::iterator it = m_unconfirmed_txs.begin();
+@@ -5133,7 +5151,7 @@ void wallet2::update_pool_state_by_pool_query(std::vector<std::tuple<cryptonote:
+   std::vector<crypto::hash> txids;
+   for (const auto &txid: res.tx_hashes)
+   {
+-    if (accept_pool_tx_for_processing(txid))
++    if (accept_pool_tx_for_processing(txid, confirmed_payment_txids))
+       txids.push_back(txid);
+   }
+ 
+@@ -5156,6 +5174,9 @@ void wallet2::update_pool_state_by_pool_query(std::vector<std::tuple<cryptonote:
+ void wallet2::update_pool_state_from_pool_data(bool incremental, const std::vector<crypto::hash> &removed_pool_txids, const std::vector<std::tuple<cryptonote::transaction, crypto::hash, bool>> &added_pool_txs, std::vector<std::tuple<cryptonote::transaction, crypto::hash, bool>> &process_txs, bool refreshed)
+ {
+   MTRACE("update_pool_state_from_pool_data start");
++  const auto confirmed_payment_txids = confirmed_spent_state::payment_ids<crypto::hash>(m_payments, m_blockchain.size());
++  confirmed_spent_state::erase_confirmed_pending_payments(m_unconfirmed_payments,
++    m_confirmed_txs, confirmed_payment_txids, m_blockchain.size());
+   auto keys_reencryptor = epee::misc_utils::create_scope_leave_handler([&, this]() {
+     m_encrypt_keys_after_refresh.reset();
+   });
+@@ -5212,7 +5233,7 @@ void wallet2::update_pool_state_from_pool_data(bool incremental, const std::vect
+   process_txs.clear();
+   for (const auto &pool_tx: added_pool_txs)
+   {
+-    if (accept_pool_tx_for_processing(std::get<1>(pool_tx)))
++    if (accept_pool_tx_for_processing(std::get<1>(pool_tx), confirmed_payment_txids))
+     {
+       process_txs.push_back(pool_tx);
+     }
+@@ -5224,13 +5245,14 @@ void wallet2::update_pool_state_from_pool_data(bool incremental, const std::vect
+ void wallet2::process_pool_state(const std::vector<std::tuple<cryptonote::transaction, crypto::hash, bool>> &txs)
+ {
+   MTRACE("process_pool_state start");
++  const auto confirmed_payment_txids = confirmed_spent_state::payment_ids<crypto::hash>(m_payments, m_blockchain.size());
+   const time_t now = time(NULL);
+   for (const auto &e: txs)
+   {
+     const cryptonote::transaction &tx = std::get<0>(e);
+     const crypto::hash &tx_hash = std::get<1>(e);
+     const bool double_spend_seen = std::get<2>(e);
+-    process_new_transaction(tx_hash, tx, std::vector<uint64_t>(), 0, 0, now, false, true, double_spend_seen, {});
++    process_new_transaction(tx_hash, tx, std::vector<uint64_t>(), 0, 0, now, false, true, double_spend_seen, {}, nullptr, false, &confirmed_payment_txids);
+     m_scanned_pool_txs[0].insert(tx_hash);
+     if (m_scanned_pool_txs[0].size() > 5000)
+     {
+@@ -8155,6 +8177,21 @@ void wallet2::load(const std::string& wallet_, const epee::wipeable_string& pass
+   {
+     MERROR("Failed to process background cache on open: " << e.what());
+   }
++  repair_confirmed_spent_state();
++}
++//----------------------------------------------------------------------------------------------------
++void wallet2::repair_confirmed_spent_state()
++{
++  const auto confirmed_payment_txids = confirmed_spent_state::payment_ids<crypto::hash>(m_payments, m_blockchain.size());
++  const auto redundant_payments = confirmed_spent_state::erase_confirmed_pending_payments(
++    m_unconfirmed_payments, m_confirmed_txs, confirmed_payment_txids, m_blockchain.size());
++  const auto repaired = confirmed_spent_state::repair(m_transfers, m_key_images,
++    m_confirmed_txs, m_unconfirmed_txs, m_blockchain.size(),
++    [this](std::size_t index, std::uint64_t height) { set_spent(index, height); });
++  if (repaired.outputs || repaired.redundant_pending || redundant_payments)
++    MINFO("Confirmed spend cache repaired: outputs=" << repaired.outputs
++      << ", redundantPending=" << repaired.redundant_pending
++      << ", redundantPayments=" << redundant_payments);
+ }
+ //----------------------------------------------------------------------------------------------------
+ void wallet2::load_wallet_cache(const bool use_fs, const std::string& cache_buf)
+diff --git a/src/wallet/wallet2.h b/src/wallet/wallet2.h
+index cc888bcc9..27bbe52dc 100644
+--- a/src/wallet/wallet2.h
++++ b/src/wallet/wallet2.h
+@@ -1936,7 +1936,7 @@ private:
+     bool load_keys_buf(const std::string& keys_buf, const epee::wipeable_string& password);
+     bool load_keys_buf(const std::string& keys_buf, const epee::wipeable_string& password, boost::optional<crypto::chacha_key>& keys_to_encrypt);
+     void load_wallet_cache(const bool use_fs, const std::string& cache_buf = "");
+-    void process_new_transaction(const crypto::hash &txid, const cryptonote::transaction& tx, const std::vector<uint64_t> &o_indices, uint64_t height, uint8_t block_version, uint64_t ts, bool miner_tx, bool pool, bool double_spend_seen, const tx_cache_data &tx_cache_data, std::map<std::pair<uint64_t, uint64_t>, size_t> *output_tracker_cache = NULL, bool ignore_callbacks = false);
++    void process_new_transaction(const crypto::hash &txid, const cryptonote::transaction& tx, const std::vector<uint64_t> &o_indices, uint64_t height, uint8_t block_version, uint64_t ts, bool miner_tx, bool pool, bool double_spend_seen, const tx_cache_data &tx_cache_data, std::map<std::pair<uint64_t, uint64_t>, size_t> *output_tracker_cache = NULL, bool ignore_callbacks = false, const std::unordered_set<crypto::hash> *confirmed_pool_payment_txids = nullptr);
+     bool should_skip_block(const cryptonote::block &b, uint64_t height) const;
+     void process_new_blockchain_entry(const cryptonote::block& b, const cryptonote::block_complete_entry& bche, const parsed_block &parsed_block, const crypto::hash& bl_id, uint64_t height, const std::vector<tx_cache_data> &tx_cache_data, size_t tx_cache_data_offset, std::map<std::pair<uint64_t, uint64_t>, size_t> *output_tracker_cache = NULL);
+     detached_blockchain_data detach_blockchain(uint64_t height, std::map<std::pair<uint64_t, uint64_t>, size_t> *output_tracker_cache = NULL);
+@@ -1971,7 +1971,8 @@ private:
+     void fast_refresh(uint64_t stop_height, uint64_t &blocks_start_height, std::list<crypto::hash> &short_chain_history, bool force = false);
+     void pull_and_parse_next_blocks(bool first, bool try_incremental, uint64_t start_height, uint64_t &blocks_start_height, uint64_t prev_blocks_start_height, std::list<crypto::hash> &short_chain_history, const std::vector<cryptonote::block_complete_entry> &prev_blocks, const std::vector<parsed_block> &prev_parsed_blocks, std::vector<cryptonote::block_complete_entry> &blocks, std::vector<parsed_block> &parsed_blocks, bool &last, bool &error, std::exception_ptr &exception);
+     void process_parsed_blocks(uint64_t start_height, const std::vector<cryptonote::block_complete_entry> &blocks, const std::vector<parsed_block> &parsed_blocks, uint64_t& blocks_added, std::map<std::pair<uint64_t, uint64_t>, size_t> *output_tracker_cache = NULL, size_t block_offset = 0);
+-    bool accept_pool_tx_for_processing(const crypto::hash &txid);
++    bool accept_pool_tx_for_processing(const crypto::hash &txid, const std::unordered_set<crypto::hash> &confirmed_payment_txids);
++    void repair_confirmed_spent_state();
+     void process_unconfirmed_transfer(bool incremental, const crypto::hash &txid, wallet2::unconfirmed_transfer_details &tx_details, bool seen_in_pool, std::chrono::system_clock::time_point now, bool refreshed);
+     void process_pool_info_extent(const cryptonote::COMMAND_RPC_GET_BLOCKS_FAST::response &res, std::vector<std::tuple<cryptonote::transaction, crypto::hash, bool>> &process_txs, bool refreshed);
+     void update_pool_state_by_pool_query(std::vector<std::tuple<cryptonote::transaction, crypto::hash, bool>> &process_txs, bool refreshed = false);
+-- 
+2.54.0 (Apple Git-157)
+

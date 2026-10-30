@@ -18,6 +18,11 @@ use std::{
 };
 use zeroize::{Zeroize, Zeroizing};
 
+#[path = "apns.rs"]
+mod apns;
+use apns::ApnsBearerCache;
+pub use apns::ApnsCredentials;
+
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
@@ -215,7 +220,7 @@ pub enum FcmCredentials {
 #[derive(Clone, Debug)]
 pub struct ApnsDeliveryConfig {
     pub topic: String,
-    pub provider_jwt_file: PathBuf,
+    pub credentials: ApnsCredentials,
     pub sandbox: bool,
 }
 
@@ -224,6 +229,7 @@ pub struct DirectProviderDelivery {
     apns: Option<(ApnsDeliveryConfig, String)>,
     timeout: Duration,
     https_only: bool,
+    apns_bearer: ApnsBearerCache,
 }
 
 impl DirectProviderDelivery {
@@ -262,6 +268,7 @@ impl DirectProviderDelivery {
             apns,
             timeout,
             https_only: true,
+            apns_bearer: ApnsBearerCache::default(),
         })
     }
 
@@ -270,7 +277,7 @@ impl DirectProviderDelivery {
             validate_fcm_credentials(config)?;
         }
         if let Some((config, _)) = &self.apns {
-            drop(load_rotating_bearer(&config.provider_jwt_file)?);
+            drop(self.apns_bearer.bearer(&config.credentials)?);
         }
         Ok(())
     }
@@ -285,6 +292,7 @@ impl DirectProviderDelivery {
             apns,
             timeout: Duration::from_secs(3),
             https_only: false,
+            apns_bearer: ApnsBearerCache::default(),
         })
     }
 
@@ -340,7 +348,7 @@ impl DirectProviderDelivery {
         token: &str,
         event: &OpaqueNotificationEvent,
     ) -> Result<ProviderDeliveryResult, String> {
-        let bearer = load_rotating_bearer(&config.provider_jwt_file)?;
+        let bearer = self.apns_bearer.bearer(&config.credentials)?;
         let (title, body) = notification_copy(event);
         let mut payload = serde_json::json!({
             "aps": {
@@ -509,12 +517,15 @@ fn notification_copy(event: &OpaqueNotificationEvent) -> (&'static str, &'static
     if event.category == crate::TEST_EVENT_CATEGORY {
         (
             "Monero Fast Wallet",
-            "Test notification: notifications are ready.",
+            "Self-test: open the app to verify notification receipt.",
         )
     } else if event.category == crate::VANITY_EVENT_CATEGORY {
         ("Monero Fast Wallet", "Your Vanity address status changed.")
     } else if event.category == crate::MFW_CLAIM_EVENT_CATEGORY {
-        ("Monero Fast Wallet", "Your name registration status changed. Open the app to check.")
+        (
+            "Monero Fast Wallet",
+            "Your name registration status changed. Open the app to check.",
+        )
     } else {
         ("Monero Fast Wallet", "Open the app to check a new payment.")
     }
@@ -746,6 +757,8 @@ pub(crate) struct DeliveryTarget {
     pub provider: ProviderKind,
     pub token: Zeroizing<String>,
     pub event: OpaqueNotificationEvent,
+    pub test_trigger: Option<TestWakeBinding>,
+    pub test_assignment: Option<TestWakeBinding>,
 }
 
 #[derive(Default, Deserialize, Serialize)]
@@ -754,6 +767,8 @@ struct ProviderDisk {
     registrations: HashMap<String, StoredProvider>,
     jobs: HashMap<String, StoredJob>,
     grant_replay_expiry: HashMap<String, u64>,
+    #[serde(default)]
+    scheduled_tests: HashMap<String, ScheduledTest>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -779,6 +794,31 @@ pub(crate) struct ProviderRegistrationStatus {
     pub updated_at: u64,
     pub lease_expires_at: u64,
     pub disabled: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct TestWakeBinding {
+    pub assignment_handle: [u8; 32],
+    pub assignment_epoch: u64,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ScheduledTest {
+    pub installation_id: String,
+    pub event_id: String,
+    pub scheduled_at: u64,
+    pub deliver_after: u64,
+    pub binding: TestWakeBinding,
+    pub wake_received: bool,
+}
+
+#[derive(Debug)]
+pub(crate) enum ScheduleTestError {
+    Conflict,
+    RateLimited,
+    Storage,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -959,8 +999,104 @@ impl ProviderStore {
         self.disk
             .jobs
             .retain(|_, job| job.installation_id != installation_id);
+        self.disk
+            .scheduled_tests
+            .retain(|_, test| test.installation_id != installation_id);
         self.persist()?;
         Ok(removed)
+    }
+
+    pub fn scheduled_test(&self, installation_id: &str, event_id: &str) -> Option<ScheduledTest> {
+        self.disk
+            .scheduled_tests
+            .get(&job_id(installation_id, event_id))
+            .cloned()
+    }
+
+    pub fn schedule_test(
+        &mut self,
+        installation_id: &str,
+        event: OpaqueNotificationEvent,
+        binding: TestWakeBinding,
+        scheduled_at: u64,
+        deliver_after: u64,
+    ) -> Result<(), ScheduleTestError> {
+        let Some(registration) = self.disk.registrations.get(installation_id) else {
+            return Err(ScheduleTestError::Conflict);
+        };
+        if registration.disabled || registration.lease_expires_at <= deliver_after {
+            return Err(ScheduleTestError::Conflict);
+        }
+        self.prune(scheduled_at);
+        if self.disk.scheduled_tests.values().any(|test| {
+            test.installation_id == installation_id
+                && (test.scheduled_at.saturating_add(60) > scheduled_at
+                    || self
+                        .disk
+                        .jobs
+                        .contains_key(&job_id(installation_id, &test.event_id)))
+        }) {
+            return Err(ScheduleTestError::RateLimited);
+        }
+        if self.disk.jobs.len() >= MAX_JOBS || self.disk.scheduled_tests.len() >= MAX_JOBS {
+            return Err(ScheduleTestError::RateLimited);
+        }
+        let id = job_id(installation_id, &event.id);
+        self.disk.scheduled_tests.insert(
+            id.clone(),
+            ScheduledTest {
+                installation_id: installation_id.to_owned(),
+                event_id: event.id.clone(),
+                scheduled_at,
+                deliver_after,
+                binding: binding.clone(),
+                wake_received: false,
+            },
+        );
+        self.disk.jobs.insert(
+            id.clone(),
+            StoredJob {
+                installation_id: installation_id.to_owned(),
+                event,
+                attempts: 0,
+                next_attempt_at: deliver_after,
+            },
+        );
+        if self.persist().is_err() {
+            self.disk.jobs.remove(&id);
+            self.disk.scheduled_tests.remove(&id);
+            return Err(ScheduleTestError::Storage);
+        }
+        Ok(())
+    }
+
+    pub fn cancel_scheduled_test(&mut self, target: &DeliveryTarget) -> Result<(), String> {
+        let id = job_id(&target.installation_id, &target.event.id);
+        self.disk.jobs.remove(&id);
+        if let Some(test) = self.disk.scheduled_tests.get_mut(&id) {
+            test.wake_received = true;
+        }
+        self.persist()
+    }
+
+    pub fn retry_test_trigger(&mut self, target: &DeliveryTarget, now: u64) -> Result<(), String> {
+        let id = job_id(&target.installation_id, &target.event.id);
+        // The HTTP response can be lost after the signed callback promoted this
+        // very job. A stale trigger completion must never delay provider work.
+        if self.disk.jobs.contains_key(&id)
+            && self
+                .disk
+                .scheduled_tests
+                .get(&id)
+                .is_some_and(|test| !test.wake_received)
+        {
+            self.complete(
+                target,
+                ProviderDeliveryResult::RetryAfter(Duration::from_secs(5)),
+                now,
+            )?;
+        }
+        Ok(())
     }
 
     pub fn enqueue(
@@ -969,13 +1105,32 @@ impl ProviderStore {
         event: OpaqueNotificationEvent,
         now: u64,
     ) -> Result<bool, String> {
+        let id = job_id(installation_id, &event.id);
+        if let Some(test) = self.disk.scheduled_tests.get_mut(&id) {
+            if test.wake_received {
+                return Ok(false);
+            }
+            if now < test.deliver_after || event.category != crate::TEST_EVENT_CATEGORY {
+                return Err("scheduled test wake is premature or has the wrong category".to_owned());
+            }
+            let job = self
+                .disk
+                .jobs
+                .get_mut(&id)
+                .ok_or_else(|| "scheduled test job is missing".to_owned())?;
+            job.event = event;
+            job.attempts = 0;
+            job.next_attempt_at = now;
+            test.wake_received = true;
+            self.persist()?;
+            return Ok(true);
+        }
         let Some(registration) = self.disk.registrations.get(installation_id) else {
             return Ok(false);
         };
         if registration.provider == ProviderKind::DesktopWss || registration.disabled {
             return Ok(false);
         }
-        let id = job_id(installation_id, &event.id);
         if self.disk.jobs.contains_key(&id) {
             return Ok(false);
         }
@@ -993,48 +1148,6 @@ impl ProviderStore {
         );
         self.persist()?;
         Ok(true)
-    }
-
-    /// Returns a one-shot delivery target for an authenticated, user-requested
-    /// delivery check.  This deliberately does not expose provider tokens to
-    /// the HTTP layer or to worker code.
-    pub fn direct_target(
-        &mut self,
-        installation_id: &str,
-        event: OpaqueNotificationEvent,
-        now: u64,
-    ) -> Result<Option<DeliveryTarget>, String> {
-        self.prune(now);
-        let Some(registration) = self.disk.registrations.get(installation_id) else {
-            return Ok(None);
-        };
-        if registration.disabled || registration.provider == ProviderKind::DesktopWss {
-            return Ok(None);
-        }
-        Ok(Some(DeliveryTarget {
-            installation_id: installation_id.to_owned(),
-            provider: registration.provider,
-            token: Zeroizing::new(registration.token.clone()),
-            event,
-        }))
-    }
-
-    /// Records the outcome of a direct, user-triggered delivery test.  A
-    /// permanently invalid provider token is disabled just like it would be
-    /// by the regular queue worker; transient failures do not discard it.
-    pub fn complete_direct(
-        &mut self,
-        target: &DeliveryTarget,
-        result: ProviderDeliveryResult,
-    ) -> Result<(), String> {
-        if matches!(result, ProviderDeliveryResult::InvalidToken) {
-            if let Some(registration) = self.disk.registrations.get_mut(&target.installation_id) {
-                registration.disabled = true;
-                registration.token.zeroize();
-            }
-            self.persist()?;
-        }
-        Ok(())
     }
 
     pub fn due(&mut self, now: u64, limit: usize) -> Result<Vec<DeliveryTarget>, String> {
@@ -1057,6 +1170,17 @@ impl ProviderStore {
                     provider: registration.provider,
                     token: Zeroizing::new(registration.token.clone()),
                     event: job.event.clone(),
+                    test_trigger: self
+                        .disk
+                        .scheduled_tests
+                        .get(&id)
+                        .filter(|test| !test.wake_received)
+                        .map(|test| test.binding.clone()),
+                    test_assignment: self
+                        .disk
+                        .scheduled_tests
+                        .get(&id)
+                        .map(|test| test.binding.clone()),
                 })
             })
             .take(limit.clamp(1, 100))
@@ -1103,6 +1227,10 @@ impl ProviderStore {
         self.disk
             .registrations
             .retain(|_, registration| registration.lease_expires_at > now);
+        self.disk.scheduled_tests.retain(|_, test| {
+            test.deliver_after.saturating_add(86400) > now
+                && self.disk.registrations.contains_key(&test.installation_id)
+        });
         self.disk.jobs.retain(|_, job| {
             job.attempts < MAX_DELIVERY_ATTEMPTS
                 && self.disk.registrations.contains_key(&job.installation_id)
@@ -1114,6 +1242,7 @@ impl ProviderStore {
             || self.disk.registrations.len() > MAX_INSTALLATIONS
             || self.disk.jobs.len() > MAX_JOBS
             || self.disk.grant_replay_expiry.len() > MAX_GRANT_REPLAYS
+            || self.disk.scheduled_tests.len() > MAX_JOBS
         {
             return Err("provider store is invalid".to_owned());
         }
@@ -1145,6 +1274,17 @@ impl ProviderStore {
                 || job.attempts > MAX_DELIVERY_ATTEMPTS
             {
                 return Err("provider store is invalid".to_owned());
+            }
+        }
+        for (id, test) in &self.disk.scheduled_tests {
+            if *id != job_id(&test.installation_id, &test.event_id)
+                || !valid_installation_id(&test.installation_id)
+                || !crate::valid_event_id(&test.event_id)
+                || test.deliver_after.checked_sub(test.scheduled_at) != Some(10)
+                || test.binding.assignment_epoch == 0
+                || !self.disk.registrations.contains_key(&test.installation_id)
+            {
+                return Err("scheduled test store is invalid".to_owned());
             }
         }
         if self
@@ -1408,15 +1548,31 @@ mod tests {
     }
 
     #[test]
+    fn self_test_payload_preserves_opaque_id_and_has_no_payment_data() {
+        let mut event =
+            event("evt_5555555555555555555555555555555555555555555555555555555555555555");
+        event.category = crate::TEST_EVENT_CATEGORY.to_owned();
+        event.deep_link = "tex8://notification/test".to_owned();
+        let data = provider_data(&event);
+        assert_eq!(data["eventId"], event.id);
+        assert_eq!(data["type"], crate::TEST_EVENT_CATEGORY);
+        assert_eq!(data.as_object().unwrap().len(), 3);
+        assert!(notification_copy(&event).1.starts_with("Self-test:"));
+    }
+
+    #[test]
     fn claim_push_contains_only_opaque_routing_data() {
-        let mut event=event("evt_test");
-        event.category=crate::MFW_CLAIM_EVENT_CATEGORY.to_owned();
-        event.deep_link=format!("tex8monero://mfw-claim/{}","ab".repeat(24));
-        let data=provider_data(&event);
-        assert_eq!(data.as_object().unwrap().len(),5);
-        assert_eq!(data["jobId"],"ab".repeat(24));
-        assert_eq!(data["deepLink"],event.deep_link);
-        assert_eq!(notification_copy(&event).1,"Your name registration status changed. Open the app to check.");
+        let mut event = event("evt_test");
+        event.category = crate::MFW_CLAIM_EVENT_CATEGORY.to_owned();
+        event.deep_link = format!("tex8monero://mfw-claim/{}", "ab".repeat(24));
+        let data = provider_data(&event);
+        assert_eq!(data.as_object().unwrap().len(), 5);
+        assert_eq!(data["jobId"], "ab".repeat(24));
+        assert_eq!(data["deepLink"], event.deep_link);
+        assert_eq!(
+            notification_copy(&event).1,
+            "Your name registration status changed. Open the app to check."
+        );
     }
 
     #[test]
@@ -1707,7 +1863,7 @@ mod tests {
                 Some((
                     ApnsDeliveryConfig {
                         topic: "com.tex8.monerowallet".to_owned(),
-                        provider_jwt_file: bearer_path,
+                        credentials: ApnsCredentials::ProviderJwtFile(bearer_path),
                         sandbox: true,
                     },
                     endpoint,

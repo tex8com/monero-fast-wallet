@@ -490,13 +490,27 @@ fn read_full_transaction(blob: &[u8]) -> Result<Transaction<NotPruned>> {
 fn read_pruned_transaction(blob: &[u8]) -> Result<Transaction<Pruned>> {
     let mut reader = blob;
     let tx = Transaction::<Pruned>::read(&mut reader)?;
-    if !reader.is_empty() {
-        bail!(
-            "pruned transaction blob has {} trailing bytes",
-            reader.len()
-        );
+    if reader.is_empty() {
+        return Ok(tx);
     }
-    Ok(tx)
+
+    // Older MFN/Cuprate ScanPack producers could place a canonical full v1
+    // transaction in the field advertised as a pruned transaction. A pruned
+    // decoder stops after the prefix and sees the ring signatures as trailing
+    // bytes. Accept that legacy representation only when the complete blob is
+    // itself a canonical v1 transaction. Never ignore arbitrary suffix bytes.
+    let trailing_bytes = reader.len();
+    let mut full_reader = blob;
+    if let Ok(full_tx @ Transaction::V1 { .. }) = Transaction::<NotPruned>::read(&mut full_reader) {
+        if full_reader.is_empty() {
+            return Ok(Transaction::<Pruned>::from(full_tx));
+        }
+    }
+
+    bail!(
+        "pruned transaction blob has {} trailing bytes",
+        trailing_bytes
+    )
 }
 
 fn scanned_outputs_for_transaction(
@@ -608,7 +622,7 @@ fn view_pair_from_watch(watch: &WatchRegistration) -> Result<ViewPair> {
     ViewPair::new(spend, private_view).context("invalid hosted view pair")
 }
 
-pub(crate) fn validated_hosted_keys(
+pub fn validated_hosted_keys(
     watch: &WatchRegistration,
 ) -> Result<(EdwardsPoint, Zeroizing<Scalar>)> {
     let address = MoneroAddress::from_str(monero_address_network(watch.network), &watch.address)
@@ -674,6 +688,7 @@ mod tests {
     use crate::scanner::{BlockSource, MempoolSource};
     use cuprate_rpc_types::base::AccessResponseBase;
     use curve25519_dalek::constants::ED25519_BASEPOINT_TABLE;
+    use monero_oxide::{io::CompressedPoint, ring_signatures::RingSignature};
     use std::env;
 
     fn test_watch(private_view: Scalar, network: Network) -> WatchRegistration {
@@ -728,6 +743,47 @@ mod tests {
         assert!(error
             .to_string()
             .contains("failed to decode Cuprate Epee GetBlocksResponse"));
+    }
+
+    #[test]
+    fn accepts_legacy_full_v1_blob_from_pruned_scanpack_field() {
+        let tx: Transaction<NotPruned> = Transaction::V1 {
+            prefix: TransactionPrefix {
+                additional_timelock: Timelock::None,
+                inputs: vec![Input::ToKey {
+                    amount: Some(10),
+                    key_offsets: vec![1],
+                    key_image: CompressedPoint([3; 32]),
+                }],
+                outputs: vec![],
+                extra: vec![],
+            },
+            signatures: vec![RingSignature::read(1, &mut &[0_u8; 64][..]).unwrap()],
+        };
+        let blob = tx.serialize();
+
+        let decoded = read_pruned_transaction(&blob).unwrap();
+
+        assert_eq!(decoded.prefix(), tx.prefix());
+    }
+
+    #[test]
+    fn rejects_noncanonical_suffix_on_pruned_transaction() {
+        let tx: Transaction<NotPruned> = Transaction::V1 {
+            prefix: TransactionPrefix {
+                additional_timelock: Timelock::None,
+                inputs: vec![Input::Gen(0)],
+                outputs: vec![],
+                extra: vec![],
+            },
+            signatures: vec![],
+        };
+        let mut blob = tx.serialize();
+        blob.extend_from_slice(&[0_u8; 64]);
+
+        let error = read_pruned_transaction(&blob).unwrap_err();
+
+        assert!(error.to_string().contains("64 trailing bytes"));
     }
 
     #[test]

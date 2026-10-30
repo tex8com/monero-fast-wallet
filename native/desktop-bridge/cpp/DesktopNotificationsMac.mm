@@ -1,4 +1,5 @@
 #include "DesktopWalletCore.h"
+#include "ApnsRegistrationState.h"
 
 #if defined(__APPLE__)
 
@@ -8,6 +9,8 @@
 
 #include <mutex>
 #include <string>
+#include <deque>
+#include <chrono>
 
 @interface Tex8ApnsDelegateProxy : NSObject <NSApplicationDelegate, UNUserNotificationCenterDelegate>
 // NSApplication retains only its *current* delegate. Once we install this
@@ -20,9 +23,15 @@
 
 static std::mutex g_apns_mutex;
 static std::string g_apns_device_token;
-static std::string g_apns_status = "not-requested";
+static ApnsRegistrationState g_apns_attempt;
+static ApnsAuthorizationQuery g_apns_authorization_query;
+static thread_local std::string g_apns_authorization_snapshot;
+static thread_local std::string g_apns_token_snapshot;
+static thread_local std::string g_apns_status_snapshot;
 static std::string g_apns_pending_event;
 static std::string g_apns_taken_event;
+static std::deque<std::string> g_apns_received_events;
+static thread_local std::string g_apns_taken_received_event;
 
 void captureApnsEvent(NSDictionary* userInfo, bool opened) {
   NSString* category = [userInfo[@"type"] isKindOfClass:[NSString class]] ? userInfo[@"type"] : nil;
@@ -33,8 +42,20 @@ void captureApnsEvent(NSDictionary* userInfo, bool opened) {
       eventId.length == 0 || category.length == 0) {
     return;
   }
+  const std::string opaqueId = [eventId UTF8String] ?: "";
+  const auto separator = opaqueId.find('_');
+  const bool validPrefix =
+      (opaqueId.size() == 68 &&
+       (opaqueId.rfind("evt_", 0) == 0 || opaqueId.rfind("sig_", 0) == 0)) ||
+      (opaqueId.size() == 39 && opaqueId.rfind("fwpush_", 0) == 0);
+  if (!validPrefix || separator == std::string::npos ||
+      opaqueId.find_first_not_of("0123456789abcdef", separator + 1) != std::string::npos) {
+    return;
+  }
   if ([category isEqualToString:@"monero.fast_wallet.incoming"]) {
     deepLink = @"tex8://notification/incoming";
+  } else if ([category isEqualToString:@"monero.fast_wallet.test"]) {
+    deepLink = @"tex8://notification/test";
   } else if (![category isEqualToString:@"monero.fast_wallet.vanity"] || deepLink.length == 0) {
     return;
   }
@@ -49,13 +70,39 @@ void captureApnsEvent(NSDictionary* userInfo, bool opened) {
   NSString* json = data == nil ? nil : [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
   if (json == nil) return;
   std::lock_guard<std::mutex> lock(g_apns_mutex);
-  g_apns_pending_event = [json UTF8String] ?: "";
+  if (opened) {
+    g_apns_pending_event = [json UTF8String] ?: "";
+  } else {
+    g_apns_received_events.emplace_back([json UTF8String] ?: "");
+    if (g_apns_received_events.size() > 64) g_apns_received_events.pop_front();
+  }
+  if ([category isEqualToString:@"monero.fast_wallet.test"]) {
+    NSLog(@"[MoneroAPNs] test_push_event event_id=%s opened=%d", opaqueId.c_str(), opened);
+  }
 }
 
-void setApnsStatus(const std::string& status) {
+static std::uint64_t apnsMonotonicMillis() {
+  return std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+bool setApnsStatus(std::uint64_t attempt, const std::string& status) {
   std::lock_guard<std::mutex> lock(g_apns_mutex);
-  g_apns_status = status;
+  if (!g_apns_attempt.update(apnsMonotonicMillis(), attempt, status)) return false;
   NSLog(@"[MoneroAPNs] status=%s", status.c_str());
+  return true;
+}
+
+std::string apnsErrorStatus(const char* phase, NSError* error) {
+  // NSError descriptions/userInfo can contain identifiers. Only its bounded
+  // domain and numeric code cross the native boundary or enter diagnostics.
+  std::string domain = error == nil ? "unknown" : ([error.domain UTF8String] ?: "unknown");
+  if (domain.empty() || domain.size() > 128 ||
+      domain.find_first_not_of("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-") != std::string::npos) {
+    domain = "unknown";
+  }
+  const auto code = error == nil ? 0LL : static_cast<long long>(error.code);
+  return std::string(phase) + "|" + domain + "|" + std::to_string(code);
 }
 
 void setApnsToken(NSData* deviceToken) {
@@ -66,10 +113,12 @@ void setApnsToken(NSData* deviceToken) {
   }
 
   std::lock_guard<std::mutex> lock(g_apns_mutex);
-  g_apns_device_token = [hex UTF8String] ?: "";
-  g_apns_status = g_apns_device_token.empty() ? "empty-token" : "registered";
+  const std::string token = [hex UTF8String] ?: "";
+  const std::string status = token.empty() ? "empty-token" : "registered";
+  if (!g_apns_attempt.callback(apnsMonotonicMillis(), status)) return;
+  g_apns_device_token = token;
   NSLog(@"[MoneroAPNs] device token received (length=%lu), status=%s",
-        static_cast<unsigned long>(g_apns_device_token.length()), g_apns_status.c_str());
+        static_cast<unsigned long>(g_apns_device_token.length()), status.c_str());
 }
 
 @implementation Tex8ApnsDelegateProxy
@@ -95,6 +144,7 @@ void setApnsToken(NSData* deviceToken) {
 - (void)userNotificationCenter:(UNUserNotificationCenter*)center
     willPresentNotification:(UNNotification*)notification
     withCompletionHandler:(void (^)(UNNotificationPresentationOptions options))completionHandler {
+  captureApnsEvent(notification.request.content.userInfo, false);
   if ([self.originalNotificationDelegate respondsToSelector:_cmd]) {
     [self.originalNotificationDelegate userNotificationCenter:center
                                       willPresentNotification:notification
@@ -135,9 +185,13 @@ void setApnsToken(NSData* deviceToken) {
 
 - (void)application:(NSApplication*)application
     didFailToRegisterForRemoteNotificationsWithError:(NSError*)error {
-  NSString* message = error.localizedDescription ?: @"APNs registration failed";
-  setApnsStatus(std::string("failed: ") + ([message UTF8String] ?: "unknown"));
-  NSLog(@"[MoneroAPNs] registration failed: %@", message);
+  {
+    const auto status = apnsErrorStatus("registration-error", error);
+    std::lock_guard<std::mutex> lock(g_apns_mutex);
+    if (g_apns_attempt.callback(apnsMonotonicMillis(), status)) {
+      NSLog(@"[MoneroAPNs] status=%s", status.c_str());
+    }
+  }
   if ([self.originalDelegate respondsToSelector:_cmd]) {
     [self.originalDelegate application:application
         didFailToRegisterForRemoteNotificationsWithError:error];
@@ -147,6 +201,13 @@ void setApnsToken(NSData* deviceToken) {
 @end
 
 static Tex8ApnsDelegateProxy* g_apns_proxy = nil;
+
+void registerApnsAfterAuthorization(std::uint64_t attempt) {
+  dispatch_async(dispatch_get_main_queue(), ^{
+    if (!setApnsStatus(attempt, "registering")) return;
+    [[NSApplication sharedApplication] registerForRemoteNotifications];
+  });
+}
 
 void installApnsDelegateProxy() {
   NSApplication* app = [NSApplication sharedApplication];
@@ -162,46 +223,115 @@ void installApnsDelegateProxy() {
   NSLog(@"[MoneroAPNs] installed application-delegate proxy");
 }
 
-void requestApnsRegistrationOnMainThread() {
+void requestApnsRegistrationOnMainThread(std::uint64_t attempt, bool allowPrompt) {
   NSBundle* bundle = [NSBundle mainBundle];
   NSString* extension = bundle.bundleURL.pathExtension ?: @"";
   if (![extension isEqualToString:@"app"]) {
-    setApnsStatus("requires-app-bundle");
+    setApnsStatus(attempt, "requires-app-bundle");
     return;
   }
   installApnsDelegateProxy();
-  NSLog(@"[MoneroAPNs] requesting permission for %@", bundle.bundleIdentifier ?: @"unknown");
-  setApnsStatus("requesting-permission");
+  if (!setApnsStatus(attempt, "checking-authorization")) return;
   UNAuthorizationOptions options =
       UNAuthorizationOptionAlert | UNAuthorizationOptionSound | UNAuthorizationOptionBadge;
-  [[UNUserNotificationCenter currentNotificationCenter]
-      requestAuthorizationWithOptions:options
-                    completionHandler:^(BOOL granted, NSError* _Nullable error) {
-                      if (error != nil) {
-                        NSString* message = error.localizedDescription ?: @"permission error";
-                        setApnsStatus(std::string("permission-failed: ") +
-                                      ([message UTF8String] ?: "unknown"));
-                        return;
-                      }
-                      if (!granted) {
-                        setApnsStatus("permission-denied");
-                        return;
-                      }
-                      NSLog(@"[MoneroAPNs] permission granted; registering for remote notifications");
-                      dispatch_async(dispatch_get_main_queue(), ^{
-                        setApnsStatus("registering");
-                        [[NSApplication sharedApplication] registerForRemoteNotifications];
-                      });
-                    }];
+  UNUserNotificationCenter* center = [UNUserNotificationCenter currentNotificationCenter];
+  [center getNotificationSettingsWithCompletionHandler:^(UNNotificationSettings* settings) {
+    if (settings == nil) {
+      setApnsStatus(attempt, apnsErrorStatus("authorization-error", nil));
+      return;
+    }
+    if (settings.authorizationStatus == UNAuthorizationStatusDenied) {
+      setApnsStatus(attempt, "authorization-denied");
+      return;
+    }
+    if (settings.authorizationStatus == UNAuthorizationStatusAuthorized ||
+        settings.authorizationStatus == UNAuthorizationStatusProvisional) {
+      registerApnsAfterAuthorization(attempt);
+      return;
+    }
+    // A stored app opt-in does not authorize a new OS permission prompt.
+    if (!allowPrompt) {
+      setApnsStatus(attempt, "authorization-required");
+      return;
+    }
+    if (!setApnsStatus(attempt, "requesting-authorization")) return;
+    [center requestAuthorizationWithOptions:options
+                         completionHandler:^(BOOL granted, NSError* _Nullable error) {
+      if (error != nil) {
+        setApnsStatus(attempt, apnsErrorStatus("authorization-error", error));
+        return;
+      }
+      if (!granted) {
+        setApnsStatus(attempt, "authorization-denied");
+        return;
+      }
+      registerApnsAfterAuthorization(attempt);
+    }];
+  }];
 }
 
-extern "C" int tex8_desktop_apns_register() noexcept {
+static int beginApnsRegistration(bool allowPrompt, bool retry) {
   @autoreleasepool {
+    std::uint64_t attempt;
+    {
+      std::lock_guard<std::mutex> lock(g_apns_mutex);
+      attempt = g_apns_attempt.begin(apnsMonotonicMillis(), retry);
+      if (attempt == 0) return g_apns_attempt.pending() ? 2 : 0;
+      g_apns_device_token.clear();
+    }
+    NSLog(@"[MoneroAPNs] registration-start phase=%s", allowPrompt ? "explicit-opt-in" : "resume");
     dispatch_async(dispatch_get_main_queue(), ^{
-      requestApnsRegistrationOnMainThread();
+      requestApnsRegistrationOnMainThread(attempt, allowPrompt);
     });
   }
   return 1;
+}
+
+extern "C" int tex8_desktop_apns_register() noexcept {
+  return beginApnsRegistration(true, true);
+}
+
+extern "C" int tex8_desktop_apns_resume(int retry) noexcept {
+  return beginApnsRegistration(false, retry != 0);
+}
+
+extern "C" std::uint64_t tex8_desktop_apns_attempt_elapsed_millis() noexcept {
+  std::lock_guard<std::mutex> lock(g_apns_mutex);
+  return g_apns_attempt.elapsed(apnsMonotonicMillis());
+}
+
+extern "C" std::uint64_t tex8_desktop_apns_refresh_authorization() noexcept {
+  @autoreleasepool {
+    std::uint64_t query;
+    {
+      std::lock_guard<std::mutex> lock(g_apns_mutex);
+      const auto started = g_apns_authorization_query.begin(apnsMonotonicMillis());
+      query = started.first;
+      if (!started.second) return query;
+    }
+    [[UNUserNotificationCenter currentNotificationCenter]
+        getNotificationSettingsWithCompletionHandler:^(UNNotificationSettings* settings) {
+      std::string status = "unknown";
+      if (settings != nil) {
+        switch (settings.authorizationStatus) {
+          case UNAuthorizationStatusDenied: status = "denied"; break;
+          case UNAuthorizationStatusAuthorized: status = "authorized"; break;
+          case UNAuthorizationStatusProvisional: status = "provisional"; break;
+          case UNAuthorizationStatusNotDetermined: status = "not-determined"; break;
+          default: break;
+        }
+      }
+      std::lock_guard<std::mutex> lock(g_apns_mutex);
+      g_apns_authorization_query.complete(apnsMonotonicMillis(), query, std::move(status));
+    }];
+    return query;
+  }
+}
+
+extern "C" const char* tex8_desktop_apns_authorization_status(std::uint64_t query) noexcept {
+  std::lock_guard<std::mutex> lock(g_apns_mutex);
+  g_apns_authorization_snapshot = g_apns_authorization_query.status(apnsMonotonicMillis(), query);
+  return g_apns_authorization_snapshot.c_str();
 }
 
 extern "C" int tex8_desktop_apns_install_handler() noexcept {
@@ -215,12 +345,14 @@ extern "C" int tex8_desktop_apns_install_handler() noexcept {
 
 extern "C" const char* tex8_desktop_apns_device_token() noexcept {
   std::lock_guard<std::mutex> lock(g_apns_mutex);
-  return g_apns_device_token.c_str();
+  g_apns_token_snapshot = g_apns_device_token;
+  return g_apns_token_snapshot.c_str();
 }
 
 extern "C" const char* tex8_desktop_apns_status() noexcept {
   std::lock_guard<std::mutex> lock(g_apns_mutex);
-  return g_apns_status.c_str();
+  g_apns_status_snapshot = g_apns_attempt.status(apnsMonotonicMillis());
+  return g_apns_status_snapshot.c_str();
 }
 
 extern "C" const char* tex8_desktop_apns_take_pending_event() noexcept {
@@ -230,12 +362,27 @@ extern "C" const char* tex8_desktop_apns_take_pending_event() noexcept {
   return g_apns_taken_event.c_str();
 }
 
+extern "C" const char* tex8_desktop_apns_take_received_event() noexcept {
+  std::lock_guard<std::mutex> lock(g_apns_mutex);
+  g_apns_taken_received_event.clear();
+  if (!g_apns_received_events.empty()) {
+    g_apns_taken_received_event = std::move(g_apns_received_events.front());
+    g_apns_received_events.pop_front();
+  }
+  return g_apns_taken_received_event.c_str();
+}
+
 #else
 
 extern "C" int tex8_desktop_apns_register() noexcept { return 0; }
+extern "C" int tex8_desktop_apns_resume(int) noexcept { return 0; }
+extern "C" std::uint64_t tex8_desktop_apns_attempt_elapsed_millis() noexcept { return 0; }
+extern "C" std::uint64_t tex8_desktop_apns_refresh_authorization() noexcept { return 0; }
+extern "C" const char* tex8_desktop_apns_authorization_status(std::uint64_t) noexcept { return "unknown"; }
 extern "C" int tex8_desktop_apns_install_handler() noexcept { return 0; }
 extern "C" const char* tex8_desktop_apns_device_token() noexcept { return ""; }
 extern "C" const char* tex8_desktop_apns_status() noexcept { return "unsupported"; }
 extern "C" const char* tex8_desktop_apns_take_pending_event() noexcept { return ""; }
+extern "C" const char* tex8_desktop_apns_take_received_event() noexcept { return ""; }
 
 #endif

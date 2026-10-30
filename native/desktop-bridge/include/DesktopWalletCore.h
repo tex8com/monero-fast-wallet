@@ -25,6 +25,12 @@ extern "C" void tex8_desktop_wallet_core_free(
     Tex8DesktopWalletCore* core) noexcept;
 extern "C" void tex8_desktop_result_free(
     Tex8DesktopResult* result) noexcept;
+// Process diagnostic ring only. No wallet lock or Core handle is required.
+extern "C" Tex8DesktopResult tex8_desktop_wallet_drain_diagnostics() noexcept;
+extern "C" Tex8DesktopResult tex8_desktop_wallet_ledger_usb_available() noexcept;
+extern "C" Tex8DesktopResult tex8_desktop_wallet_open_with_device(
+    Tex8DesktopWalletCore* core, const char* path, const char* password,
+    unsigned char network, unsigned long long restore_height, const char* device_name) noexcept;
 // Returns public status for real macOS Bluetooth Ledger discovery. The native
 // bridge retains transport ownership; no device keys cross this boundary.
 extern "C" Tex8DesktopResult tex8_desktop_wallet_ledger_transport_status(
@@ -200,3 +206,4 @@ extern "C" int tex8_desktop_apns_install_handler() noexcept;
 extern "C" const char* tex8_desktop_apns_device_token() noexcept;
 extern "C" const char* tex8_desktop_apns_status() noexcept;
 extern "C" const char* tex8_desktop_apns_take_pending_event() noexcept;
+extern "C" const char* tex8_desktop_apns_take_received_event() noexcept;

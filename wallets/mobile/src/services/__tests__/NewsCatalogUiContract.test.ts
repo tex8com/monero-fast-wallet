@@ -17,6 +17,8 @@ describe('Private Monero news catalog', () => {
     expect(feed).toContain("const CACHE_KEY = '@tex8/monero/news-v3'");
     expect(feed).toContain('catalogHash');
     expect(feed).toContain('maximumResponseBytes: 1_048_576');
+    expect(feed).toContain('NEWS_ARTICLE_URL_PATTERN');
+    expect(feed).toContain('xmr\\.tex8\\.com\\/news\\/articles');
   });
 
   it('renders MinIO WebP cards with a local fallback, text, dots, and an optional link', () => {

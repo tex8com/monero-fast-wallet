@@ -1,0 +1,177 @@
+From 5e9cc98034fb342a962199c0f08ac88b08d77aac Mon Sep 17 00:00:00 2001
+From: TEX8 Monero Patch Integrator <monero-patches@tex8.local>
+Date: Wed, 7 Oct 2026 03:20:00 +0200
+Subject: [PATCH] wallet: adapt gRPC chunks to measured latency
+
+Start with large chunks for throughput and use measured consumer wait as the
+feedback signal. Slow or timed-out nodes are retried with progressively smaller
+chunks, while sustained fast delivery grows the chunk again. A hard per-chunk
+deadline prevents one slow transport request from freezing visible progress.
+The environment override remains fixed for reproducible benchmarks.
+---
+ src/wallet/wallet2.cpp | 81 +++++++++++++++++++++++++++++++++++++++++--
+ src/wallet/wallet2.h   |  7 +++-
+ 2 files changed, 85 insertions(+), 3 deletions(-)
+
+diff --git a/src/wallet/wallet2.cpp b/src/wallet/wallet2.cpp
+index 0cd4a06..1093771 100644
+--- a/src/wallet/wallet2.cpp
++++ b/src/wallet/wallet2.cpp
+@@ -1497,6 +1497,7 @@ bool wallet2::init(std::string daemon_address, boost::optional<epee::net_utils::
+       {
+         const unsigned long clamped = std::max(16UL, std::min(parsed, 10000UL));
+         m_grpc_stream_chunk_hint = static_cast<uint32_t>(clamped);
++        m_grpc_stream_chunk_hint_overridden = true;
+         MWARNING("grpc_stream chunk hint set to " << m_grpc_stream_chunk_hint
+           << " from CUPRATE_GRPC_CHUNK_HINT='" << chunk_hint_env << "'");
+       }
+@@ -3474,7 +3475,12 @@ bool wallet2::try_pull_blocks_grpc(bool first, uint64_t start_height,
+ 
+   std::string payload;
+   const auto t_pop0 = std::chrono::steady_clock::now();
+-  const bool pop_ok = m_grpc_stream_client->next_chunk_payload(payload, 60000);
++  // This is a product liveness deadline, not a throughput cap. A slow node is
++  // retried with a smaller request instead of leaving the coordinator blocked
++  // for minutes with an unchanged progress display.
++  constexpr uint32_t kChunkWaitDeadlineMs = 10000;
++  const bool pop_ok = m_grpc_stream_client->next_chunk_payload(
++      payload, kChunkWaitDeadlineMs);
+   const double pop_wait_ms = std::chrono::duration<double, std::milli>(
+       std::chrono::steady_clock::now() - t_pop0).count();
+   if (!pop_ok)
+@@ -3491,17 +3497,14 @@ bool wallet2::try_pull_blocks_grpc(bool first, uint64_t start_height,
+       << " -- closing stream, falling back to bin RPC for "
+       << (ended_ok ? "this iteration" : "this session"));
+     const int fallback_error_code = m_grpc_stream_client->last_error_code();
+-    log_grpc_fallback(ended_ok ? "iteration" : "session",
+-      ended_ok ? "stream_end" : (fallback_error_code == 0
+-        ? "chunk_timeout" : "stream_receive_failed"),
+-      ended_ok ? "clean_end" : (fallback_error_code == 0
+-        ? "timeout" : "grpc_receive"),
+-      fallback_error_code, m_grpc_stream_next_height,
+-      static_cast<uint64_t>(m_blockchain.size()), 0, 0, 0);
++    const bool timed_out = !ended_ok && fallback_error_code == 0;
+     m_grpc_stream_client->close();
+     m_grpc_stream_active = false;
+     if (ended_ok)
+     {
++      log_grpc_fallback("iteration", "stream_end", "clean_end",
++        fallback_error_code, m_grpc_stream_next_height,
++        static_cast<uint64_t>(m_blockchain.size()), 0, 0, 0);
+       // Reaching the requested gRPC tip is a successful empty refresh, not
+       // a reason to fall through to /getblocks.bin. In particular, the
+       // keyless shared provider deliberately has no private chain history
+@@ -3514,6 +3517,29 @@ bool wallet2::try_pull_blocks_grpc(bool first, uint64_t start_height,
+       return true;
+     }
+ 
++    if (timed_out && !m_grpc_stream_chunk_hint_overridden &&
++        m_grpc_stream_timeout_retries < 2)
++    {
++      const uint32_t previous_hint = m_grpc_stream_chunk_hint;
++      m_grpc_stream_chunk_hint = std::max<uint32_t>(16,
++          m_grpc_stream_chunk_hint / 2);
++      ++m_grpc_stream_timeout_retries;
++      m_grpc_stream_fast_chunk_streak = 0;
++      MWARNING("grpc_stream: adaptive timeout retry="
++        << m_grpc_stream_timeout_retries
++        << " previous_chunk_hint=" << previous_hint
++        << " next_chunk_hint=" << m_grpc_stream_chunk_hint
++        << " requested_height=" << shared_start_cursor);
++      return try_pull_blocks_grpc(first, start_height, short_chain_history,
++        blocks_start_height, blocks, o_indices, current_height,
++        shared_start_cursor);
++    }
++
++    log_grpc_fallback("session",
++      fallback_error_code == 0 ? "chunk_timeout" : "stream_receive_failed",
++      fallback_error_code == 0 ? "timeout" : "grpc_receive",
++      fallback_error_code, m_grpc_stream_next_height,
++      static_cast<uint64_t>(m_blockchain.size()), 0, 0, 0);
+     m_grpc_stream_fallback_to_bin = true;
+     return false;
+   }
+@@ -3589,6 +3615,51 @@ bool wallet2::try_pull_blocks_grpc(bool first, uint64_t start_height,
+   current_height = res.current_height;
+   m_grpc_stream_next_height = chunk_end_exclusive;
+ 
++  bool reopen_with_adaptive_hint = false;
++  if (!m_grpc_stream_chunk_hint_overridden)
++  {
++    constexpr uint32_t kMinimumAdaptiveChunkHint = 16;
++    constexpr uint32_t kMaximumAdaptiveChunkHint = 256;
++    uint32_t next_hint = m_grpc_stream_chunk_hint;
++    if (pop_wait_ms >= 5000.0)
++    {
++      next_hint = std::max<uint32_t>(kMinimumAdaptiveChunkHint,
++        m_grpc_stream_chunk_hint / 2);
++      m_grpc_stream_fast_chunk_streak = 0;
++    }
++    else if (pop_wait_ms >= 2500.0)
++    {
++      next_hint = std::max<uint32_t>(kMinimumAdaptiveChunkHint,
++        (m_grpc_stream_chunk_hint * 3) / 4);
++      m_grpc_stream_fast_chunk_streak = 0;
++    }
++    else if (pop_wait_ms <= 750.0)
++    {
++      ++m_grpc_stream_fast_chunk_streak;
++      if (m_grpc_stream_fast_chunk_streak >= 4)
++      {
++        next_hint = std::min<uint32_t>(kMaximumAdaptiveChunkHint,
++          m_grpc_stream_chunk_hint * 2);
++        m_grpc_stream_fast_chunk_streak = 0;
++      }
++    }
++    else
++    {
++      m_grpc_stream_fast_chunk_streak = 0;
++    }
++
++    if (next_hint != m_grpc_stream_chunk_hint)
++    {
++      MWARNING("grpc_stream: adaptive chunk hint previous="
++        << m_grpc_stream_chunk_hint << " next=" << next_hint
++        << " consumer_wait_ms=" << pop_wait_ms
++        << " blocks=" << blocks.size());
++      m_grpc_stream_chunk_hint = next_hint;
++      reopen_with_adaptive_hint = true;
++    }
++  }
++  m_grpc_stream_timeout_retries = 0;
++
+   // Two-sided bottleneck signal:
+   //   pop_wait_ms high  -> we blocked waiting for the next chunk => stream is
+   //                        the bottleneck (server slow OR network slow)
+@@ -3610,6 +3681,11 @@ bool wallet2::try_pull_blocks_grpc(bool first, uint64_t start_height,
+   m_last_pull_payload_bytes = payload.size();
+   m_sync_transport_bytes_received.fetch_add(
+     payload.size(), std::memory_order_relaxed);
++  if (reopen_with_adaptive_hint)
++  {
++    m_grpc_stream_client->close();
++    m_grpc_stream_active = false;
++  }
+   return true;
+ }
+ #endif
+diff --git a/src/wallet/wallet2.h b/src/wallet/wallet2.h
+index 4e49464..f4bcecb 100644
+--- a/src/wallet/wallet2.h
++++ b/src/wallet/wallet2.h
+@@ -2085,7 +2085,12 @@ private:
+     uint64_t     m_grpc_stream_next_height = 0;
+     bool         m_grpc_stream_fallback_to_bin = false;
+     bool         m_grpc_stream_endpoint_explicitly_set = false;
+-    uint32_t     m_grpc_stream_chunk_hint = 1000;
++    // Start large for throughput, then adapt to the measured consumer wait.
++    // A user supplied environment value remains a fixed benchmark override.
++    uint32_t     m_grpc_stream_chunk_hint = 256;
++    uint32_t     m_grpc_stream_fast_chunk_streak = 0;
++    uint32_t     m_grpc_stream_timeout_retries = 0;
++    bool         m_grpc_stream_chunk_hint_overridden = false;
+ #endif
+     hashchain m_blockchain;
+     serializable_unordered_map<crypto::hash, unconfirmed_transfer_details> m_unconfirmed_txs;
+-- 
+2.50.1

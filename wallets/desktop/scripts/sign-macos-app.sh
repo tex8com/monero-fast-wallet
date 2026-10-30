@@ -209,6 +209,15 @@ profile_keychain_group="$(security cms -D -i "${profile_path}" | plutil -extract
   exit 1
 }
 
+# Bundle build-host dylibs before signing every nested image with our identity.
+# This retains hardened-runtime Library Validation instead of weakening it to
+# accept a Homebrew/ad-hoc-signed library from outside the application.
+# Homebrew bottles may require the build Mac's newest OS. Build only liblzma
+# from its locally cached, Cargo.lock-authenticated vendored source for the
+# deployment target declared by this app, never relabel a newer-OS binary.
+lzma_library="$(python3 "${script_dir}/prepare-macos-lzma.py" "${app_path}")"
+python3 "${script_dir}/bundle-macos-dylibs.py" --dylib-override "${lzma_library}" "${app_path}"
+
 cp "${profile_path}" "${app_path}/Contents/embedded.provisionprofile"
 
 while IFS= read -r -d '' nested_code; do
@@ -227,6 +236,7 @@ codesign --force "${codesign_keychain_args[@]}" --sign "${identity}" "${timestam
 codesign --force "${codesign_keychain_args[@]}" --sign "${identity}" "${timestamp_args[@]}" --options runtime \
   --entitlements "${entitlements_path}" "${app_path}"
 codesign --verify --deep --strict --verbose=2 "${app_path}"
+python3 "${script_dir}/bundle-macos-dylibs.py" --check "${app_path}"
 signed_team_identifier="$(codesign -dv --verbose=4 "${app_path}" 2>&1 | awk -F= '/^TeamIdentifier=/ { print $2; exit }')"
 [[ "${signed_team_identifier}" == "F98729Y989" ]] || {
   echo "The signed application has no trusted TEX8 Team ID." >&2

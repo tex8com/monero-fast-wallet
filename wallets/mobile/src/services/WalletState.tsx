@@ -38,7 +38,6 @@ import {
   isLedgerSigningCancelledError,
   waitForLedgerSigningSpendReadyWithSingleRebuild,
   waitForLedgerTransport,
-  waitForWalletSnapshotAtHeight,
   type LedgerSigningControl,
 } from './LedgerSigningFlow';
 import { activeSystemUiInterruptionDeadlineMs } from './SystemUiInterruption';
@@ -60,8 +59,8 @@ import {
 } from './IncomingTransactionObserver';
 import {
   nextWalletPublication,
+  nextWalletSyncStartHeight,
   presentWalletSync,
-  syncStartHeightForWallet,
   type WalletPublication,
   type WalletReadinessPhase,
 } from '../../../../packages/wallet-shared/src/walletSync';
@@ -1059,17 +1058,12 @@ export function WalletStateProvider({
       snapshotRefreshInFlightIdsRef.current.add(registration.id);
       try {
         const nextSnapshot = await walletService.snapshot(openedSession);
-        if (!syncStartHeightsRef.current.has(registration.id)) {
-          const startHeight = syncStartHeightForWallet(
-            registration.restoreHeight,
-            nextSnapshot.walletHeight,
-          );
-          if (startHeight !== undefined) {
-            // An import/Ledger scan starts exactly where the owner selected.
-            // A new wallet has no chosen height, so only its first live Core
-            // snapshot may establish the presentation baseline.
-            syncStartHeightsRef.current.set(registration.id, startHeight);
-          }
+        const startHeight = nextWalletSyncStartHeight(
+          syncStartHeightsRef.current.get(registration.id),
+          nextSnapshot,
+        );
+        if (startHeight !== undefined) {
+          syncStartHeightsRef.current.set(registration.id, startHeight);
         }
         const nextCache = {
           ...walletSnapshotsRef.current,
@@ -1089,6 +1083,8 @@ export function WalletStateProvider({
           });
         });
         logWalletEvent('WalletState', 'refreshSnapshot.success', {
+          balancePositive: nextSnapshot.balanceAtomic !== '0',
+          snapshotRevision: nextSnapshot.snapshotRevision ?? 0,
           daemonHeight: nextSnapshot.daemonHeight,
           synchronized: nextSnapshot.synchronized,
           syncStartHeight: syncStartHeightsRef.current.get(registration.id),
@@ -1347,6 +1343,7 @@ export function WalletStateProvider({
       if (!appSecurityReady || appSecurityLocked) {
         logWalletEvent('WalletState', 'incomingSignal.refresh.deferred', {
           reason: !appSecurityReady ? 'appSecurityNotReady' : 'appLocked',
+          eventId: event.eventId,
         });
         return;
       }
@@ -1354,7 +1351,7 @@ export function WalletStateProvider({
         return;
       }
       processedPushEventIdRef.current = event.eventId;
-      logWalletEvent('WalletState', 'incomingSignal.refresh.start');
+      logWalletEvent('WalletState', 'incomingSignal.refresh.start', {eventId: event.eventId});
       try {
         const refreshed =
           await walletService.refreshFastWalletsFromIncomingSignal();
@@ -1401,10 +1398,12 @@ export function WalletStateProvider({
         setError(undefined);
         logWalletEvent('WalletState', 'incomingSignal.refresh.success', {
           refreshedWalletCount: refreshed.length,
+          eventId: event.eventId,
         });
       } catch (reason) {
         logWalletEvent('WalletState', 'incomingSignal.refresh.error', {
           error: errorMessage(reason),
+          eventId: event.eventId,
         });
       }
     },
@@ -1503,28 +1502,14 @@ export function WalletStateProvider({
       }
       nativeRefreshWalletIdsRef.current.add(registrationId);
       nativeRefreshReadyWalletIdsRef.current.delete(registrationId);
-      // A new native refresh is a new measurement window, but an imported
-      // wallet's configured restore height is already an authoritative
-      // baseline. Keep it available while the native coordinator owns the
-      // wallet: live snapshot polling is deliberately paused during that
-      // interval and would otherwise leave the visible scan percentage
-      // indeterminate until synchronization had already completed.
-      const configuredSyncStartHeight = syncStartHeightForWallet(
-        registration.restoreHeight,
-      );
-      if (configuredSyncStartHeight === undefined) {
-        syncStartHeightsRef.current.delete(registrationId);
-      } else {
-        syncStartHeightsRef.current.set(
-          registrationId,
-          configuredSyncStartHeight,
-        );
-      }
+      // Retain the first live session height across queued refreshes/retries.
+      // Never replace it with the wallet's older historical restore point.
+      const liveSyncStartHeight = syncStartHeightsRef.current.get(registrationId);
       if (registeredWalletRef.current?.id === registrationId) {
-        setSyncStartHeight(configuredSyncStartHeight);
+        setSyncStartHeight(liveSyncStartHeight);
       }
       logWalletEvent('WalletState', 'startNativeRefresh.start', {
-        configuredSyncStartHeight,
+        syncStartHeight: liveSyncStartHeight,
         reason,
         registrationId,
       });
@@ -2434,12 +2419,6 @@ export function WalletStateProvider({
       }
       control?.onProgress?.({ phase: 'synchronizing-wallet', transport });
 
-      // Capture a fresh, account-scoped reference immediately before closing
-      // the read companion. Cached UI totals are deliberately insufficient:
-      // the signing wallet must later prove the same account identity and at
-      // least this scan height.
-      const referenceSnapshot = await walletService.snapshot(activeSession);
-
       // Keep the useful read-only companion open while Android/iOS discovers the
       // Ledger. When an encrypted companion exists, keep its native handle open
       // until Core has transferred the view capability directly into the
@@ -2447,6 +2426,9 @@ export function WalletStateProvider({
       // bridge. A wallet without a companion keeps the existing Ledger-export
       // fallback inside Core.
       await stopNativeRefresh(activeSession, 'ledgerSigningRequested');
+      // Read the canonical account state only after its scanner has stopped.
+      // Core adopts this exact immutable state into the signing session below.
+      const referenceSnapshot = await walletService.snapshot(activeSession);
       const hasEncryptedViewCompanion = Boolean(
         activeRegistration.viewOnlyPath &&
           activeRegistration.viewOnlyCredentialKey,
@@ -2488,19 +2470,20 @@ export function WalletStateProvider({
           );
         }
 
-        // Await the native coordinator join before polling. A transport-ready
-        // device or a queued refresh alone is not evidence that this distinct
-        // hardware wallet cache can spend the balance shown by its companion.
-        await walletService.startRefresh(
-          registeredSigningSession,
-          phase => {
-            updateNodeConnectionPhase(activeRegistration.network, phase);
-          },
-        );
+        // Wallets without an encrypted companion retain the legacy scan
+        // fallback. With a companion, Core already adopted its exact cursor and
+        // verified every output and Key Image on the connected Ledger.
+        if (!hasEncryptedViewCompanion) {
+          await walletService.startRefresh(
+            registeredSigningSession,
+            phase => {
+              updateNodeConnectionPhase(activeRegistration.network, phase);
+            },
+          );
+        }
         if (control?.isCancelled?.()) {
           throw new LedgerSigningCancelledError();
         }
-        let currentReferenceSnapshot = referenceSnapshot;
         const signingControl: LedgerSigningControl = {
           isCancelled: control?.isCancelled,
           onProgress: progress =>
@@ -2523,99 +2506,17 @@ export function WalletStateProvider({
             referenceSnapshot,
             readSnapshot: readSigningSnapshot,
             control: signingControl,
-            refreshReferenceAfterMismatch: hasEncryptedViewCompanion
-                  ? async mismatch => {
-                    // Freeze both caches around one scan height. Either refresh can
-                    // cross another block while catching up, so advance whichever
-                    // cache is behind and let the bounded readiness helper repeat
-                    // until spend-state parity is proven at a common height.
-                    await walletService.stopRefresh(registeredSigningSession);
-                    if (
-                      mismatch.signingSnapshot.walletHeight >
-                  currentReferenceSnapshot.walletHeight
-                ) {
-                  await walletService.startRefresh(
-                    activeSession,
-                    phase => {
-                      updateNodeConnectionPhase(
-                        activeRegistration.network,
-                        phase,
-                      );
-                    },
-                  );
-                  try {
-                    currentReferenceSnapshot =
-                      await waitForWalletSnapshotAtHeight({
-                        targetHeight: mismatch.signingSnapshot.walletHeight,
-                        readSnapshot: deadlineMs =>
-                          walletService.snapshotForLedgerSigningReadiness(
-                            activeSession,
-                            deadlineMs,
-                          ),
-                        control: signingControl,
-                      });
-                  } finally {
-                    await walletService
-                      .stopRefresh(activeSession)
-                          .catch(() => undefined);
-                      }
-                    }
-                    if (
-                      currentReferenceSnapshot.walletHeight >
-                      mismatch.signingSnapshot.walletHeight
-                    ) {
-                      const expectedAccountIndex =
-                        currentReferenceSnapshot.spendAccountIndex;
-                      if (expectedAccountIndex === undefined) {
-                        throw new Error(
-                          'The encrypted Ledger viewing wallet does not have a verified transaction account.',
-                        );
-                      }
-                      await walletService.startRefresh(
-                        registeredSigningSession,
-                        phase => {
-                          updateNodeConnectionPhase(
-                            activeRegistration.network,
-                            phase,
-                          );
-                        },
-                      );
-                      try {
-                        await waitForWalletSnapshotAtHeight({
-                          targetHeight:
-                            currentReferenceSnapshot.walletHeight,
-                          readSnapshot: deadlineMs =>
-                            readSigningSnapshot(
-                              deadlineMs,
-                              expectedAccountIndex,
-                            ),
-                          control: signingControl,
-                        });
-                      } finally {
-                        await walletService
-                          .stopRefresh(registeredSigningSession)
-                          .catch(() => undefined);
-                      }
-                    }
-                    return currentReferenceSnapshot;
-                  }
-              : undefined,
             rebuild: async () => {
               if (!hasEncryptedViewCompanion) {
                 throw new Error(
                   'The Ledger signing wallet spend state could not be rebuilt without its encrypted viewing wallet.',
                 );
               }
-              await walletService.rebuildHardwareWalletCacheFromViewOnly(
+              // One bounded retry repeats the same atomic, verified adoption;
+              // it never falls back to a second historical scan.
+              await walletService.primeHardwareWalletFromViewOnly(
                 registeredSigningSession,
                 activeSession,
-                activeRegistration.restoreHeight ?? 0,
-              );
-              await walletService.startRefresh(
-                registeredSigningSession,
-                phase => {
-                  updateNodeConnectionPhase(activeRegistration.network, phase);
-                },
               );
             },
           });

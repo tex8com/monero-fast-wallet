@@ -65,6 +65,9 @@ internal fun showLocalNotification(
     .setContentIntent(contentIntent)
     .build()
   NotificationManagerCompat.from(context).notify(eventId.hashCode(), notification)
+  if (BuildConfig.WALLET_DIAGNOSTICS_ENABLED && eventId.matches(Regex("^evt_[0-9a-f]{64}$"))) {
+    android.util.Log.i("NativeMoneroWallet", "MONERO_WALLET_DIAGNOSTICS native=android event=notification.posted eventId=$eventId")
+  }
 }
 
 class MfwClaimReminderReceiver : BroadcastReceiver() {

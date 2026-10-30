@@ -1,0 +1,991 @@
+From fa5b1c3e0e721b59fed6db44bee0bb161e666265 Mon Sep 17 00:00:00 2001
+From: TEX8 Monero Patch Integrator <monero-patches@tex8.local>
+Date: Wed, 28 Oct 2026 13:21:03 -0500
+Subject: [PATCH] wallet: prefetch and cache public RCT distributions
+
+Share exact-profile singleflight work outside wallet locks. Persist bounded checksummed public snapshots atomically, validate network and block anchors on every reuse, and refresh absolute cumulative tails without changing decoy selection. Cancelled or stale workers cannot publish. Keep signed RPC payment handling for explicit paid-node responses.
+---
+ contrib/epee/include/net/http_client.h |   9 +-
+ contrib/epee/include/net/net_ssl.h     |   3 +
+ src/wallet/CMakeLists.txt              |   1 +
+ src/wallet/api/wallet.cpp              |  13 ++
+ src/wallet/api/wallet.h                |   3 +
+ src/wallet/api/wallet2_api.h           |   3 +
+ src/wallet/rct_distribution_cache.h    | 277 ++++++++++++++++++++++
+ src/wallet/rct_distribution_rpc.cpp    | 303 +++++++++++++++++++++++++
+ src/wallet/rct_distribution_rpc.h      |  17 ++
+ src/wallet/rct_distribution_wire.h     | 109 +++++++++
+ src/wallet/wallet2.cpp                 |  54 ++++-
+ src/wallet/wallet2.h                   |  11 +
+ 12 files changed, 800 insertions(+), 3 deletions(-)
+ create mode 100644 src/wallet/rct_distribution_cache.h
+ create mode 100644 src/wallet/rct_distribution_rpc.cpp
+ create mode 100644 src/wallet/rct_distribution_rpc.h
+ create mode 100644 src/wallet/rct_distribution_wire.h
+
+diff --git a/contrib/epee/include/net/http_client.h b/contrib/epee/include/net/http_client.h
+index 26fa55012..f51a3e59e 100644
+--- a/contrib/epee/include/net/http_client.h
++++ b/contrib/epee/include/net/http_client.h
+@@ -215,7 +215,10 @@ namespace net_utils
+ 				return true;
+ 			}
+ 			//---------------------------------------------------------------------------
+-			virtual bool on_header(const http_response_info &headers)
++			// Optional bounded/cancellable readers inspect raw chunks BEFORE the
++      // header/chunk parsers can accumulate attacker-controlled partial data.
++      virtual bool on_response_chunk(const std::string&) { return true; }
++      virtual bool on_header(const http_response_info &headers)
+       {
+         return true;
+       }
+@@ -342,11 +345,13 @@ namespace net_utils
+ 				{
+ 					if(need_more_data)
+ 					{
+-						if(!m_net_client.recv(recv_buffer, timeout))
++						if (!on_response_chunk(std::string())) return false;
++            if(!m_net_client.recv(recv_buffer, timeout))
+ 						{
+ 							MERROR("Unexpected recv fail");
+ 							m_state = reciev_machine_state_error;
+             }
++            if (!on_response_chunk(recv_buffer)) return false;
+             if(!recv_buffer.size())
+             {
+               //connection is going to be closed
+diff --git a/contrib/epee/include/net/net_ssl.h b/contrib/epee/include/net/net_ssl.h
+index 0ebd89e9c..0f67aebd2 100644
+--- a/contrib/epee/include/net/net_ssl.h
++++ b/contrib/epee/include/net/net_ssl.h
+@@ -102,6 +102,9 @@ namespace net_utils
+     ssl_options_t& operator=(const ssl_options_t&) = default;
+     ssl_options_t& operator=(ssl_options_t&&) = default;
+ 
++    //! Public certificate fingerprints form part of a transport cache identity.
++    const std::vector<std::vector<std::uint8_t>>& cache_fingerprints() const noexcept { return fingerprints_; }
++
+     //! \return False iff ssl is disabled, otherwise true.
+     explicit operator bool() const noexcept { return support != ssl_support_t::e_ssl_support_disabled; }
+ 
+diff --git a/src/wallet/CMakeLists.txt b/src/wallet/CMakeLists.txt
+index bad40f5d6..aebe27cf4 100644
+--- a/src/wallet/CMakeLists.txt
++++ b/src/wallet/CMakeLists.txt
+@@ -35,6 +35,7 @@ set(wallet_sources
+   wallet_args.cpp
+   ringdb.cpp
+   node_rpc_proxy.cpp
++  rct_distribution_rpc.cpp
+   message_store.cpp
+   message_transporter.cpp
+   wallet_rpc_payments.cpp
+diff --git a/src/wallet/api/wallet.cpp b/src/wallet/api/wallet.cpp
+index aa439f550..e66ba9313 100644
+--- a/src/wallet/api/wallet.cpp
++++ b/src/wallet/api/wallet.cpp
+@@ -1188,6 +1188,19 @@ std::string WalletImpl::path() const
+     return m_wallet->path();
+ }
+ 
++void WalletImpl::setRctDistributionCacheDirectory(const std::string& directory)
++{
++    m_wallet->set_rct_distribution_cache_directory(directory);
++}
++bool WalletImpl::prefetchRctDistribution()
++{
++    return m_wallet->prefetch_rct_distribution();
++}
++void WalletImpl::cancelRctDistributionPrefetch()
++{
++    m_wallet->cancel_rct_distribution_prefetch();
++}
++
+ void WalletImpl::stop()
+ {
+     m_wallet->stop();
+diff --git a/src/wallet/api/wallet.h b/src/wallet/api/wallet.h
+index 25e038bf2..0a2173683 100644
+--- a/src/wallet/api/wallet.h
++++ b/src/wallet/api/wallet.h
+@@ -107,6 +107,9 @@ public:
+     std::string publicSpendKey() const override;
+     std::string publicMultisigSignerKey() const override;
+     std::string path() const override;
++    void setRctDistributionCacheDirectory(const std::string& directory) override;
++    bool prefetchRctDistribution() override;
++    void cancelRctDistributionPrefetch() override;
+     void stop() override;
+     bool store(const std::string &path) override;
+     std::string filename() const override;
+diff --git a/src/wallet/api/wallet2_api.h b/src/wallet/api/wallet2_api.h
+index b7594a234..5708b7747 100644
+--- a/src/wallet/api/wallet2_api.h
++++ b/src/wallet/api/wallet2_api.h
+@@ -594,6 +594,9 @@ struct Wallet
+     /*!
+      * \brief stop - interrupts wallet refresh() loop once (doesn't stop background refresh thread)
+      */
++    virtual void setRctDistributionCacheDirectory(const std::string& directory) = 0;
++    virtual bool prefetchRctDistribution() = 0;
++    virtual void cancelRctDistributionPrefetch() = 0;
+     virtual void stop() = 0;
+ 
+     /*!
+diff --git a/src/wallet/rct_distribution_cache.h b/src/wallet/rct_distribution_cache.h
+new file mode 100644
+index 000000000..3ae54dcf1
+--- /dev/null
++++ b/src/wallet/rct_distribution_cache.h
+@@ -0,0 +1,277 @@
++// Copyright (c) 2026, TEX8 contributors. BSD-3-Clause, as the surrounding Core.
++#pragma once
++
++#include <algorithm>
++#include <atomic>
++#include <chrono>
++#include <condition_variable>
++#include <cstdint>
++#include <functional>
++#include <memory>
++#include <mutex>
++#include <stdexcept>
++#include <string>
++#include <thread>
++#include <vector>
++
++namespace tools { namespace rct_cache {
++constexpr uint64_t max_entries = 10000000;
++constexpr uint64_t max_outputs = UINT64_MAX / 4;
++constexpr size_t max_disk_bytes = 320 + size_t(max_entries) * 8;
++constexpr size_t max_wire_bytes = 32 * 1024 * 1024;
++constexpr size_t max_decoded_bytes = 96 * 1024 * 1024;
++
++struct cancellation {
++  std::atomic<bool> stopped{false};
++  const std::chrono::steady_clock::time_point deadline;
++  explicit cancellation(std::chrono::milliseconds budget): deadline(std::chrono::steady_clock::now() + budget) {}
++  void check() const {
++    if (stopped.load() || std::chrono::steady_clock::now() >= deadline)
++      throw std::runtime_error("public distribution work cancelled or expired");
++  }
++};
++struct payment_required : std::runtime_error { payment_required(): std::runtime_error("public RPC requires payment") {} };
++struct distribution {
++  uint64_t start = 0, base = 0;
++  std::vector<uint64_t> cumulative;
++};
++struct snapshot {
++  std::string profile, genesis, end_hash;
++  uint64_t start = 0, end = 0, base = 0;
++  std::vector<uint64_t> cumulative;
++};
++inline bool hash_shape(const std::string& hash) {
++  return hash.size() == 64 && std::all_of(hash.begin(), hash.end(), [](char c) {
++    return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
++  });
++}
++inline void validate(const snapshot& value) {
++  if (!hash_shape(value.profile) || !hash_shape(value.genesis) || !hash_shape(value.end_hash)
++      || value.start > value.end || value.end >= max_entries || value.base > max_outputs
++      || value.cumulative.empty() || value.cumulative.size() > max_entries
++      || value.cumulative.size() != value.end - value.start + 1
++      || value.cumulative.front() < value.base || value.cumulative.back() > max_outputs
++      || !std::is_sorted(value.cumulative.begin(), value.cumulative.end()))
++    throw std::runtime_error("invalid public distribution snapshot");
++}
++using digest_fn = std::function<std::string(const std::string&)>;
++inline void put_u64(std::string& bytes, uint64_t value) {
++  for (unsigned shift = 0; shift < 64; shift += 8) bytes.push_back(char(value >> shift));
++}
++inline uint64_t take_u64(const std::string& bytes, size_t& offset) {
++  if (offset > bytes.size() || bytes.size() - offset < 8) throw std::runtime_error("truncated cache");
++  uint64_t value = 0;
++  for (unsigned shift = 0; shift < 64; shift += 8) value |= uint64_t(uint8_t(bytes[offset++])) << shift;
++  return value;
++}
++inline std::string encode(const snapshot& value, const digest_fn& digest) {
++  validate(value);
++  std::string bytes("MFWRCT02", 8);
++  bytes += value.profile; bytes += value.genesis;
++  put_u64(bytes, value.start); put_u64(bytes, value.end); put_u64(bytes, value.base);
++  bytes += value.end_hash; put_u64(bytes, value.cumulative.size());
++  for (uint64_t count : value.cumulative) put_u64(bytes, count);
++  const std::string checksum = digest(bytes);
++  if (!hash_shape(checksum)) throw std::runtime_error("invalid cache checksum implementation");
++  bytes += checksum;
++  return bytes;
++}
++inline snapshot decode(const std::string& bytes, const std::string& profile,
++                       const std::string& genesis, const digest_fn& digest) {
++  if (bytes.size() < 296 || bytes.size() > max_disk_bytes || bytes.compare(0, 8, "MFWRCT02") != 0
++      || bytes.substr(bytes.size() - 64) != digest(bytes.substr(0, bytes.size() - 64)))
++    throw std::runtime_error("invalid cache schema, size or checksum");
++  snapshot value;
++  value.profile = bytes.substr(8, 64); value.genesis = bytes.substr(72, 64);
++  if (value.profile != profile || value.genesis != genesis) throw std::runtime_error("cache profile mismatch");
++  size_t offset = 136;
++  value.start = take_u64(bytes, offset); value.end = take_u64(bytes, offset); value.base = take_u64(bytes, offset);
++  value.end_hash = bytes.substr(offset, 64); offset += 64;
++  const uint64_t count = take_u64(bytes, offset);
++  if (count == 0 || count > max_entries || count > (bytes.size() - offset) / 8
++      || bytes.size() - offset != count * 8 + 64) throw std::runtime_error("invalid cache count");
++  value.cumulative.reserve(size_t(count));
++  for (uint64_t i = 0; i < count; ++i) value.cumulative.push_back(take_u64(bytes, offset));
++  validate(value);
++  return value;
++}
++
++class source {
++public:
++  virtual ~source() = default;
++  virtual uint64_t height() = 0; // block count, not top block index
++  virtual std::string hash(uint64_t height) = 0;
++  virtual distribution fetch(uint64_t from, uint64_t to) = 0; // both bounds inclusive
++};
++class staged_file {
++public:
++  virtual ~staged_file() = default;
++  virtual bool commit() = 0; // atomic rename only; preparation precedes publication lock
++};
++struct disk_store {
++  std::function<std::string()> load;
++  std::function<std::unique_ptr<staged_file>(const std::string&)> stage;
++};
++using source_factory = std::function<std::unique_ptr<source>(std::shared_ptr<cancellation>)>;
++
++// A job owns its transport and immutable configuration. In particular, it
++// never captures a wallet, HTTP factory owned by a wallet, or wallet mutex.
++class service : public std::enable_shared_from_this<service> {
++public:
++  service(std::string profile, std::string genesis, source_factory factory,
++          digest_fn digest, disk_store disk,
++          std::chrono::milliseconds budget = std::chrono::seconds(180))
++    : profile_(std::move(profile)), genesis_(std::move(genesis)), factory_(std::move(factory)),
++      digest_(std::move(digest)), disk_(std::move(disk)), budget_(budget) {}
++  bool prefetch() {
++    std::lock_guard<std::mutex> lock(mutex_);
++    if (payment_required_) return false;
++    const auto now = std::chrono::steady_clock::now();
++    const auto delay = last_success_ ? std::chrono::seconds(15) : std::chrono::seconds(5);
++    if ((!job_ || job_->done) && now - last_attempt_ < delay) return true;
++    return start_locked();
++  }
++  bool get(uint64_t& start, std::vector<uint64_t>& cumulative) {
++    std::unique_lock<std::mutex> lock(mutex_);
++    if (payment_required_ || !start_locked()) return false;
++    const auto own_job = job_;
++    const auto deadline = own_job->token->deadline + std::chrono::seconds(6);
++    if (!condition_.wait_until(lock, deadline, [&] { return own_job->done; })) {
++      own_job->token->stopped = true; own_job->done = true; own_job->success = false;
++      if (job_ == own_job) ++generation_;
++      condition_.notify_all(); return false;
++    }
++    if (!own_job->success || own_job->token->stopped || !own_job->result) return false;
++    start = own_job->result->start;
++    cumulative = own_job->result->cumulative;
++    return true;
++  }
++  bool requires_payment() { std::lock_guard<std::mutex> lock(mutex_); return payment_required_; }
++  void cancel() {
++    std::lock_guard<std::mutex> lock(mutex_);
++    if (job_ && !job_->done) {
++      job_->token->stopped = true; job_->done = true; job_->success = false;
++    }
++    ++generation_; last_success_ = false; last_attempt_ = {};
++    condition_.notify_all();
++  }
++private:
++  struct job {
++    std::shared_ptr<cancellation> token;
++    std::shared_ptr<const snapshot> result;
++    uint64_t generation;
++    bool done = false, success = false;
++  };
++  bool start_locked() {
++    if (job_ && !job_->done) return true;
++    last_attempt_ = std::chrono::steady_clock::now();
++    auto next = std::make_shared<job>();
++    next->token = std::make_shared<cancellation>(budget_);
++    next->generation = ++generation_;
++    job_ = next;
++    auto self = shared_from_this();
++    try { std::thread([self, next] { self->run(next); }).detach(); }
++    catch (...) { next->done = true; condition_.notify_all(); return false; }
++    return true;
++  }
++  std::shared_ptr<const snapshot> refresh(source& rpc, const std::shared_ptr<cancellation>& token, bool& changed) {
++    token->check();
++    if (rpc.hash(0) != genesis_) throw std::runtime_error("public distribution network mismatch");
++    token->check();
++    const uint64_t height = rpc.height();
++    if (height == 0 || height > max_entries) throw std::runtime_error("invalid daemon height");
++    const uint64_t end = height - 1;
++    std::shared_ptr<const snapshot> previous;
++    { std::lock_guard<std::mutex> lock(mutex_); previous = value_; }
++    if (!previous && disk_.load) {
++      try { previous = std::make_shared<snapshot>(decode(disk_.load(), profile_, genesis_, digest_)); }
++      catch (...) {} // A bad disk entry can never become a usable cache hit.
++    }
++    token->check();
++    const std::string end_hash = rpc.hash(end);
++    if (!hash_shape(end_hash)) throw std::runtime_error("invalid daemon block hash");
++    bool retain = previous && previous->end <= end && rpc.hash(previous->end) == previous->end_hash;
++    if (retain && previous->end == end) {
++      token->check();
++      changed = false;
++      return previous;
++    }
++    // Matching the retained prefix's LAST hash binds the whole prefix. If it
++    // changes (including equal-height/deep reorgs), refetch the full public
++    // distribution. A fixed overlap by itself cannot establish this property.
++    const uint64_t from = retain ? previous->end + 1 : 0;
++    token->check();
++    distribution response = rpc.fetch(from, end);
++    token->check();
++    if (response.start > end || response.cumulative.empty() || response.cumulative.size() > max_entries
++        || response.cumulative.size() != end - response.start + 1
++        || (retain && response.start != from) || (!retain && response.base != 0)
++        || response.base > max_outputs || response.cumulative.front() < response.base
++        || response.cumulative.back() > max_outputs
++        || !std::is_sorted(response.cumulative.begin(), response.cumulative.end())
++        || (retain && response.base != previous->cumulative.back()))
++      throw std::runtime_error("invalid cumulative distribution response");
++    // to_height is fixed to the observed tip. Check its hash after the body,
++    // as well as the retained prefix anchor, before publishing any bytes.
++    if (rpc.height() <= end || rpc.hash(end) != end_hash
++        || (retain && rpc.hash(previous->end) != previous->end_hash))
++      throw std::runtime_error("public distribution chain changed");
++    token->check();
++    auto result = std::make_shared<snapshot>();
++    result->profile = profile_; result->genesis = genesis_; result->end_hash = end_hash; result->end = end;
++    if (retain) {
++      result->start = previous->start; result->base = previous->base;
++      result->cumulative = previous->cumulative;
++      result->cumulative.insert(result->cumulative.end(), response.cumulative.begin(), response.cumulative.end());
++    } else {
++      result->start = response.start; result->base = response.base;
++      result->cumulative = std::move(response.cumulative);
++    }
++    validate(*result);
++    return result;
++  }
++  void run(const std::shared_ptr<job>& work) {
++    try {
++      const auto& token = work->token;
++      token->check();
++      auto rpc = factory_(token);
++      bool changed = true;
++      auto next = refresh(*rpc, token, changed);
++      token->check();
++      std::unique_ptr<staged_file> staged;
++      if (changed && disk_.stage) { try { staged = disk_.stage(encode(*next, digest_)); } catch (...) {} }
++      std::lock_guard<std::mutex> lock(mutex_);
++      token->check();
++      if (generation_ != work->generation || work->done) return;
++      // Result ownership is per job: a later refresh cannot turn a successful
++      // waiter's result into a false error before that waiter wakes up.
++      if (staged) staged->commit();
++      value_ = next; work->result = std::move(next);
++      work->success = true; work->done = true; last_success_ = true;
++      condition_.notify_all();
++    } catch (const payment_required&) {
++      std::lock_guard<std::mutex> lock(mutex_);
++      work->done = true; work->success = false;
++      if (job_ == work && work->generation == generation_ && !work->token->stopped) { payment_required_ = true; last_success_ = false; }
++      condition_.notify_all();
++    } catch (...) {
++      std::lock_guard<std::mutex> lock(mutex_);
++      work->done = true; work->success = false;
++      if (job_ == work) last_success_ = false;
++      condition_.notify_all();
++    }
++  }
++  const std::string profile_, genesis_;
++  const source_factory factory_;
++  const digest_fn digest_;
++  const disk_store disk_;
++  const std::chrono::milliseconds budget_;
++  std::mutex mutex_;
++  std::condition_variable condition_;
++  std::shared_ptr<job> job_;
++  std::shared_ptr<const snapshot> value_;
++  std::chrono::steady_clock::time_point last_attempt_{};
++  uint64_t generation_ = 0;
++  bool last_success_ = false, payment_required_ = false;
++};
++} }
+diff --git a/src/wallet/rct_distribution_rpc.cpp b/src/wallet/rct_distribution_rpc.cpp
+new file mode 100644
+index 000000000..9bc0b5219
+--- /dev/null
++++ b/src/wallet/rct_distribution_rpc.cpp
+@@ -0,0 +1,303 @@
++// Copyright (c) 2026, TEX8 contributors. BSD-3-Clause, as the surrounding Core.
++#include "rct_distribution_rpc.h"
++#include "rct_distribution_wire.h"
++#include "net/http.h"
++#include "net/net_parse_helpers.h"
++#include "rpc/core_rpc_server_commands_defs.h"
++#include "storages/http_abstract_invoke.h"
++#include "crypto/hash.h"
++#include "string_tools.h"
++#include "common/util.h"
++#include "memwipe.h"
++#include <boost/filesystem.hpp>
++#include <fstream>
++#include <map>
++#include <zlib.h>
++#ifdef _WIN32
++#include <io.h>
++#include <fcntl.h>
++#include <sys/stat.h>
++#else
++#include <fcntl.h>
++#include <sys/stat.h>
++#include <unistd.h>
++#endif
++
++namespace tools { namespace rct_cache {
++namespace {
++std::mutex registry_mutex;
++std::string root_directory;
++std::map<std::string, std::weak_ptr<service>> registry;
++std::map<std::string, std::weak_ptr<service>> active_disk_profile;
++std::string digest(const std::string& bytes) {
++  return epee::string_tools::pod_to_hex(crypto::cn_fast_hash(bytes.data(), bytes.size()));
++}
++void identity_field(std::string& value, const std::string& field) {
++  put_u64(value, field.size()); value += field;
++}
++std::string profile_id(const profile& config, bool include_proxy) {
++  epee::net_utils::http::url_content url{};
++  if (!epee::net_utils::parse_url(config.address, url)) throw std::runtime_error("invalid distribution daemon profile");
++  std::string host = url.host;
++  std::transform(host.begin(), host.end(), host.begin(), [](unsigned char c) { return char(std::tolower(c)); });
++  std::string material("MFWRCT-profile-2");
++  put_u64(material, config.network);
++  identity_field(material, config.genesis); identity_field(material, host);
++  const uint64_t port = url.port ? url.port : (url.schema == "https" ? 443 : 80);
++  put_u64(material, port);
++  std::string schema = url.schema.empty() ? "http" : url.schema;
++  std::transform(schema.begin(), schema.end(), schema.begin(), [](unsigned char c) { return char(std::tolower(c)); });
++  identity_field(material, schema);
++  // The active flight is exact-proxy bound. Public disk data can survive an
++  // embedded Tor loopback-port change; every reuse validates hashes through
++  // the CURRENT route before these bytes can reach decoy selection.
++  if (include_proxy) identity_field(material, config.proxy);
++  put_u64(material, uint64_t(config.ssl.support)); put_u64(material, uint64_t(config.ssl.verification));
++  identity_field(material, config.ssl.ca_path);
++  identity_field(material, config.ssl.auth.certificate_path);
++  identity_field(material, config.ssl.auth.private_key_path);
++  for (const auto& fingerprint : config.ssl.cache_fingerprints())
++    identity_field(material, std::string(fingerprint.begin(), fingerprint.end()));
++  put_u64(material, bool(config.login));
++  if (config.login) {
++    identity_field(material, config.login->username);
++    // Do not turn the public disk filename into an offline password oracle.
++    // Exact credentials partition active jobs only; disk reuse must first
++    // authenticate fresh hash queries with the CURRENT credentials.
++    if (include_proxy) {
++      put_u64(material, config.login->password.size());
++      material.append(config.login->password.data(), config.login->password.size());
++    }
++  }
++  const std::string result = digest(material);
++  if (!material.empty()) memwipe(&material[0], material.size());
++  return result;
++}
++
++// No cross-thread disconnect(): upstream's disconnect takes the same lock as
++// invoke and cannot interrupt it. The worker instead owns the whole client,
++// checks cancellation for every body piece and bounds each blocking read.
++class bounded_client : public net::http::client {
++public:
++  explicit bounded_client(std::shared_ptr<cancellation> token): token_(std::move(token)) {}
++  void begin(size_t limit) { token_->check(); received_ = 0; raw_received_ = 0; header_.clear(); header_done_ = false; aborted_ = false; limit_ = limit; }
++  bool on_response_chunk(const std::string& piece) override {
++    if (!alive() || piece.size() > limit_ + 65536 - raw_received_) { aborted_ = true; return false; }
++    raw_received_ += piece.size();
++    if (!header_done_) {
++      header_.append(piece, 0, std::min<size_t>(piece.size(), 65536 - header_.size()));
++      header_done_ = header_.find("\r\n\r\n") != std::string::npos;
++      if (!header_done_ && header_.size() == 65536) { aborted_ = true; return false; }
++    }
++    return true;
++  }
++  bool handle_target_data(std::string& piece) override {
++    if (!alive() || piece.size() > limit_ - received_) { aborted_ = true; return false; }
++    received_ += piece.size();
++    return net::http::client::handle_target_data(piece);
++  }
++  bool on_header(const epee::net_utils::http::http_response_info&) override { if (!alive()) aborted_ = true; return !aborted_; }
++  bool aborted() const { return aborted_; }
++private:
++  bool alive() const { try { token_->check(); return true; } catch (...) { return false; } }
++  std::shared_ptr<cancellation> token_;
++  std::string header_;
++  bool header_done_ = false, aborted_ = false;
++  size_t received_ = 0, raw_received_ = 0, limit_ = max_wire_bytes;
++};
++std::string bounded_inflate(const std::string& bytes, const std::shared_ptr<cancellation>& token) {
++  z_stream stream{};
++  if (inflateInit2(&stream, 15 + 16) != Z_OK) throw std::runtime_error("distribution gzip initialization failed");
++  struct cleanup { z_stream& value; ~cleanup() { inflateEnd(&value); } } guard{stream};
++  stream.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(bytes.data()));
++  stream.avail_in = uInt(bytes.size());
++  std::string result;
++  char chunk[32768];
++  int status;
++  do {
++    token->check();
++    stream.next_out = reinterpret_cast<Bytef*>(chunk); stream.avail_out = sizeof(chunk);
++    status = inflate(&stream, Z_NO_FLUSH);
++    const size_t produced = sizeof(chunk) - stream.avail_out;
++    if (produced > max_decoded_bytes - result.size()) throw std::runtime_error("distribution gzip limit exceeded");
++    result.append(chunk, produced);
++    if (status != Z_OK && status != Z_STREAM_END) throw std::runtime_error("invalid distribution gzip body");
++  } while (status != Z_STREAM_END);
++  if (stream.avail_in != 0) throw std::runtime_error("trailing distribution gzip data");
++  return result;
++}
++class rpc_source : public source {
++public:
++  rpc_source(profile config, std::shared_ptr<cancellation> token): token_(std::move(token)), client_(token_) {
++    if (!client_.set_proxy(config.proxy) || !client_.set_server(config.address, config.login, config.ssl))
++      throw std::runtime_error("distribution transport configuration failed");
++    // SOCKS/Onion setup has a separate bounded allowance; body reads stay
++    // short so cancellation can stop slow/trickled responses promptly.
++    if (!client_.connect(std::chrono::seconds(30))) throw std::runtime_error("distribution transport connection failed");
++    token_->check();
++  }
++  uint64_t height() override {
++    cryptonote::COMMAND_RPC_GET_INFO::request request{};
++    cryptonote::COMMAND_RPC_GET_INFO::response response{};
++    json("get_info", request, response);
++    if (response.height == 0 || response.height > max_entries) throw std::runtime_error("distribution tip outside limits");
++    return response.height;
++  }
++  std::string hash(uint64_t height) override {
++    cryptonote::COMMAND_RPC_GET_BLOCK_HEADER_BY_HEIGHT::request request{};
++    cryptonote::COMMAND_RPC_GET_BLOCK_HEADER_BY_HEIGHT::response response{};
++    request.height = height; request.fill_pow_hash = false;
++    json("get_block_header_by_height", request, response);
++    if (response.block_header.height != height || response.block_header.orphan_status
++        || !hash_shape(response.block_header.hash)) throw std::runtime_error("invalid distribution block anchor");
++    return response.block_header.hash;
++  }
++  distribution fetch(uint64_t from, uint64_t to) override {
++    token_->check();
++    cryptonote::COMMAND_RPC_GET_OUTPUT_DISTRIBUTION::request request{};
++    request.amounts = {0}; request.from_height = from; request.to_height = to;
++    request.binary = true; request.compress = true; request.cumulative = from != 0;
++    // The cold full response uses compact per-block counts just like upstream;
++    // incremental tails use absolute cumulative values, never base+value.
++    epee::byte_slice body;
++    if (!epee::serialization::store_t_to_binary(request, body, 1024)) throw std::runtime_error("distribution request encoding failed");
++    client_.begin(max_wire_bytes);
++    const epee::net_utils::http::http_response_info* response = nullptr;
++    if (!client_.invoke("/get_output_distribution.bin", "POST",
++        boost::string_ref(reinterpret_cast<const char*>(body.data()), body.size()), std::chrono::seconds(5), &response)
++        || client_.aborted() || !response || response->m_response_code != 200 || response->m_body.size() > max_wire_bytes)
++      throw std::runtime_error("public distribution request failed");
++    token_->check();
++    std::string bytes = response->m_header_info.m_content_encoding.find("gzip") != std::string::npos
++      ? bounded_inflate(response->m_body, token_) : response->m_body;
++    token_->check();
++    return wire_reader(bytes).read(to, request.cumulative);
++  }
++private:
++  template<class Request, class Response> void json(const char* method, Request& request, Response& response) {
++    token_->check(); client_.begin(256 * 1024);
++    const bool received = epee::net_utils::invoke_http_json_rpc("/json_rpc", method, request, response, client_, std::chrono::seconds(5));
++    if (received && !client_.aborted() && response.status == CORE_RPC_STATUS_PAYMENT_REQUIRED) throw payment_required();
++    if (!received || client_.aborted() || response.status != CORE_RPC_STATUS_OK) throw std::runtime_error("distribution anchor RPC failed");
++    token_->check();
++  }
++  std::shared_ptr<cancellation> token_;
++  bounded_client client_;
++};
++
++class atomic_file : public staged_file {
++public:
++  atomic_file(boost::filesystem::path target, const std::string& bytes): target_(std::move(target)) {
++    temporary_ = target_.parent_path() / boost::filesystem::unique_path(".rct-%%%%-%%%%-%%%%-%%%%.tmp");
++#ifdef _WIN32
++    const int fd = _wopen(temporary_.wstring().c_str(), _O_CREAT | _O_EXCL | _O_WRONLY | _O_BINARY, _S_IREAD | _S_IWRITE);
++#else
++    const int fd = ::open(temporary_.string().c_str(), O_CREAT | O_EXCL | O_WRONLY | O_NOFOLLOW, 0600);
++#endif
++    if (fd < 0) throw std::runtime_error("public cache staging unavailable");
++    bool ok = true;
++    size_t offset = 0;
++    while (offset < bytes.size()) {
++#ifdef _WIN32
++      const int written = _write(fd, bytes.data() + offset, unsigned(std::min<size_t>(bytes.size() - offset, 1024 * 1024)));
++#else
++      const auto written = ::write(fd, bytes.data() + offset, bytes.size() - offset);
++#endif
++      if (written < 0 && errno == EINTR) continue;
++      if (written <= 0) { ok = false; break; }
++      offset += size_t(written);
++    }
++#ifdef _WIN32
++    if (_commit(fd) != 0) ok = false;
++    _close(fd);
++#else
++    if (::fsync(fd) != 0) ok = false;
++    ::close(fd);
++#endif
++    if (!ok) { boost::system::error_code ignored; boost::filesystem::remove(temporary_, ignored); throw std::runtime_error("public cache staging failed"); }
++  }
++  ~atomic_file() override { boost::system::error_code ignored; boost::filesystem::remove(temporary_, ignored); }
++  bool commit() override { return !tools::replace_file(temporary_.string(), target_.string()); }
++private:
++  boost::filesystem::path target_, temporary_;
++};
++disk_store disk(const std::string& directory, const std::string& key) {
++  if (directory.empty()) return {};
++  const boost::filesystem::path root(directory);
++  boost::filesystem::create_directories(root);
++  if (boost::filesystem::is_symlink(boost::filesystem::symlink_status(root)) || !boost::filesystem::is_directory(root))
++    throw std::runtime_error("invalid public cache directory");
++  boost::filesystem::permissions(root, boost::filesystem::owner_all);
++  const auto path = root / (key + ".rct");
++  disk_store result;
++  result.load = [path] {
++#ifdef _WIN32
++    const int fd = _wopen(path.wstring().c_str(), _O_RDONLY | _O_BINARY);
++    struct _stat64 info{};
++    const bool valid = fd >= 0 && _fstat64(fd, &info) == 0 && (info.st_mode & _S_IFMT) == _S_IFREG;
++#else
++    const int fd = ::open(path.string().c_str(), O_RDONLY | O_NOFOLLOW);
++    struct stat info{};
++    const bool valid = fd >= 0 && ::fstat(fd, &info) == 0 && S_ISREG(info.st_mode);
++#endif
++    struct close_file { int fd; ~close_file() { if (fd >= 0) {
++#ifdef _WIN32
++      _close(fd);
++#else
++      ::close(fd);
++#endif
++    } } } guard{fd};
++    if (!valid || info.st_size < 0 || uint64_t(info.st_size) > max_disk_bytes)
++      throw std::runtime_error("public cache file outside limits");
++    std::string bytes(size_t(info.st_size), '\0');
++    size_t offset = 0;
++    while (offset < bytes.size()) {
++#ifdef _WIN32
++      const int got = _read(fd, &bytes[offset], unsigned(std::min<size_t>(bytes.size() - offset, 1024 * 1024)));
++#else
++      const auto got = ::read(fd, &bytes[offset], bytes.size() - offset);
++#endif
++      if (got < 0 && errno == EINTR) continue;
++      if (got <= 0) throw std::runtime_error("truncated public cache file");
++      offset += size_t(got);
++    }
++    return bytes;
++  };
++  result.stage = [path](const std::string& bytes) -> std::unique_ptr<staged_file> {
++    if (bytes.size() > max_disk_bytes) throw std::runtime_error("public cache file outside limits");
++    return std::unique_ptr<staged_file>(new atomic_file(path, bytes));
++  };
++  return result;
++}
++}
++void set_directory(const std::string& directory) {
++  std::lock_guard<std::mutex> lock(registry_mutex);
++  root_directory = directory;
++}
++std::shared_ptr<service> acquire(const profile& config) {
++  const std::string key = profile_id(config, true);
++  const std::string disk_key = profile_id(config, false);
++  std::lock_guard<std::mutex> lock(registry_mutex);
++  const std::string registry_key = root_directory + "/" + key;
++  if (root_directory.empty()) return {};
++  auto existing = registry[registry_key].lock();
++  const std::string disk_registry_key = root_directory + "/" + disk_key;
++  auto previous_route = active_disk_profile[disk_registry_key].lock();
++  if (previous_route && previous_route != existing) previous_route->cancel();
++  if (existing) { active_disk_profile[disk_registry_key] = existing; return existing; }
++  // Copy only public network settings and transport credentials into the
++  // factory. No wallet, wallet-owned factory, view/spend key or mutex escapes.
++  auto factory = [config](std::shared_ptr<cancellation> token) -> std::unique_ptr<source> {
++    return std::unique_ptr<source>(new rpc_source(config, std::move(token)));
++  };
++  disk_store store;
++  try { store = disk(root_directory, disk_key); } catch (...) {}
++  auto created = std::make_shared<service>(disk_key, config.genesis, std::move(factory), digest, std::move(store));
++  active_disk_profile[disk_registry_key] = created;
++  registry[registry_key] = created;
++  for (auto it = registry.begin(); it != registry.end();) {
++    if (it->second.expired()) it = registry.erase(it); else ++it;
++  }
++  return created;
++}
++} }
+diff --git a/src/wallet/rct_distribution_rpc.h b/src/wallet/rct_distribution_rpc.h
+new file mode 100644
+index 000000000..5dd27c8cc
+--- /dev/null
++++ b/src/wallet/rct_distribution_rpc.h
+@@ -0,0 +1,17 @@
++// Copyright (c) 2026, TEX8 contributors. BSD-3-Clause, as the surrounding Core.
++#pragma once
++#include "rct_distribution_cache.h"
++#include "net/abstract_http_client.h"
++#include "net/net_ssl.h"
++#include <boost/optional.hpp>
++
++namespace tools { namespace rct_cache {
++struct profile {
++  uint8_t network = 0;
++  std::string address, proxy, genesis;
++  boost::optional<epee::net_utils::http::login> login;
++  epee::net_utils::ssl_options_t ssl{epee::net_utils::ssl_support_t::e_ssl_support_autodetect};
++};
++void set_directory(const std::string& directory);
++std::shared_ptr<service> acquire(const profile& config);
++} }
+diff --git a/src/wallet/rct_distribution_wire.h b/src/wallet/rct_distribution_wire.h
+new file mode 100644
+index 000000000..040f6ac6c
+--- /dev/null
++++ b/src/wallet/rct_distribution_wire.h
+@@ -0,0 +1,109 @@
++// Copyright (c) 2026, TEX8 contributors. BSD-3-Clause, as the surrounding Core.
++#pragma once
++#include "rct_distribution_cache.h"
++#include <cstring>
++
++namespace tools { namespace rct_cache {
++// Bounded EPEE reader for the public distribution response. In particular,
++// no untrusted array count is handed to an allocating generic deserializer.
++class wire_reader {
++public:
++  wire_reader(const std::string& bytes): bytes_(bytes) {}
++  uint64_t pod(size_t width) {
++    if (width > 8 || offset_ > bytes_.size() || bytes_.size() - offset_ < width) fail();
++    uint64_t result = 0;
++    for (size_t i = 0; i < width; ++i) result |= uint64_t(uint8_t(bytes_[offset_++])) << (8 * i);
++    return result;
++  }
++  uint64_t count(uint64_t maximum) {
++    if (offset_ >= bytes_.size()) fail();
++    const size_t width = size_t(1) << (uint8_t(bytes_[offset_]) & 3);
++    const uint64_t value = pod(width) >> 2;
++    if (value > maximum) fail();
++    return value;
++  }
++  std::string text(size_t size) {
++    if (offset_ > bytes_.size() || size > bytes_.size() - offset_) fail();
++    std::string result = bytes_.substr(offset_, size); offset_ += size; return result;
++  }
++  distribution read(uint64_t end, bool cumulative) {
++    if (bytes_.size() > max_decoded_bytes || pod(4) != 0x01011101 || pod(4) != 0x01020101 || pod(1) != 1) fail();
++    const auto fields = count(16);
++    bool ok = false, found = false, status_seen = false;
++    distribution result;
++    std::string status;
++    for (uint64_t i = 0; i < fields; ++i) {
++      const auto name = text(size_t(pod(1))); const auto type = pod(1);
++      if (name == "status") { if (status_seen || type != 10) fail(); status_seen = true; status = text(size_t(count(64))); ok = status == "OK"; }
++      else if (name == "distributions") {
++        if (found || type != (0x80 | 12) || count(1) != 1) fail();
++        found = true; result = item(end, cumulative);
++      } else skip(type);
++    }
++    if (offset_ != bytes_.size()) fail();
++    if (status == "PAYMENT_REQUIRED") throw payment_required();
++    if (!ok || !found) fail();
++    return result;
++  }
++private:
++  distribution item(uint64_t end, bool cumulative) {
++    distribution result;
++    const auto fields = count(12);
++    bool binary = false, compressed = false;
++    uint64_t amount = UINT64_MAX;
++    std::string data;
++    unsigned seen = 0;
++    for (uint64_t i = 0; i < fields; ++i) {
++      const auto name = text(size_t(pod(1))); const auto type = pod(1);
++      unsigned bit = 0;
++      if (name == "start_height") { bit = 1; if (type != 5) fail(); result.start = pod(8); }
++      else if (name == "base") { bit = 2; if (type != 5) fail(); result.base = pod(8); }
++      else if (name == "amount") { bit = 4; if (type != 5) fail(); amount = pod(8); }
++      else if (name == "binary") { bit = 8; if (type != 11) fail(); binary = pod(1) == 1; }
++      else if (name == "compress") { bit = 16; if (type != 11) fail(); compressed = pod(1) == 1; }
++      else if (name == "compressed_data") {
++        bit = 32; if (type != 10 && type != (0x80 | 8)) fail();
++        data = text(size_t(count(max_decoded_bytes)));
++      } else skip(type);
++      if (seen & bit) fail();
++      seen |= bit;
++    }
++    if (seen != 63 || amount != 0 || !binary || !compressed || result.start > end || end >= max_entries
++        || result.base > max_outputs) fail();
++    const uint64_t expected = end - result.start + 1;
++    result.cumulative.reserve(size_t(expected));
++    uint64_t total = result.base;
++    size_t cursor = 0;
++    while (cursor < data.size()) {
++      uint64_t value = 0; unsigned shift = 0; uint8_t byte;
++      do {
++        if (cursor >= data.size() || shift > 63) fail();
++        byte = uint8_t(data[cursor++]);
++        if (shift == 63 && byte > 1) fail();
++        value |= uint64_t(byte & 127) << shift; shift += 7;
++      } while (byte & 128);
++      if ((byte == 0 && shift > 7) || result.cumulative.size() >= expected) fail();
++      if (!cumulative) {
++        if (value > max_outputs - total) fail();
++        total += value; value = total;
++      }
++      if (value > max_outputs) fail();
++      result.cumulative.push_back(value);
++    }
++    if (result.cumulative.size() != expected) fail();
++    return result;
++  }
++  void skip(uint64_t type) {
++    switch (type) {
++      case 5: pod(8); break;
++      case 6: pod(4); break;
++      case 7: pod(2); break;
++      case 8: case 11: pod(1); break;
++      case 10: text(size_t(count(256))); break;
++      default: fail();
++    }
++  }
++  [[noreturn]] static void fail() { throw std::runtime_error("invalid bounded distribution wire response"); }
++  const std::string& bytes_; size_t offset_ = 0;
++};
++} }
+diff --git a/src/wallet/wallet2.cpp b/src/wallet/wallet2.cpp
+index e7ee39690..de1b135e2 100644
+--- a/src/wallet/wallet2.cpp
++++ b/src/wallet/wallet2.cpp
+@@ -1434,6 +1434,19 @@ bool wallet2::set_daemon(std::string daemon_address, boost::optional<epee::net_u
+   const std::string address = get_daemon_address();
+   MINFO("setting daemon to " << address);
+ 
++  {
++    std::lock_guard<std::mutex> cache_lock(m_rct_cache_config_mutex);
++    m_rct_cache_profile.network = static_cast<uint8_t>(m_nettype);
++    m_rct_cache_profile.address = address;
++    m_rct_cache_profile.login = get_daemon_login();
++    m_rct_cache_profile.ssl = ssl_options;
++    cryptonote::block genesis;
++    generate_genesis(genesis);
++    m_rct_cache_profile.genesis = epee::string_tools::pod_to_hex(cryptonote::get_block_hash(genesis));
++    m_rct_cache_configured = true;
++    m_rct_cache.reset();
++  }
++
+   // init parallel fetch clients before moving ssl_options
+   m_pull_clients.clear();
+   if (m_http_client_factory)
+@@ -1458,7 +1471,13 @@ bool wallet2::set_daemon(std::string daemon_address, boost::optional<epee::net_u
+ //----------------------------------------------------------------------------------------------------
+ bool wallet2::set_proxy(const std::string &address)
+ {
+-  return m_http_client->set_proxy(address);
++  const bool configured = m_http_client->set_proxy(address);
++  if (configured) {
++    std::lock_guard<std::mutex> cache_lock(m_rct_cache_config_mutex);
++    m_rct_cache_profile.proxy = address;
++    m_rct_cache.reset();
++  }
++  return configured;
+ }
+ //----------------------------------------------------------------------------------------------------
+ #ifdef MONERO_GRPC_STREAM
+@@ -5876,8 +5895,41 @@ bool wallet2::refresh(bool trusted_daemon, uint64_t & blocks_fetched, bool& rece
+   return ok;
+ }
+ //----------------------------------------------------------------------------------------------------
++std::shared_ptr<rct_cache::service> wallet2::rct_distribution_service()
++{
++  std::lock_guard<std::mutex> lock(m_rct_cache_config_mutex);
++  if (!m_rct_cache_configured) return {};
++  m_rct_cache = rct_cache::acquire(m_rct_cache_profile);
++  return m_rct_cache;
++}
++void wallet2::set_rct_distribution_cache_directory(const std::string& directory)
++{
++  rct_cache::set_directory(directory);
++}
++bool wallet2::prefetch_rct_distribution()
++{
++  try { auto cache = rct_distribution_service(); return cache && cache->prefetch(); }
++  catch (...) { return false; }
++}
++void wallet2::cancel_rct_distribution_prefetch()
++{
++  std::shared_ptr<rct_cache::service> cache;
++  { std::lock_guard<std::mutex> lock(m_rct_cache_config_mutex); cache = m_rct_cache; }
++  if (cache) cache->cancel();
++}
++//----------------------------------------------------------------------------------------------------
+ bool wallet2::get_rct_distribution(uint64_t &start_height, std::vector<uint64_t> &distribution)
+ {
++  try {
++    auto cache = rct_distribution_service();
++    if (cache) {
++      if (cache->get(start_height, distribution)) return true;
++      // Preserve upstream's signed/accounted RPC-payment path only when the
++      // cache explicitly encountered PAYMENT_REQUIRED. Invalid hash, wire,
++      // disk, timeout or cancellation errors never activate this exception.
++      if (!cache->requires_payment()) return false;
++    }
++  } catch (...) { return false; }
+   MDEBUG("Requesting rct distribution");
+ 
+   cryptonote::COMMAND_RPC_GET_OUTPUT_DISTRIBUTION::request req = AUTO_VAL_INIT(req);
+diff --git a/src/wallet/wallet2.h b/src/wallet/wallet2.h
+index 12e47c7ff..cc888bcc9 100644
+--- a/src/wallet/wallet2.h
++++ b/src/wallet/wallet2.h
+@@ -30,6 +30,8 @@
+ 
+ #pragma once
+ 
++#include "rct_distribution_rpc.h"
++#include <mutex>
+ #include <memory>
+ 
+ #include <boost/program_options/options_description.hpp>
+@@ -1139,6 +1141,10 @@ private:
+     const std::string& get_grpc_stream_endpoint() const { return m_grpc_stream_endpoint; }
+ #endif
+ 
++    void set_rct_distribution_cache_directory(const std::string& directory);
++    bool prefetch_rct_distribution();
++    void cancel_rct_distribution_prefetch();
++
+     void stop() { m_run.store(false, std::memory_order_relaxed); m_message_store.stop(); }
+ 
+     i_wallet2_callback* callback() const { return m_callback; }
+@@ -2033,6 +2039,7 @@ private:
+     hw::device& lookup_device(const std::string & device_descriptor);
+ 
+     bool get_rct_distribution(uint64_t &start_height, std::vector<uint64_t> &distribution);
++    std::shared_ptr<rct_cache::service> rct_distribution_service();
+ 
+     uint64_t get_segregation_fork_height() const;
+ 
+@@ -2062,6 +2069,10 @@ private:
+     cryptonote::account_base m_account;
+     boost::optional<epee::net_utils::http::login> m_daemon_login;
+     std::string m_daemon_address;
++    std::mutex m_rct_cache_config_mutex;
++    rct_cache::profile m_rct_cache_profile;
++    bool m_rct_cache_configured = false;
++    std::shared_ptr<rct_cache::service> m_rct_cache;
+     std::string m_proxy;
+     std::string m_wallet_file;
+     std::string m_keys_file;
+-- 
+2.54.0 (Apple Git-157)
+

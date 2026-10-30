@@ -7,6 +7,13 @@ import type { WalletTransaction } from '../../services/NativeMoneroWallet';
 import { useWalletState } from '../../services/WalletState';
 import TransactionDetailScreen from '../TransactionDetailScreen';
 
+jest.mock('@react-navigation/native', () => ({
+  useFocusEffect: (effect: () => void | (() => void)) => {
+    const ReactModule = require('react');
+    ReactModule.useEffect(effect, [effect]);
+  },
+}));
+
 jest.mock('@react-native-clipboard/clipboard', () => ({
   __esModule: true,
   default: { setString: jest.fn() },
@@ -20,11 +27,13 @@ jest.mock('../../i18n', () => ({
   useI18n: () => ({
     dateLocale: 'en-US',
     t: (key: string, params?: Record<string, string | number>) =>
-      ({
+      key === 'transactions.confirmationProgress' ? `${params?.current}/${params?.required} confirmations` : ({
         'action.back': 'Back',
         'action.copied': 'Copied',
         'common.wallet': 'Wallet',
         'home.received': 'Received',
+        'home.receiving': 'Receiving',
+        'transactions.confirming': 'Confirming',
         'home.sent': 'Sent',
         'status.failed': 'Failed',
         'status.pending': 'Pending',
@@ -245,5 +254,111 @@ describe('TransactionDetailScreen', () => {
       .findAllByType(Text)
       .find(node => node.props.testID === 'transaction-amount');
     expect(amount?.props.accessibilityLabel).toBe('0.000000000001 XMR');
+  });
+});
+
+
+describe('live selected transaction detail', () => {
+  const incoming = { ...transaction, direction: 'in' as const, confirmations: 3, subaddrAccount: 1 };
+  const route = { params: { transaction: incoming, transactionHash: hash, walletId: 'selected-wallet' } };
+  let tree: ReactTestRenderer.ReactTestRenderer | undefined;
+  let state: ReturnType<typeof useWalletState>;
+  let refresh: jest.Mock;
+
+  beforeEach(() => {
+    refresh = jest.fn(async () => [incoming]);
+    state = {
+      registeredWallet: { id: 'selected-wallet', walletName: 'selected' },
+      transactions: [incoming], refreshTransactions: refresh,
+    } as unknown as ReturnType<typeof useWalletState>;
+    mockedUseWalletState.mockImplementation(() => state);
+  });
+  afterEach(() => ReactTestRenderer.act(() => tree?.unmount()));
+
+  async function render() {
+    await ReactTestRenderer.act(async () => {
+      tree = ReactTestRenderer.create(<TransactionDetailScreen navigation={{ goBack: jest.fn() }} route={route} />);
+    });
+  }
+  function text() {
+    return tree!.root.findAllByType(Text).map(node => node.props.children).flat(Infinity).join(' ');
+  }
+  async function nextCount(confirmations: number) {
+    state = { ...state, transactions: [{ ...incoming, confirmations }] };
+    await ReactTestRenderer.act(async () => {
+      tree!.update(<TransactionDetailScreen navigation={{ goBack: jest.fn() }} route={route} />);
+    });
+  }
+
+  it('refreshes on focus and follows each native history update without reopening the detail', async () => {
+    await render();
+    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(text()).toContain('Receiving');
+    expect(text()).toContain('3/10 confirmations');
+    expect(text()).not.toContain('Confirmed');
+    await nextCount(4);
+    expect(text()).toContain('4/10 confirmations');
+    await nextCount(9);
+    expect(text()).not.toContain('Confirmed');
+    await nextCount(10);
+    expect(text()).toContain('Received');
+    expect(text()).toContain('Confirmed');
+    expect(text()).toContain('10/10 confirmations');
+    await nextCount(11);
+    expect(text()).toContain('11/10 confirmations');
+    state = { ...state, transactions: [] };
+    await ReactTestRenderer.act(async () => {
+      tree!.update(<TransactionDetailScreen navigation={{ goBack: jest.fn() }} route={route} />);
+    });
+    expect(text()).toContain('Transaction not found.');
+    expect(text()).not.toContain('Confirmed');
+    expect(refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not resurrect a removed transaction from a slower focus read', async () => {
+    let resolveRefresh!: (items: WalletTransaction[]) => void;
+    refresh.mockReturnValueOnce(new Promise<WalletTransaction[]>(resolve => { resolveRefresh = resolve; }));
+    await render();
+    await nextCount(10);
+    state = { ...state, transactions: [] };
+    await ReactTestRenderer.act(async () => {
+      tree!.update(<TransactionDetailScreen navigation={{ goBack: jest.fn() }} route={route} />);
+    });
+    await ReactTestRenderer.act(async () => { resolveRefresh([{ ...incoming, confirmations: 9 }]); });
+    expect(text()).toContain('Transaction not found.');
+    expect(text()).not.toContain('9/10 confirmations');
+  });
+
+  it('clears a route-only transaction after a successful empty native history refresh', async () => {
+    state = { ...state, transactions: [] };
+    refresh.mockResolvedValueOnce([]);
+    await render();
+    expect(text()).toContain('Transaction not found.');
+    expect(text()).not.toContain('3/10 confirmations');
+  });
+
+  it('matches the selected wallet perspective and ignores a late refresh after wallet selection changes', async () => {
+    let resolveRefresh!: (items: WalletTransaction[]) => void;
+    refresh.mockReturnValueOnce(new Promise<WalletTransaction[]>(resolve => { resolveRefresh = resolve; }));
+    state = { ...state, transactions: [
+      { ...incoming, direction: 'out', confirmations: 99 },
+      { ...incoming, subaddrAccount: 0, confirmations: 50 },
+      incoming,
+    ] };
+    await render();
+    expect(text()).toContain('3/10 confirmations');
+    expect(text()).not.toContain('99/10');
+    state = {
+      ...state, registeredWallet: { ...state.registeredWallet!, id: 'other-wallet' },
+      transactions: [{ ...incoming, confirmations: 100 }],
+    };
+    await ReactTestRenderer.act(async () => {
+      tree!.update(<TransactionDetailScreen navigation={{ goBack: jest.fn() }} route={route} />);
+    });
+    await ReactTestRenderer.act(async () => { resolveRefresh([{ ...incoming, confirmations: 8 }]); });
+    expect(text()).toContain('3/10 confirmations');
+    expect(text()).not.toContain('100/10');
+    expect(text()).not.toContain('8/10');
+    expect(refresh).toHaveBeenCalledTimes(1);
   });
 });

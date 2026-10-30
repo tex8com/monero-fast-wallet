@@ -208,10 +208,14 @@ fn run_stream_connection(config_path: &str, config: &AgentConfig) -> Result<bool
                 if message.message_type != "event" || !is_opaque_event_id(&message.event.id) {
                     continue;
                 }
+                if !valid_supported_event(&message.event) {
+                    continue;
+                }
                 if recent_event_ids.iter().any(|id| id == &message.event.id) {
                     acknowledge_event(&mut socket, &message.event.id)?;
                     continue;
                 }
+                forward_received_event(config_path, &message.event)?;
                 show_notification(config_path, config, &message.event)?;
                 acknowledge_event(&mut socket, &message.event.id)?;
                 recent_event_ids.push_back(message.event.id);
@@ -243,7 +247,7 @@ fn connect_through_tor(host: &str, port: u16) -> Result<TcpStream, String> {
     }
     let timeout = Duration::from_secs(20);
     let mut stream = TcpStream::connect_timeout(
-        &monero_wallet_desktop::tor_transport::TOR_SOCKS_ADDRESS
+        &monero_wallet_desktop::tor_transport::socks_address()
             .parse()
             .map_err(|_| "embedded Tor address is invalid".to_owned())?,
         timeout,
@@ -366,6 +370,8 @@ fn show_notification(
         .summary("Monero Fast Wallet")
         .body(if event.category == "monero.fast_wallet.vanity" {
             "Your Vanity address status changed."
+        } else if event.category == "monero.fast_wallet.test" {
+            "Test notification. Open the wallet to refresh."
         } else {
             "New private activity. Open the wallet to refresh."
         })
@@ -438,8 +444,49 @@ fn open_wallet_for_event(
 fn valid_supported_event(event: &NotificationEvent) -> bool {
     (event.category == "monero.fast_wallet.incoming"
         && event.deep_link.starts_with("tex8://notification/"))
+        || (event.category == "monero.fast_wallet.test"
+            && event.deep_link == "tex8://notification/test")
         || (event.category == "monero.fast_wallet.vanity"
             && valid_vanity_deep_link(&event.deep_link))
+}
+
+/// Forward the actual WSS receipt even while the WebView is closed. These
+/// opaque metadata files never contain a wallet, transaction or credential.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+fn forward_received_event(config_path: &str, event: &NotificationEvent) -> Result<(), String> {
+    if !is_opaque_event_id(&event.id) || !valid_supported_event(event) {
+        return Err("notification receipt is invalid".to_owned());
+    }
+    let directory = Path::new(config_path).parent()
+        .ok_or_else(|| "notification directory is unavailable".to_owned())?
+        .join("received-events");
+    fs::create_dir_all(&directory).map_err(|_| "notification receipt directory is unavailable".to_owned())?;
+    #[cfg(unix)] {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))
+            .map_err(|_| "notification receipt directory is unavailable".to_owned())?;
+    }
+    let received = NotificationEvent {
+        id: event.id.clone(), category: event.category.clone(), deep_link: event.deep_link.clone(),
+        received_at: SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs().to_string(),
+        opened: false,
+    };
+    let path = directory.join(format!("{}.json", event.id));
+    let temporary = path.with_extension("json.tmp");
+    let bytes = serde_json::to_vec(&received).map_err(|_| "notification receipt is invalid".to_owned())?;
+    if bytes.len() > 4096 { return Err("notification receipt exceeds its limit".to_owned()); }
+    fs::write(&temporary, bytes).and_then(|_| fs::rename(temporary, path))
+        .map_err(|_| "notification receipt could not be saved".to_owned())?;
+    let mut files = fs::read_dir(&directory).map_err(|_| "notification receipt directory is unavailable".to_owned())?
+        .flatten().filter(|entry| entry.path().extension().is_some_and(|extension| extension == "json"))
+        .collect::<Vec<_>>();
+    files.sort_by_key(|entry| entry.metadata().and_then(|metadata| metadata.modified()).ok());
+    let excess = files.len().saturating_sub(64);
+    for entry in files.into_iter().take(excess) { let _ = fs::remove_file(entry.path()); }
+    if event.category == "monero.fast_wallet.test" {
+        eprintln!("MONERO_DESKTOP_PUSH_RECEIVED event_id={} phase=received", event.id);
+    }
+    Ok(())
 }
 
 fn valid_vanity_deep_link(value: &str) -> bool {
