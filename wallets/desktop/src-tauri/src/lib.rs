@@ -4,7 +4,6 @@ mod community_preferences;
 mod compute_preferences;
 mod derivation_performance;
 mod desktop_notifications;
-#[cfg(any(target_os = "macos", test))]
 mod apns_registration;
 mod notification_test;
 mod notification_inbox;
@@ -3355,7 +3354,7 @@ fn ensure_ledger_hardware_session(
         "ledger.hardware-session-reopen-started",
         &[("flow", diagnostic_flow.to_owned())],
     );
-    let mut transport_unavailable_detail = None;
+    let mut transport_unavailable_detail: Option<String> = None;
     #[cfg(target_os = "macos")]
     if device_name == "Ledger:ble" {
         let transport_started = Instant::now();

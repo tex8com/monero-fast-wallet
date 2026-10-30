@@ -16,9 +16,10 @@ use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
 };
-use tor_rtcompat::PreferredRuntime;
+#[cfg(not(target_os = "windows"))]
+use tor_rtcompat::PreferredRuntime as EmbeddedTorRuntime;
 #[cfg(target_os = "windows")]
-use tor_rtcompat::{tokio::TokioNativeTlsRuntime, ToplevelBlockOn};
+use tor_rtcompat::{tokio::TokioNativeTlsRuntime as EmbeddedTorRuntime, ToplevelBlockOn};
 
 /// Desktop service traffic is fail-closed through the app's embedded Arti Tor
 /// client. The native Monero Fast Node gRPC block provider is intentionally
@@ -100,8 +101,8 @@ fn reserve_socks_listener(preferred: Option<&str>) -> Result<StdTcpListener, Str
 /// may delay the Tauri window or wallet startup.
 pub fn start_embedded_tor(data_dir: PathBuf) {
     // Arti's persistent directory format is not a stable cross-version
-    // contract. Windows deliberately uses the proven 0.43 runtime, so keep
-    // it separate from state previously written by 0.44 builds.
+    // contract. Keep the established Windows state directory separate from
+    // directories used by earlier desktop runtime configurations.
     #[cfg(target_os = "windows")]
     let data_dir = data_dir.join("arti-043");
     TOR_STARTED.get_or_init(|| {
@@ -132,7 +133,7 @@ pub fn start_embedded_tor(data_dir: PathBuf) {
                             // Match the runtime used by the official Arti binary on
                             // Windows. A raw Tokio runtime stalled while fetching the
                             // first consensus on Windows ARM64.
-                            let runtime = TokioNativeTlsRuntime::create()
+                            let runtime = EmbeddedTorRuntime::create()
                                 .map_err(|error| format!("Tor runtime: {error}"))?;
                             return runtime.block_on(run_embedded_tor(
                                 data_dir.clone(),
@@ -182,14 +183,14 @@ pub fn start_embedded_tor(data_dir: PathBuf) {
 #[cfg(not(target_os = "windows"))]
 async fn run_embedded_tor(data_dir: PathBuf, listener: StdTcpListener) -> Result<(), String> {
     let runtime =
-        PreferredRuntime::current().map_err(|error| format!("Tor runtime handle: {error}"))?;
+        EmbeddedTorRuntime::current().map_err(|error| format!("Tor runtime handle: {error}"))?;
     run_embedded_tor_with_runtime(data_dir, runtime, listener).await
 }
 
 #[cfg(target_os = "windows")]
 async fn run_embedded_tor(
     data_dir: PathBuf,
-    runtime: TokioNativeTlsRuntime,
+    runtime: EmbeddedTorRuntime,
     listener: StdTcpListener,
 ) -> Result<(), String> {
     run_embedded_tor_with_runtime(data_dir, runtime, listener).await
@@ -197,7 +198,7 @@ async fn run_embedded_tor(
 
 async fn run_embedded_tor_with_runtime(
     data_dir: PathBuf,
-    runtime: PreferredRuntime,
+    runtime: EmbeddedTorRuntime,
     listener: StdTcpListener,
 ) -> Result<(), String> {
     let state_dir = data_dir.join("state");
@@ -253,7 +254,7 @@ async fn run_embedded_tor_with_runtime(
 
 async fn proxy_connection(
     mut local: TcpStream,
-    client: Arc<TorClient<PreferredRuntime>>,
+    client: Arc<TorClient<EmbeddedTorRuntime>>,
 ) -> Result<(), String> {
     let protocol = detect_socks_protocol(&local).await?;
     let (host, port) = match protocol {
