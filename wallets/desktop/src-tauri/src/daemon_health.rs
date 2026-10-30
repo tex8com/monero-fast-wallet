@@ -165,6 +165,9 @@ impl ResponseReader<'_> {
                 .map_err(|error| format!("Daemon health read timeout: {error}"))?;
             match self.stream.read(&mut buffer[..capacity]) {
                 Ok(count) => {
+                    if Instant::now() >= self.deadline {
+                        return Err(TIMEOUT_ERROR.to_owned());
+                    }
                     self.remaining_bytes -= count;
                     return Ok(count);
                 }
@@ -251,6 +254,14 @@ mod tests {
         limit: usize,
         timeout: Duration,
     ) -> Result<Vec<u8>, String> {
+        response_with_read_elapsed(action, limit, timeout).0
+    }
+
+    fn response_with_read_elapsed(
+        action: impl FnOnce(TcpStream) + Send + 'static,
+        limit: usize,
+        timeout: Duration,
+    ) -> (Result<Vec<u8>, String>, Duration) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         let worker = thread::spawn(move || {
@@ -261,10 +272,12 @@ mod tests {
             action(stream);
         });
         let mut stream = TcpStream::connect_timeout(&address, Duration::from_secs(1)).unwrap();
+        let read_started = Instant::now();
         let result = read_response(&mut stream, limit, timeout);
+        let read_elapsed = read_started.elapsed();
         drop(stream);
         worker.join().unwrap();
-        result
+        (result, read_elapsed)
     }
 
     fn bytes_response(bytes: &[u8], limit: usize) -> Result<Vec<u8>, String> {
@@ -337,8 +350,7 @@ mod tests {
 
     #[test]
     fn slow_trickle_cannot_extend_the_total_deadline() {
-        let started = Instant::now();
-        let result = response(
+        let (result, read_elapsed) = response_with_read_elapsed(
             |mut stream| {
                 stream
                     .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\n\r\n")
@@ -354,7 +366,36 @@ mod tests {
             Duration::from_millis(90),
         );
         assert_eq!(result.unwrap_err(), TIMEOUT_ERROR);
-        assert!(started.elapsed() < Duration::from_millis(400));
+        assert!(
+            read_elapsed < Duration::from_millis(400),
+            "Health reader took {read_elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn complete_body_arriving_after_the_absolute_deadline_is_rejected() {
+        let body = b"{\"height\":123,\"status\":\"OK\"}";
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let mut stream = TcpStream::connect_timeout(&address, Duration::from_secs(1)).unwrap();
+        let deadline = Instant::now() + Duration::from_millis(30);
+        let send_after = deadline + Duration::from_millis(60);
+        let worker = thread::spawn(move || {
+            let (mut peer, _) = listener.accept().unwrap();
+            peer.set_write_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            thread::sleep(send_after.saturating_duration_since(Instant::now()));
+            let _ = peer.write_all(body);
+        });
+        let mut reader = ResponseReader {
+            stream: &mut stream,
+            deadline,
+            remaining_bytes: body.len(),
+        };
+        let result = reader.exact_body(body.len());
+        drop(stream);
+        worker.join().unwrap();
+        assert_eq!(result.unwrap_err(), TIMEOUT_ERROR);
     }
 
     #[test]
