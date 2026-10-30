@@ -380,6 +380,24 @@ try {
 
   & npm.cmd ci
   if ($LASTEXITCODE -ne 0) { throw 'npm ci failed.' }
+
+  # The agent fixture deliberately runs offline. Populate its exact production
+  # dependencies first, using Cargo's selected target rather than a fixed host
+  # architecture. It also compiles native C code and needs the normal SDK env.
+  $msvcTarget = $env:CARGO_BUILD_TARGET
+  if ([string]::IsNullOrWhiteSpace($msvcTarget)) {
+    $rustVersion = @(& rustc -vV)
+    if ($LASTEXITCODE -ne 0) { throw 'The Rust host target could not be determined.' }
+    $hostLines = @($rustVersion | Where-Object { $_ -match '^host: ' })
+    if ($hostLines.Count -ne 1) { throw 'The Rust host target is missing or ambiguous.' }
+    $msvcTarget = $hostLines[0].Substring(6).Trim()
+  }
+  if ($msvcTarget -notmatch '^(aarch64|x86_64|i686)-pc-windows-msvc$') {
+    throw "The desktop tests require a Windows MSVC target: $msvcTarget"
+  }
+  & cargo fetch --locked --manifest-path src-tauri\Cargo.toml --target $msvcTarget
+  if ($LASTEXITCODE -ne 0) { throw 'The locked desktop test dependencies could not be fetched.' }
+
   foreach ($script in @(
     'check',
     'test:parity-contract',
@@ -393,7 +411,12 @@ try {
     'test:acceleration-contract',
     'test:wallet-contract'
   )) {
-    & npm.cmd run $script
+    if ($script -eq 'test:notification-agent') {
+      $agentTestCommand = 'call "{0}" arm64 >nul && cd /d "{1}" && npm.cmd run test:notification-agent' -f $vcvars, $desktopDirectory
+      & cmd.exe /d /s /c $agentTestCommand
+    } else {
+      & npm.cmd run $script
+    }
     if ($LASTEXITCODE -ne 0) { throw "Desktop gate failed: $script" }
   }
 
