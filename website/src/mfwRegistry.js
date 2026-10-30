@@ -2,7 +2,10 @@ const MAX_RESPONSE_BYTES = 16 * 1024;
 const MAX_SUGGESTION_RESPONSE_BYTES = 4 * 1024;
 const MAX_NAME_SUGGESTIONS = 5;
 const HEX_32 = /^[0-9a-f]{64}$/;
-const RECORD_HEX = /^[0-9a-f]{180,304}$/;
+// native/mfw-recipient-protocol/src/name.rs: legacy CLAIMs are 90–152 bytes;
+// owner-signed records are 189–251 bytes. Unknown sizes still fail closed.
+const LEGACY_RECORD_HEX = /^[0-9a-f]{180,304}$/;
+const SIGNED_RECORD_HEX = /^[0-9a-f]{378,502}$/;
 
 export const MFW_RESOLVER_PATH = "/v1/mfw/names/";
 export const MFW_SUGGESTION_PATH = "/v1/mfw/name-suggestions/";
@@ -273,8 +276,8 @@ export function parseMfwResolution(value, expectedName) {
   // Resolver deployments may expose the owner-transition fields introduced
   // after the immutable Registry-v1 records. Accept exactly the base V1
   // contract or exactly that complete extension; anything else still fails
-  // closed. Availability needs neither owner material nor a sequence, while
-  // wallet clients use the extension to verify owner-signed transitions.
+  // closed. Native wallet clients verify owner signatures; this preliminary
+  // website check validates the public response shape and record bounds.
   const ownerTransitionKeys = [
     "ownerPublicKeyHex",
     "sequence",
@@ -284,6 +287,8 @@ export function parseMfwResolution(value, expectedName) {
   if (!isPlainObject(value) || (!sameKeys(value, keys) && !hasOwnerTransition)) {
     throw new Error("invalid_response");
   }
+  const legacyRecord = LEGACY_RECORD_HEX.test(value.recordPayloadHex);
+  const signedRecord = SIGNED_RECORD_HEX.test(value.recordPayloadHex);
   if (
     value.canonicalName !== expectedName ||
     value.network !== "mainnet" ||
@@ -326,7 +331,8 @@ export function parseMfwResolution(value, expectedName) {
     !HEX_32.test(value.publicViewKeyHex) ||
     !HEX_32.test(value.sourceTxidHex) ||
     !HEX_32.test(value.recordBlockHashHex) ||
-    !RECORD_HEX.test(value.recordPayloadHex) ||
+    typeof value.recordPayloadHex !== "string" ||
+    (!legacyRecord && !signedRecord) ||
     value.recordPayloadHex.length % 2 !== 0 ||
     value.recordHeight < 1 ||
     value.recordHeight > value.chainTipHeight ||
@@ -335,6 +341,12 @@ export function parseMfwResolution(value, expectedName) {
       !isOptionalHex32(value.ownerPublicKeyHex) ||
       !safeHeight(value.sequence) ||
       !isOptionalHex32(value.signingOwnerPublicKeyHex)
+    ))
+    || (signedRecord && (
+      !hasOwnerTransition ||
+      !HEX_32.test(value.ownerPublicKeyHex) ||
+      !HEX_32.test(value.signingOwnerPublicKeyHex) ||
+      value.sequence > 0xffff_ffff
     ))
   ) {
     throw new Error("invalid_record");

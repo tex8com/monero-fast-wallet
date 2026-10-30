@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AssistantDock } from "./AssistantDock";
-import { copy, localeMetadata, repositoryUrl } from "./content";
+import { copy, localeMetadata, releaseTag, releaseUrl, repositoryUrl } from "./content";
 import { DeveloperPage } from "./DeveloperPage";
 import { PrivacyPage } from "./PrivacyPage";
 import { RegistryAvailability } from "./RegistryAvailability";
@@ -52,12 +52,14 @@ function ServiceAddressStrip() {
   );
 }
 
-function ReleaseFollow({ product, language }) {
-  const german = language === "de";
+function ReleaseFollow({ product, text }) {
+  if (product === "MFW") {
+    return <p className="release-follow"><strong>MFW · Alpha {releaseTag}</strong><a href={releaseUrl} target="_blank" rel="noreferrer">GitHub · {text.releaseNotes} ↗</a></p>;
+  }
   return (
     <p className="release-follow">
-      <strong>{product} · {german ? "Noch nicht released." : "Not released yet."}</strong>
-      <span>{german ? "Folge mir für Updates auf" : "Follow me for updates on"} <a href={releaseUpdatesUrl} target="_blank" rel="noreferrer">X @roland_kk ↗</a></span>
+      <strong>{product} · {text.coming}</strong>
+      <span>{text.releaseUpdates} <a href={releaseUpdatesUrl} target="_blank" rel="noreferrer">X @roland_kk ↗</a></span>
     </p>
   );
 }
@@ -744,18 +746,44 @@ function Benchmark({ text }) {
 }
 
 const platforms = [
-  { id: "android", title: "Android", badge: "Google_Play_Store_badge_EN.svg", alt: "Get it on Google Play", packages: ["apk"] },
-  { id: "ios", title: "iPhone & iPad", badge: "Download_on_the_App_Store_RGB_blk.svg", alt: "Download on the App Store", packages: ["appstore"] },
-  { id: "macos", title: "macOS", badge: "Download_on_the_Mac_App_Store_Badge_US-UK_RGB_wht.svg", alt: "Download on the Mac App Store", packages: ["dmg"] },
-  { id: "windows", title: "Windows", badge: "Get_it_from_Microsoft_Badge.svg", alt: "Get it from Microsoft", packages: ["exe"] },
-  { id: "linux", title: "Linux", badge: "Linux_tux_circle_logo.svg", alt: "Tux Linux mascot", packages: ["rpm", "deb", "appimage"] },
+  { id: "android", title: "Android", packages: ["apk"], publishedPackage: "apk", requirements: "androidRequirements" },
+  { id: "macos", title: "macOS", packages: ["dmg"], publishedPackage: "dmg", requirements: "macosRequirements" },
+  { id: "ios", title: "iPhone & iPad", packages: ["appstore"] },
+  { id: "windows", title: "Windows", packages: ["exe"] },
+  { id: "linux", title: "Linux", packages: ["rpm", "deb", "appimage"] },
 ];
 
+function walletReleaseMap(releases) {
+  return new Map(releases.filter((release) => {
+    const platform = platforms.find((item) => item.id === release?.platform);
+    return release?.product === "mfw" && platform?.publishedPackage === release.package
+      && release.download_path === `/download/mfw/${release.platform}/${release.package}`
+      && typeof release.version === "string" && release.version.length > 0;
+  }).map((release) => [`${release.platform}:${release.package}`, release]));
+}
+
 function Downloads({ text, releases }) {
-  const available = new Map(releases.filter((release) => release.product === "mfw").map((release) => [`${release.platform}:${release.package}`, release]));
-  const badge = (platform) => <span className="badge-visual">{platform.id === "linux" ? <span className="linux-badge"><img src={`${badgeBase}${platform.badge}`} alt={platform.alt} /><span><small>Download for</small><b>Linux</b></span></span> : <img src={`${badgeBase}${platform.badge}`} alt={platform.alt} />}</span>;
+  const available = walletReleaseMap(releases);
   return (
-    <section className="section download-section shell" id="downloads"><header className="section-head centered"><p className="eyebrow">{text.downloadEyebrow}</p><h2>{text.downloadTitle}</h2><p>{text.downloadBody}</p><ReleaseFollow product="MFW" language={text.lang} /></header><div className="download-grid">{platforms.map((platform) => { const primaryKind = platform.packages.includes("appimage") ? "appimage" : platform.packages[0]; const primary = available.get(`${platform.id}:${primaryKind}`); return <article className="download-card" key={platform.id}><h3>{platform.title}</h3>{primary ? <a className="store-badge is-live" href={primary.download_path} aria-label={`${platform.title}: ${primary.version}`}>{badge(platform)}</a> : <div className="store-badge" aria-label={`${platform.title}: ${text.coming}`}>{badge(platform)}</div>}<div className="package-links">{platform.packages.map((kind) => { const release = available.get(`${platform.id}:${kind}`); const label = kind === "appstore" ? "App Store" : text.packages[kind]; return release ? <a href={release.download_path} key={kind}>{label} ↓</a> : <span key={kind}>{label}</span>; })}</div></article>; })}</div><p className="release-note">● {available.size ? (text.lang === "de" ? "Veröffentlichte Dateien werden über den datensparsamen TEX8-Downloadpfad ausgeliefert." : "Published files use the privacy-minimised TEX8 download path.") : text.releaseGate}</p></section>
+    <section className="section download-section shell" id="downloads">
+      <header className="section-head centered"><p className="eyebrow">{text.downloadEyebrow}</p><h2>{text.downloadTitle}</h2><p>{text.downloadBody}</p><ReleaseFollow product="MFW" text={text} /></header>
+      <div className="download-grid">{platforms.map((platform) => {
+        const primary = available.get(`${platform.id}:${platform.publishedPackage}`);
+        return <article className="download-card" key={platform.id}>
+          <h3>{platform.title}</h3>
+          <span className={`download-platform-status ${platform.publishedPackage ? "available" : "pending"}`}>{platform.publishedPackage ? text.available : text.coming}</span>
+          {platform.publishedPackage ? <a className="store-badge is-live" href={primary ? primary.download_path : releaseUrl}>
+            <strong>{platform.publishedPackage.toUpperCase()}</strong><span>{primary ? text.packages[platform.publishedPackage] : text.githubRelease} ↓</span>
+          </a> : <div className="store-badge is-pending"><strong>{text.coming}</strong></div>}
+          <div className="package-links">{platform.publishedPackage ? <>
+            {primary && <span className="release-version">{primary.version}</span>}
+            <a href={releaseUrl} target="_blank" rel="noreferrer">GitHub · {text.releaseNotes} ↗</a>
+          </> : <span>{platform.packages.map((kind) => kind === "appstore" ? "App Store" : kind === "appimage" ? "AppImage" : kind.toUpperCase()).join(" · ")}</span>}</div>
+          {platform.requirements && <small className="download-install-note">{text[platform.requirements]}{platform.id === "macos" && <><br />{text.macosSigning}</>}</small>}
+        </article>;
+      })}</div>
+      <p className="release-note">{text.releaseGate}</p>
+    </section>
   );
 }
 
@@ -763,7 +791,7 @@ function NodeSection({ text, releases }) {
   const nodeReleases = releases.filter((release) => release.product === "mfn");
   const primaryRelease = nodeReleases.find((release) => release.package === "appimage") || nodeReleases[0];
   return (
-    <section className="section node-section" id="mfn"><div className="shell node-grid"><div><p className="eyebrow">{text.nodeEyebrow}</p><h2>{text.nodeTitle}</h2><p className="lead">{text.nodeBody}</p><ReleaseFollow product="MFN" language={text.lang} /><div className="node-card"><div className="node-orbit"><i /><i /><i /></div><div className="node-label"><strong>MFN</strong><span>Monero Fast Node</span></div></div></div><div className="node-side"><div className="node-steps">{text.nodeSteps.map(([number, title, body]) => <article key={number}><span>{number}</span><div><h3>{title}</h3><p>{body}</p></div></article>)}</div><aside className="node-download-card"><p>{text.nodeDownloadEyebrow}</p><h3>{text.nodeDownloadTitle}</h3><div className="node-download-actions">{primaryRelease ? <a className="button primary" href={primaryRelease.download_path}>{text.nodeDownload}</a> : <span className="button primary is-disabled">{text.nodeDownload}</span>}<span className="button is-disabled">{text.nodeSource}</span></div>{nodeReleases.length ? <div className="node-package-links">{nodeReleases.map((release) => <a href={release.download_path} key={`${release.platform}-${release.package}`}>{release.platform} · {release.package}</a>)}</div> : <small>{text.nodeReleaseGate}</small>}</aside></div></div></section>
+    <section className="section node-section" id="mfn"><div className="shell node-grid"><div><p className="eyebrow">{text.nodeEyebrow}</p><h2>{text.nodeTitle}</h2><p className="lead">{text.nodeBody}</p><ReleaseFollow product="MFN" text={text} /><div className="node-card"><div className="node-orbit"><i /><i /><i /></div><div className="node-label"><strong>MFN</strong><span>Monero Fast Node</span></div></div></div><div className="node-side"><div className="node-steps">{text.nodeSteps.map(([number, title, body]) => <article key={number}><span>{number}</span><div><h3>{title}</h3><p>{body}</p></div></article>)}</div><aside className="node-download-card"><p>{text.nodeDownloadEyebrow}</p><h3>{text.nodeDownloadTitle}</h3><div className="node-download-actions">{primaryRelease ? <a className="button primary" href={primaryRelease.download_path}>{text.nodeDownload}</a> : <span className="button primary is-disabled">{text.nodeDownload}</span>}<span className="button is-disabled">{text.nodeSource}</span></div>{nodeReleases.length ? <div className="node-package-links">{nodeReleases.map((release) => <a href={release.download_path} key={`${release.platform}-${release.package}`}>{release.platform} · {release.package}</a>)}</div> : <small>{text.nodeReleaseGate}</small>}</aside></div></div></section>
   );
 }
 

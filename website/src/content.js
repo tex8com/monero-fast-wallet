@@ -1,5 +1,6 @@
 export const repositoryUrl = "https://github.com/tex8com/monero-fast-wallet";
-export const releaseUrl = `${repositoryUrl}/releases`;
+export const releaseTag = "v1.0.111-alpha.1";
+export const releaseUrl = `${repositoryUrl}/releases/tag/${releaseTag}`;
 import { generatedWebsiteCopy, localeMetadata } from "./locales.generated.js";
 
 const shared = {
@@ -122,10 +123,10 @@ export const copy = {
     derivationMethod: "Beschleunigung, Methodik und Rohdaten",
     downloadEyebrow: "Eine Wallet, jeder Bildschirm",
     downloadTitle: "Lade das passende Paket für dein Gerät.",
-    downloadBody: "Die Plattformen bleiben sichtbar. Download-Links werden erst nach der öffentlichen Freigabe aktiviert.",
-    coming: "Release-Bereich",
+    downloadBody: "Die Alpha-Version gibt es als Android-APK und als DMG für Apple Silicon. Weitere Plattformen folgen.",
+    coming: "Bald verfügbar",
     packages: { apk: "APK herunterladen", dmg: "DMG herunterladen", exe: "EXE herunterladen", rpm: "RPM herunterladen", deb: "DEB herunterladen", appimage: "AppImage herunterladen" },
-    releaseGate: "Noch keine öffentlichen Release-Artefakte freigegeben.",
+    releaseGate: "Downloads über den datensparsamen TEX8-Downloadpfad. Release-Hinweise, Dateien und Prüfsummen findest du auch auf GitHub.",
     nodeEyebrow: "Monero Fast Node · MFN",
     nodeTitle: "Der schnelle Weg ins Monero-Netzwerk.",
     nodeBody: "Monero Fast Node ist die optimierte TEX8-Node-Infrastruktur. Sie liefert Blockchain-Daten effizient an die Wallet; dein nativer Wallet-Core prüft lokal, was dir gehört.",
@@ -152,7 +153,7 @@ export const copy = {
       ["Muss ich die Fast Wallet verwenden?", "Nein. Privacy funktioniert ohne gehostete Fast Wallet. Privacy + Komfort fügt sie als separate, optionale Empfangs-Wallet hinzu."],
       ["Kann TEX8 meine Coins ausgeben?", "Nein. Seed und Spend Key werden nicht an TEX8 übertragen. Der separate Fast-Wallet-Dienst kann keine Transaktion signieren."],
       ["Warum heißt der Node MFN?", "MFN steht für Monero Fast Node. Die optimierte TEX8-Node-Infrastruktur bleibt vollständig mit Monero kompatibel."],
-      ["Sind Downloads schon öffentlich freigegeben?", "Noch nicht. Der Quellcode ist öffentlich; signierte Pakete erscheinen nach den jeweiligen Release- und Plattformprüfungen im GitHub-Releases-Bereich."],
+      ["Welche Downloads sind verfügbar?", "Die Alpha-Version bietet eine DMG für macOS mit Apple Silicon und eine Android-APK für ARM64. iOS, Windows und Linux folgen. Alle Dateien und Prüfsummen stehen im verlinkten GitHub-Release."],
     ],
     assistantTitle: "Monero Hilfe",
     assistantStatus: "Produktwissen aktiv",
@@ -254,10 +255,10 @@ export const copy = {
     derivationMethod: "Acceleration, method, and raw evidence",
     downloadEyebrow: "One wallet, every screen",
     downloadTitle: "Get the right package for your device.",
-    downloadBody: "The platforms remain visible. Download links will be enabled only after public release.",
-    coming: "Releases area",
+    downloadBody: "The alpha release is available as an Android APK and a DMG for Apple Silicon. More platforms are coming soon.",
+    coming: "Coming soon",
     packages: { apk: "Download APK", dmg: "Download DMG", exe: "Download EXE", rpm: "Download RPM", deb: "Download DEB", appimage: "Download AppImage" },
-    releaseGate: "No public release artifacts have been approved yet.",
+    releaseGate: "Downloads use the privacy-minimised TEX8 download path. Release notes, files and checksums are also available on GitHub.",
     nodeEyebrow: "Monero Fast Node · MFN",
     nodeTitle: "The fast route into the Monero network.",
     nodeBody: "Monero Fast Node is the optimized TEX8 node infrastructure. It delivers blockchain data efficiently; your native wallet core checks locally what belongs to you.",
@@ -275,7 +276,7 @@ export const copy = {
     osiNote: "The OSI logo trademark belongs to the Open Source Initiative. This site is not affiliated with or endorsed by OSI.",
     faqEyebrow: "Straight answers",
     faqTitle: "What users really want to know.",
-    faqs: [["Is this a real Monero wallet?", "Yes. The native Monero wallet core is authoritative for wallet data, transactions, and synchronization."], ["Do I need Fast Wallet?", "No. Privacy works without a hosted Fast Wallet. Privacy + convenience adds it as a separate optional receive wallet."], ["Can TEX8 spend my coins?", "No. Seed and spend key are never transferred to TEX8. The separate Fast Wallet service cannot sign a transaction."], ["Why is the node called MFN?", "MFN stands for Monero Fast Node. The optimized TEX8 node infrastructure remains fully Monero compatible."], ["Are downloads publicly approved?", "Not yet. Source is public; signed packages will appear in GitHub Releases after their release and platform checks pass."]],
+    faqs: [["Is this a real Monero wallet?", "Yes. The native Monero wallet core is authoritative for wallet data, transactions, and synchronization."], ["Do I need Fast Wallet?", "No. Privacy works without a hosted Fast Wallet. Privacy + convenience adds it as a separate optional receive wallet."], ["Can TEX8 spend my coins?", "No. Seed and spend key are never transferred to TEX8. The separate Fast Wallet service cannot sign a transaction."], ["Why is the node called MFN?", "MFN stands for Monero Fast Node. The optimized TEX8 node infrastructure remains fully Monero compatible."], ["Which downloads are available?", "The alpha release provides a DMG for macOS with Apple Silicon and an Android APK for ARM64. iOS, Windows and Linux are coming soon. All files and checksums are in the linked GitHub release."]],
     assistantTitle: "Monero help",
     assistantStatus: "Product knowledge active",
     assistantOpen: "Open AI help",
@@ -293,4 +294,10 @@ export const copy = {
 };
 
 Object.assign(copy, generatedWebsiteCopy);
+const releaseLabels = {
+  en: { available: "Available", releaseNotes: "Release & checksums", githubRelease: "Download on GitHub", releaseUpdates: "Follow updates on", androidRequirements: "Android 7 or newer · ARM64", macosRequirements: "macOS 12 or newer · Apple Silicon", macosSigning: "Developer ID-signed · not notarized" },
+  de: { available: "Verfügbar", releaseNotes: "Release & Prüfsummen", githubRelease: "Download auf GitHub", releaseUpdates: "Updates auf", androidRequirements: "Ab Android 7 · ARM64", macosRequirements: "Ab macOS 12 · Apple Silicon", macosSigning: "Developer-ID-signiert · nicht notarisiert" },
+};
+// Newly published release labels use English until reviewed translations exist.
+for (const [language, text] of Object.entries(copy)) Object.assign(text, releaseLabels[language] ?? releaseLabels.en);
 export { localeMetadata };

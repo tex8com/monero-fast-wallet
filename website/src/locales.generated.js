@@ -343,8 +343,8 @@ export const generatedWebsiteCopy = {
     "derivationMethod": "Aceleración, método y evidencia cruda",
     "downloadEyebrow": "Una billetera, cada pantalla",
     "downloadTitle": "Obtenga el paquete adecuado para su dispositivo.",
-    "downloadBody": "Hasta su publicación pública, los enlaces conducen a GitHub Versiones. Los paquetes firmados aparecerán allí después de que cada plataforma pase la aceptación.",
-    "coming": "Área de lanzamientos",
+    "downloadBody": "The alpha release is available as an Android APK and a DMG for Apple Silicon. More platforms are coming soon.",
+    "coming": "Coming soon",
     "packages": {
       "apk": "Descargar APK",
       "dmg": "Descargar DMG",
@@ -353,7 +353,7 @@ export const generatedWebsiteCopy = {
       "deb": "Descargar DEB",
       "appimage": "Descargar AppImage"
     },
-    "releaseGate": "Aún no se han aprobado artefactos de lanzamiento público.",
+    "releaseGate": "Downloads use the privacy-minimised TEX8 download path. Release notes, files and checksums are also available on GitHub.",
     "nodeEyebrow": "Monero Fast Node · MFN",
     "nodeTitle": "La ruta rápida hacia la red Monero.",
     "nodeBody": "MFN es una infraestructura de nodo TEX8 construida sobre Monero Fast Node. Entrega datos de blockchain de manera eficiente; El núcleo de su billetera nativa verifica localmente lo que le pertenece.",
@@ -405,8 +405,8 @@ export const generatedWebsiteCopy = {
         "Monero Fast Node es el nombre del producto para la infraestructura del nodo TEX8. Su motor técnico se basa en Monero Fast Node y sigue siendo compatible con Monero."
       ],
       [
-        "¿Las descargas están aprobadas públicamente?",
-        "Todavía no. La fuente es pública; Los paquetes firmados aparecerán en las versiones GitHub después de que pasen las comprobaciones de lanzamiento y plataforma."
+        "Which downloads are available?",
+        "The alpha release provides a DMG for macOS with Apple Silicon and an Android APK for ARM64. iOS, Windows and Linux are coming soon. All files and checksums are in the linked GitHub release."
       ]
     ],
     "assistantTitle": "Monero ayuda",
@@ -656,8 +656,8 @@ export const generatedWebsiteCopy = {
     "derivationMethod": "Aceleração, método e evidência bruta",
     "downloadEyebrow": "Uma carteira, cada tela",
     "downloadTitle": "Obtenha o pacote certo para o seu dispositivo.",
-    "downloadBody": "Até o lançamento público, os links levam a versões GitHub. Os pacotes assinados aparecerão lá depois que cada plataforma for aprovada.",
-    "coming": "Área de lançamentos",
+    "downloadBody": "The alpha release is available as an Android APK and a DMG for Apple Silicon. More platforms are coming soon.",
+    "coming": "Coming soon",
     "packages": {
       "apk": "Baixar APK",
       "dmg": "Baixar DMG",
@@ -666,7 +666,7 @@ export const generatedWebsiteCopy = {
       "deb": "Baixar DEB",
       "appimage": "Baixar imagem do aplicativo"
     },
-    "releaseGate": "Nenhum artefato de lançamento público foi aprovado ainda.",
+    "releaseGate": "Downloads use the privacy-minimised TEX8 download path. Release notes, files and checksums are also available on GitHub.",
     "nodeEyebrow": "Monero Fast Node · MFN",
     "nodeTitle": "A rota rápida para a rede Monero.",
     "nodeBody": "MFN é uma infraestrutura de nó TEX8 construída em Monero Fast Node. Fornece dados blockchain de forma eficiente; o núcleo da sua carteira nativa verifica localmente o que pertence a você.",
@@ -718,8 +718,8 @@ export const generatedWebsiteCopy = {
         "Monero Fast Node é o nome do produto para infraestrutura de nó TEX8. Seu mecanismo técnico é baseado em Monero Fast Node e permanece compatível com Monero."
       ],
       [
-        "Os downloads são aprovados publicamente?",
-        "Ainda não. A fonte é pública; pacotes assinados aparecerão em versões GitHub após a aprovação do lançamento e das verificações da plataforma."
+        "Which downloads are available?",
+        "The alpha release provides a DMG for macOS with Apple Silicon and an Android APK for ARM64. iOS, Windows and Linux are coming soon. All files and checksums are in the linked GitHub release."
       ]
     ],
     "assistantTitle": "Monero ajuda",
@@ -969,8 +969,8 @@ export const generatedWebsiteCopy = {
     "derivationMethod": "Ускорение, метод и необработанные доказательства",
     "downloadEyebrow": "Один кошелек, на каждом экране",
     "downloadTitle": "Получите подходящий пакет для вашего устройства.",
-    "downloadBody": "До публичного выпуска ссылки ведут на выпуски GitHub. Подписанные пакеты появятся там после того, как каждая платформа пройдет приемку.",
-    "coming": "Область релизов",
+    "downloadBody": "The alpha release is available as an Android APK and a DMG for Apple Silicon. More platforms are coming soon.",
+    "coming": "Coming soon",
     "packages": {
       "apk": "Скачать APK",
       "dmg": "Скачать DMG",
@@ -979,7 +979,7 @@ export const generatedWebsiteCopy = {
       "deb": "Скачать DEB",
       "appimage": "Загрузить изображение приложения"
     },
-    "releaseGate": "Ни один общедоступный продукт еще не одобрен.",
+    "releaseGate": "Downloads use the privacy-minimised TEX8 download path. Release notes, files and checksums are also available on GitHub.",
     "nodeEyebrow": "Monero Fast Node · MFN",
     "nodeTitle": "Быстрый путь в сеть Monero.",
     "nodeBody": "MFN — это инфраструктура узла TEX8, построенная на Monero Fast Node. Он эффективно доставляет данные блокчейна; ядро вашего родного кошелька локально проверяет, что вам принадлежит.",
@@ -1031,8 +1031,8 @@ export const generatedWebsiteCopy = {
         "Monero Fast Node — это название продукта для инфраструктуры узла TEX8. Его технический механизм основан на Monero Fast Node и остается совместимым с Monero."
       ],
       [
-        "Одобряются ли загрузки публично?",
-        "Еще нет. Источник является общедоступным; подписанные пакеты появятся в выпусках GitHub после того, как их выпуск и проверка платформы пройдут."
+        "Which downloads are available?",
+        "The alpha release provides a DMG for macOS with Apple Silicon and an Android APK for ARM64. iOS, Windows and Linux are coming soon. All files and checksums are in the linked GitHub release."
       ]
     ],
     "assistantTitle": "Monero справка",
@@ -1282,8 +1282,8 @@ export const generatedWebsiteCopy = {
     "derivationMethod": "Gia tốc, phương pháp và bằng chứng thô",
     "downloadEyebrow": "Một ví, mọi màn hình",
     "downloadTitle": "Nhận gói phù hợp cho thiết bị của bạn.",
-    "downloadBody": "Cho đến khi phát hành công khai, các liên kết sẽ dẫn đến GitHub Bản phát hành. Các gói đã ký sẽ xuất hiện ở đó sau khi mỗi nền tảng được chấp nhận.",
-    "coming": "Khu vực phát hành",
+    "downloadBody": "The alpha release is available as an Android APK and a DMG for Apple Silicon. More platforms are coming soon.",
+    "coming": "Coming soon",
     "packages": {
       "apk": "Tải xuống APK",
       "dmg": "Tải xuống DMG",
@@ -1292,7 +1292,7 @@ export const generatedWebsiteCopy = {
       "deb": "Tải xuống DEB",
       "appimage": "Tải xuống hình ảnh ứng dụng"
     },
-    "releaseGate": "Chưa có tạo phẩm phát hành công khai nào được phê duyệt.",
+    "releaseGate": "Downloads use the privacy-minimised TEX8 download path. Release notes, files and checksums are also available on GitHub.",
     "nodeEyebrow": "Monero Fast Node · MFN",
     "nodeTitle": "Tuyến đường nhanh vào mạng Monero.",
     "nodeBody": "MFN là cơ sở hạ tầng nút TEX8 được xây dựng trên Monero Fast Node. Nó cung cấp dữ liệu blockchain một cách hiệu quả; Lõi ví gốc của bạn sẽ kiểm tra cục bộ những gì thuộc về bạn.",
@@ -1344,8 +1344,8 @@ export const generatedWebsiteCopy = {
         "Monero Fast Node là tên sản phẩm dành cho cơ sở hạ tầng nút TEX8. Công cụ kỹ thuật của nó dựa trên Monero Fast Node và vẫn tương thích với Monero."
       ],
       [
-        "Các nội dung tải xuống có được phê duyệt công khai không?",
-        "Chưa. Nguồn là công khai; các gói đã ký sẽ xuất hiện trong GitHub Bản phát hành sau khi quá trình kiểm tra nền tảng và bản phát hành của chúng vượt qua."
+        "Which downloads are available?",
+        "The alpha release provides a DMG for macOS with Apple Silicon and an Android APK for ARM64. iOS, Windows and Linux are coming soon. All files and checksums are in the linked GitHub release."
       ]
     ],
     "assistantTitle": "Monero trợ giúp",
@@ -1595,8 +1595,8 @@ export const generatedWebsiteCopy = {
     "derivationMethod": "Akselerasi, metode, dan bukti mentah",
     "downloadEyebrow": "Satu dompet, setiap layar",
     "downloadTitle": "Dapatkan paket yang tepat untuk perangkat Anda.",
-    "downloadBody": "Hingga rilis publik, tautan mengarah ke GitHub Rilis. Paket yang ditandatangani akan muncul di sana setelah setiap platform lolos penerimaan.",
-    "coming": "Area rilis",
+    "downloadBody": "The alpha release is available as an Android APK and a DMG for Apple Silicon. More platforms are coming soon.",
+    "coming": "Coming soon",
     "packages": {
       "apk": "Unduh APK",
       "dmg": "Unduh DMG",
@@ -1605,7 +1605,7 @@ export const generatedWebsiteCopy = {
       "deb": "Unduh DEB",
       "appimage": "Unduh AppImage"
     },
-    "releaseGate": "Belum ada artefak rilis publik yang disetujui.",
+    "releaseGate": "Downloads use the privacy-minimised TEX8 download path. Release notes, files and checksums are also available on GitHub.",
     "nodeEyebrow": "Monero Fast Node · MFN",
     "nodeTitle": "Rute cepat ke jaringan Monero.",
     "nodeBody": "MFN adalah infrastruktur node TEX8 yang dibangun di atas Monero Fast Node. Ini mengirimkan data blockchain secara efisien; inti dompet asli Anda memeriksa secara lokal apa yang menjadi milik Anda.",
@@ -1657,8 +1657,8 @@ export const generatedWebsiteCopy = {
         "Monero Fast Node adalah nama produk untuk infrastruktur node TEX8. Mesin teknisnya didasarkan pada Monero Fast Node dan tetap kompatibel dengan Monero."
       ],
       [
-        "Apakah unduhan disetujui secara publik?",
-        "Belum. Sumber bersifat publik; paket yang ditandatangani akan muncul di GitHub Rilis setelah rilis dan pemeriksaan platform lulus."
+        "Which downloads are available?",
+        "The alpha release provides a DMG for macOS with Apple Silicon and an Android APK for ARM64. iOS, Windows and Linux are coming soon. All files and checksums are in the linked GitHub release."
       ]
     ],
     "assistantTitle": "Monero bantuan",
@@ -1908,8 +1908,8 @@ export const generatedWebsiteCopy = {
     "derivationMethod": "Прискорення, метод і необроблені докази",
     "downloadEyebrow": "Один гаманець, кожен екран",
     "downloadTitle": "Отримайте відповідний пакет для свого пристрою.",
-    "downloadBody": "До публічного випуску посилання ведуть до випусків GitHub. Підписані пакети з’являться там після того, як кожна платформа пройде прийняття.",
-    "coming": "Область випусків",
+    "downloadBody": "The alpha release is available as an Android APK and a DMG for Apple Silicon. More platforms are coming soon.",
+    "coming": "Coming soon",
     "packages": {
       "apk": "Завантажити APK",
       "dmg": "Завантажити DMG",
@@ -1918,7 +1918,7 @@ export const generatedWebsiteCopy = {
       "deb": "Завантажити DEB",
       "appimage": "Завантажити AppImage"
     },
-    "releaseGate": "Ще не схвалено жодного публічного випуску артефактів.",
+    "releaseGate": "Downloads use the privacy-minimised TEX8 download path. Release notes, files and checksums are also available on GitHub.",
     "nodeEyebrow": "Monero Fast Node · MFN",
     "nodeTitle": "Швидкий маршрут до мережі Monero.",
     "nodeBody": "MFN — це інфраструктура вузла TEX8, побудована на Monero Fast Node. Він ефективно передає дані блокчейну; ваше рідне ядро ​​гаманця перевіряє локально те, що вам належить.",
@@ -1970,8 +1970,8 @@ export const generatedWebsiteCopy = {
         "Monero Fast Node — це назва продукту для вузлової інфраструктури TEX8. Його технічний механізм базується на Monero Fast Node і залишається сумісним з Monero."
       ],
       [
-        "Чи є завантаження загальнодоступними?",
-        "Ще ні. Джерело публічне; підписані пакунки з’являться у випусках GitHub після їх випуску та проходження перевірки платформи."
+        "Which downloads are available?",
+        "The alpha release provides a DMG for macOS with Apple Silicon and an Android APK for ARM64. iOS, Windows and Linux are coming soon. All files and checksums are in the linked GitHub release."
       ]
     ],
     "assistantTitle": "Monero допомога",
@@ -2221,8 +2221,8 @@ export const generatedWebsiteCopy = {
     "derivationMethod": "Hızlandırma, yöntem ve ham kanıt",
     "downloadEyebrow": "Tek cüzdan, her ekran",
     "downloadTitle": "Cihazınız için doğru paketi alın.",
-    "downloadBody": "Genel yayınlanıncaya kadar bağlantılar GitHub Sürümlerine yönlendirir. İmzalı paketler, her platform kabulü geçtikten sonra orada görünecektir.",
-    "coming": "Sürüm alanı",
+    "downloadBody": "The alpha release is available as an Android APK and a DMG for Apple Silicon. More platforms are coming soon.",
+    "coming": "Coming soon",
     "packages": {
       "apk": "APK'yı İndir",
       "dmg": "DMG'yi indirin",
@@ -2231,7 +2231,7 @@ export const generatedWebsiteCopy = {
       "deb": "DEB'yi İndir",
       "appimage": "Uygulama Resmini İndirin"
     },
-    "releaseGate": "Henüz hiçbir genel yayın yapısı onaylanmadı.",
+    "releaseGate": "Downloads use the privacy-minimised TEX8 download path. Release notes, files and checksums are also available on GitHub.",
     "nodeEyebrow": "Monero Fast Node · MFN",
     "nodeTitle": "Monero ağına hızlı yol.",
     "nodeBody": "MFN, Monero Fast Node üzerine kurulu TEX8 düğüm altyapısıdır. Blockchain verilerini verimli bir şekilde sunar; yerel cüzdan çekirdeğiniz size neyin ait olduğunu yerel olarak kontrol eder.",
@@ -2283,8 +2283,8 @@ export const generatedWebsiteCopy = {
         "Monero Fast Node, TEX8 düğüm altyapısının ürün adıdır. Teknik motoru Monero Fast Node tabanlıdır ve Monero uyumlu kalır."
       ],
       [
-        "İndirmeler genel olarak onaylanıyor mu?",
-        "Henüz değil. Kaynak halka açıktır; imzalı paketler, yayınlandıktan ve platform kontrolleri geçtikten sonra GitHub Sürümlerinde görünecektir."
+        "Which downloads are available?",
+        "The alpha release provides a DMG for macOS with Apple Silicon and an Android APK for ARM64. iOS, Windows and Linux are coming soon. All files and checksums are in the linked GitHub release."
       ]
     ],
     "assistantTitle": "Monero yardım",
@@ -2534,8 +2534,8 @@ export const generatedWebsiteCopy = {
     "derivationMethod": "त्वरण, विधि, और कच्चा सबूत",
     "downloadEyebrow": "एक वॉलेट, हर स्क्रीन",
     "downloadTitle": "अपने डिवाइस के लिए सही पैकेज प्राप्त करें।",
-    "downloadBody": "सार्वजनिक रिलीज़ होने तक, लिंक GitHub रिलीज़ की ओर ले जाते हैं। प्रत्येक प्लेटफ़ॉर्म की स्वीकृति के बाद हस्ताक्षरित पैकेज वहां दिखाई देंगे।",
-    "coming": "रिलीज़ क्षेत्र",
+    "downloadBody": "The alpha release is available as an Android APK and a DMG for Apple Silicon. More platforms are coming soon.",
+    "coming": "Coming soon",
     "packages": {
       "apk": "एपीके डाउनलोड करें",
       "dmg": "DMG डाउनलोड करें",
@@ -2544,7 +2544,7 @@ export const generatedWebsiteCopy = {
       "deb": "DEB डाउनलोड करें",
       "appimage": "ऐपइमेज डाउनलोड करें"
     },
-    "releaseGate": "अभी तक किसी भी सार्वजनिक रिलीज़ कलाकृतियों को मंजूरी नहीं दी गई है।",
+    "releaseGate": "Downloads use the privacy-minimised TEX8 download path. Release notes, files and checksums are also available on GitHub.",
     "nodeEyebrow": "Monero Fast Node · MFN",
     "nodeTitle": "Monero नेटवर्क में तेज़ मार्ग।",
     "nodeBody": "MFN TEX8 नोड इंफ्रास्ट्रक्चर है जो Monero Fast Node पर बनाया गया है। यह ब्लॉकचेन डेटा कुशलतापूर्वक वितरित करता है; आपका मूल वॉलेट कोर स्थानीय स्तर पर जांच करता है कि आपका क्या है।",
@@ -2596,8 +2596,8 @@ export const generatedWebsiteCopy = {
         "Monero Fast Node TEX8 नोड इंफ्रास्ट्रक्चर के लिए उत्पाद का नाम है। इसका तकनीकी इंजन Monero Fast Node पर आधारित है और Monero संगत रहता है।"
       ],
       [
-        "क्या डाउनलोड सार्वजनिक रूप से स्वीकृत हैं?",
-        "अभी नहीं। स्रोत सार्वजनिक है; हस्ताक्षरित पैकेज उनके जारी होने और प्लेटफ़ॉर्म जांच पास होने के बाद GitHub रिलीज़ में दिखाई देंगे।"
+        "Which downloads are available?",
+        "The alpha release provides a DMG for macOS with Apple Silicon and an Android APK for ARM64. iOS, Windows and Linux are coming soon. All files and checksums are in the linked GitHub release."
       ]
     ],
     "assistantTitle": "Monero सहायता",
@@ -2847,8 +2847,8 @@ export const generatedWebsiteCopy = {
     "derivationMethod": "سرعت، طریقہ، اور خام ثبوت",
     "downloadEyebrow": "ایک پرس، ہر اسکرین",
     "downloadTitle": "اپنے آلے کے لیے صحیح پیکیج حاصل کریں۔",
-    "downloadBody": "عوامی ریلیز تک، لنکس GitHub ریلیز کی طرف لے جاتے ہیں۔ ہر پلیٹ فارم کی منظوری کے بعد دستخط شدہ پیکجز وہاں ظاہر ہوں گے۔",
-    "coming": "علاقہ جاری کرتا ہے۔",
+    "downloadBody": "The alpha release is available as an Android APK and a DMG for Apple Silicon. More platforms are coming soon.",
+    "coming": "Coming soon",
     "packages": {
       "apk": "APK ڈاؤن لوڈ کریں۔",
       "dmg": "DMG ڈاؤن لوڈ کریں۔",
@@ -2857,7 +2857,7 @@ export const generatedWebsiteCopy = {
       "deb": "DEB ڈاؤن لوڈ کریں۔",
       "appimage": "AppImage ڈاؤن لوڈ کریں۔"
     },
-    "releaseGate": "ابھی تک عوامی ریلیز کے کسی نمونے کو منظور نہیں کیا گیا ہے۔",
+    "releaseGate": "Downloads use the privacy-minimised TEX8 download path. Release notes, files and checksums are also available on GitHub.",
     "nodeEyebrow": "Monero Fast Node · MFN",
     "nodeTitle": "Monero نیٹ ورک میں تیز رفتار راستہ۔",
     "nodeBody": "MFN TEX8 نوڈ انفراسٹرکچر ہے جو Monero Fast Node پر بنایا گیا ہے۔ یہ مؤثر طریقے سے بلاکچین ڈیٹا فراہم کرتا ہے۔ آپ کا مقامی بٹوے کور مقامی طور پر چیک کرتا ہے کہ آپ کا کیا ہے۔",
@@ -2909,8 +2909,8 @@ export const generatedWebsiteCopy = {
         "Monero Fast Node TEX8 نوڈ انفراسٹرکچر کے لئے پروڈکٹ کا نام ہے۔ اس کا تکنیکی انجن Monero Fast Node پر مبنی ہے اور Monero مطابقت رکھتا ہے۔"
       ],
       [
-        "کیا ڈاؤن لوڈ عوامی طور پر منظور شدہ ہیں؟",
-        "ابھی تک نہیں۔ ماخذ عوامی ہے؛ دستخط شدہ پیکجز GitHub ریلیز میں ظاہر ہوں گے جب ان کی ریلیز اور پلیٹ فارم چیک پاس ہو جائیں گے۔"
+        "Which downloads are available?",
+        "The alpha release provides a DMG for macOS with Apple Silicon and an Android APK for ARM64. iOS, Windows and Linux are coming soon. All files and checksums are in the linked GitHub release."
       ]
     ],
     "assistantTitle": "Monero مدد",
@@ -3160,8 +3160,8 @@ export const generatedWebsiteCopy = {
     "derivationMethod": "Accélération, méthode et preuves brutes",
     "downloadEyebrow": "Un portefeuille, chaque écran",
     "downloadTitle": "Obtenez le package adapté à votre appareil.",
-    "downloadBody": "Jusqu'à la publication publique, les liens mènent aux versions GitHub. Les packages signés y apparaîtront une fois que chaque plate-forme aura été acceptée.",
-    "coming": "Zone des versions",
+    "downloadBody": "The alpha release is available as an Android APK and a DMG for Apple Silicon. More platforms are coming soon.",
+    "coming": "Coming soon",
     "packages": {
       "apk": "Télécharger l'APK",
       "dmg": "Télécharger DMG",
@@ -3170,7 +3170,7 @@ export const generatedWebsiteCopy = {
       "deb": "Télécharger DEB",
       "appimage": "Télécharger AppImage"
     },
-    "releaseGate": "Aucun artefact de diffusion publique n'a encore été approuvé.",
+    "releaseGate": "Downloads use the privacy-minimised TEX8 download path. Release notes, files and checksums are also available on GitHub.",
     "nodeEyebrow": "Monero Fast Node · MFN",
     "nodeTitle": "La voie rapide vers le réseau Monero.",
     "nodeBody": "MFN est une infrastructure de nœuds TEX8 construite sur Monero Fast Node. Il fournit efficacement des données blockchain; votre noyau de portefeuille natif vérifie localement ce qui vous appartient.",
@@ -3222,8 +3222,8 @@ export const generatedWebsiteCopy = {
         "Monero Fast Node est le nom de produit pour l'infrastructure de nœuds TEX8. Son moteur technique est basé sur Monero Fast Node et reste compatible Monero."
       ],
       [
-        "Les téléchargements sont-ils approuvés publiquement?",
-        "Pas encore. La source est publique; les packages signés apparaîtront dans les versions GitHub une fois leur version et les vérifications de la plate-forme réussies."
+        "Which downloads are available?",
+        "The alpha release provides a DMG for macOS with Apple Silicon and an Android APK for ARM64. iOS, Windows and Linux are coming soon. All files and checksums are in the linked GitHub release."
       ]
     ],
     "assistantTitle": "Monero aide",
@@ -3473,8 +3473,8 @@ export const generatedWebsiteCopy = {
     "derivationMethod": "Pagpapabilis, paraan, at raw na katibayan",
     "downloadEyebrow": "Isang wallet, bawat screen",
     "downloadTitle": "Kunin ang tamang pakete para sa iyong aparato.",
-    "downloadBody": "Hanggang sa pampublikong paglabas, ang mga link ay humahantong sa GitHub Mga Paglabas. Ang mga naka - sign na pakete ay lilitaw doon pagkatapos ipasa ng bawat platform ang pagtanggap.",
-    "coming": "Lugar ng pagpapalabas",
+    "downloadBody": "The alpha release is available as an Android APK and a DMG for Apple Silicon. More platforms are coming soon.",
+    "coming": "Coming soon",
     "packages": {
       "apk": "Video Compressor - Fast Compress Video",
       "dmg": "I - download ang DMG",
@@ -3483,7 +3483,7 @@ export const generatedWebsiteCopy = {
       "deb": "I - download ang DEB",
       "appimage": "I - download ang AppImage"
     },
-    "releaseGate": "Wala pang naaprubahan na public release artifacts.",
+    "releaseGate": "Downloads use the privacy-minimised TEX8 download path. Release notes, files and checksums are also available on GitHub.",
     "nodeEyebrow": "Monero Fast Node · MFN",
     "nodeTitle": "Ang mabilis na ruta sa Monero network.",
     "nodeBody": "MFN ay TEX8 node infrastructure na binuo sa Monero Fast Node. Ito ay naghahatid ng blockchain data mahusay; ang iyong katutubong wallet core tseke lokal kung ano ang nabibilang sa iyo.",
@@ -3535,8 +3535,8 @@ export const generatedWebsiteCopy = {
         "Monero Fast Node ay ang pangalan ng produkto para sa imprastraktura ng TEX8 node. Ang teknikal na makina nito ay batay sa Monero Fast Node at nananatiling Monero compatible."
       ],
       [
-        "Inaprubahan ba ng publiko ang mga pag - download?",
-        "Hindi pa. Pampubliko ang pinagmulan; lilitaw ang mga naka - sign na pakete sa __ MFWTERM0 __ Mga Paglabas pagkatapos ng kanilang paglabas at mga tseke sa platform."
+        "Which downloads are available?",
+        "The alpha release provides a DMG for macOS with Apple Silicon and an Android APK for ARM64. iOS, Windows and Linux are coming soon. All files and checksums are in the linked GitHub release."
       ]
     ],
     "assistantTitle": "Monero tulong",
@@ -3786,8 +3786,8 @@ export const generatedWebsiteCopy = {
     "derivationMethod": "加速、方法、および生の証拠",
     "downloadEyebrow": "1 つのウォレット、すべての画面",
     "downloadTitle": "デバイスに適切なパッケージを入手してください。",
-    "downloadBody": "公開リリースまで、リンクは GitHub リリースにつながります。各プラットフォームが承認を通過すると、署名済みパッケージがそこに表示されます。",
-    "coming": "リリース領域",
+    "downloadBody": "The alpha release is available as an Android APK and a DMG for Apple Silicon. More platforms are coming soon.",
+    "coming": "Coming soon",
     "packages": {
       "apk": "APK をダウンロード",
       "dmg": "DMG をダウンロード",
@@ -3796,7 +3796,7 @@ export const generatedWebsiteCopy = {
       "deb": "DEB をダウンロード",
       "appimage": "AppImage をダウンロード"
     },
-    "releaseGate": "公開リリース アーティファクトはまだ承認されていません。",
+    "releaseGate": "Downloads use the privacy-minimised TEX8 download path. Release notes, files and checksums are also available on GitHub.",
     "nodeEyebrow": "Monero Fast Node · MFN",
     "nodeTitle": "Monero ネットワークへの高速ルート。",
     "nodeBody": "MFN は、Monero Fast Node 上に構築された TEX8 ノード インフラストラクチャです。ブロックチェーン データを効率的に配信します。ネイティブウォレットコアは、あなたのものをローカルにチェックします。",
@@ -3848,8 +3848,8 @@ export const generatedWebsiteCopy = {
         "Monero Fast Node は、TEX8 ノード インフラストラクチャの製品名です。その技術エンジンは Monero Fast Node に基づいており、Monero との互換性が維持されています。"
       ],
       [
-        "ダウンロードは公的に承認されていますか?",
-        "まだです。ソースは公開されています。署名済みパッケージは、リリースとプラットフォーム チェックに合格した後、GitHub リリースに表示されます。"
+        "Which downloads are available?",
+        "The alpha release provides a DMG for macOS with Apple Silicon and an Android APK for ARM64. iOS, Windows and Linux are coming soon. All files and checksums are in the linked GitHub release."
       ]
     ],
     "assistantTitle": "Monero ヘルプ",
@@ -4099,8 +4099,8 @@ export const generatedWebsiteCopy = {
     "derivationMethod": "가속, 방법 및 원시 증거",
     "downloadEyebrow": "하나의 지갑, 모든 화면",
     "downloadTitle": "장치에 적합한 패키지를 구입하세요.",
-    "downloadBody": "공개 릴리스까지 링크는 GitHub 릴리스로 연결됩니다. 각 플랫폼이 승인을 통과한 후에 서명된 패키지가 표시됩니다.",
-    "coming": "릴리스 영역",
+    "downloadBody": "The alpha release is available as an Android APK and a DMG for Apple Silicon. More platforms are coming soon.",
+    "coming": "Coming soon",
     "packages": {
       "apk": "APK 다운로드",
       "dmg": "DMG 다운로드",
@@ -4109,7 +4109,7 @@ export const generatedWebsiteCopy = {
       "deb": "DEB 다운로드",
       "appimage": "앱 이미지 다운로드"
     },
-    "releaseGate": "아직 공개 릴리스 아티팩트가 승인되지 않았습니다.",
+    "releaseGate": "Downloads use the privacy-minimised TEX8 download path. Release notes, files and checksums are also available on GitHub.",
     "nodeEyebrow": "Monero Fast Node · MFN",
     "nodeTitle": "Monero 네트워크로의 빠른 경로입니다.",
     "nodeBody": "MFN은 Monero Fast Node에 구축된 TEX8 노드 인프라입니다. 블록체인 데이터를 효율적으로 전달합니다. 귀하의 기본 지갑 코어는 귀하에게 속한 것이 무엇인지 로컬로 확인합니다.",
@@ -4161,8 +4161,8 @@ export const generatedWebsiteCopy = {
         "Monero Fast Node은 TEX8 노드 인프라의 제품 이름입니다. 기술 엔진은 Monero Fast Node을 기반으로 하며 Monero과의 호환성을 유지합니다."
       ],
       [
-        "다운로드가 공개적으로 승인됩니까?",
-        "아직은 아닙니다. 소스는 공개되어 있습니다. 서명된 패키지는 릴리스 및 플랫폼 검사가 통과된 후 GitHub 릴리스에 나타납니다."
+        "Which downloads are available?",
+        "The alpha release provides a DMG for macOS with Apple Silicon and an Android APK for ARM64. iOS, Windows and Linux are coming soon. All files and checksums are in the linked GitHub release."
       ]
     ],
     "assistantTitle": "Monero 도움말",
@@ -4412,8 +4412,8 @@ export const generatedWebsiteCopy = {
     "derivationMethod": "التسريع والطريقة والأدلة الأولية",
     "downloadEyebrow": "محفظة واحدة في كل شاشة",
     "downloadTitle": "احصل على الحزمة المناسبة لجهازك.",
-    "downloadBody": "حتى الإصدار العام، تؤدي الروابط إلى إصدارات GitHub. ستظهر الحزم الموقعة هناك بعد اجتياز كل منصة للقبول.",
-    "coming": "منطقة الإصدارات",
+    "downloadBody": "The alpha release is available as an Android APK and a DMG for Apple Silicon. More platforms are coming soon.",
+    "coming": "Coming soon",
     "packages": {
       "apk": "تنزيل APK",
       "dmg": "تنزيل DMG",
@@ -4422,7 +4422,7 @@ export const generatedWebsiteCopy = {
       "deb": "تنزيل DEB",
       "appimage": "تنزيل AppImage"
     },
-    "releaseGate": "لم تتم الموافقة على أية عناصر للإصدار العام حتى الآن.",
+    "releaseGate": "Downloads use the privacy-minimised TEX8 download path. Release notes, files and checksums are also available on GitHub.",
     "nodeEyebrow": "Monero Fast Node · MFN",
     "nodeTitle": "المسار السريع إلى شبكة Monero.",
     "nodeBody": "MFN عبارة عن بنية أساسية لعقدة TEX8 مبنية على Monero Fast Node. فهو يقدم بيانات blockchain بكفاءة. يقوم جوهر محفظتك الأصلية بالتحقق محليًا مما يخصك.",
@@ -4474,8 +4474,8 @@ export const generatedWebsiteCopy = {
         "Monero Fast Node هو اسم المنتج للبنية التحتية لعقدة TEX8. يعتمد محركها الفني على Monero Fast Node ويظل متوافقًا مع Monero."
       ],
       [
-        "هل تمت الموافقة على التنزيلات بشكل علني؟",
-        "ليس بعد. المصدر عام؛ ستظهر الحزم الموقعة في إصدارات GitHub بعد اجتياز إصدارها وفحوصات النظام الأساسي."
+        "Which downloads are available?",
+        "The alpha release provides a DMG for macOS with Apple Silicon and an Android APK for ARM64. iOS, Windows and Linux are coming soon. All files and checksums are in the linked GitHub release."
       ]
     ],
     "assistantTitle": "Monero مساعدة",
@@ -4725,8 +4725,8 @@ export const generatedWebsiteCopy = {
     "derivationMethod": "加速、方法和原始证据",
     "downloadEyebrow": "一个钱包，每个屏幕",
     "downloadTitle": "为您的设备获取正确的软件包。",
-    "downloadBody": "在公开发布之前，链接会指向 GitHub 版本。每个平台通过验收后，签名的包将出现在此处。",
-    "coming": "发布区域",
+    "downloadBody": "The alpha release is available as an Android APK and a DMG for Apple Silicon. More platforms are coming soon.",
+    "coming": "Coming soon",
     "packages": {
       "apk": "下载 APK",
       "dmg": "下载 DMG",
@@ -4735,7 +4735,7 @@ export const generatedWebsiteCopy = {
       "deb": "下载 DEB",
       "appimage": "下载 AppImage"
     },
-    "releaseGate": "尚未批准任何公开发布的工件。",
+    "releaseGate": "Downloads use the privacy-minimised TEX8 download path. Release notes, files and checksums are also available on GitHub.",
     "nodeEyebrow": "Monero Fast Node · MFN",
     "nodeTitle": "进入 Monero 网络的快速路由。",
     "nodeBody": "MFN 是构建在 Monero Fast Node 上的 TEX8 节点基础结构。高效传递区块链数据；您的本机钱包核心会在本地检查属于您的内容。",
@@ -4787,8 +4787,8 @@ export const generatedWebsiteCopy = {
         "Monero Fast Node 是 TEX8 节点基础设施的产品名称。其技术引擎基于 Monero Fast Node 并保持 Monero 兼容。"
       ],
       [
-        "下载是否得到公开批准？",
-        "还没有。来源是公开的；在发布和平台检查通过后，签名的软件包将出现在 GitHub 版本中。"
+        "Which downloads are available?",
+        "The alpha release provides a DMG for macOS with Apple Silicon and an Android APK for ARM64. iOS, Windows and Linux are coming soon. All files and checksums are in the linked GitHub release."
       ]
     ],
     "assistantTitle": "Monero 帮助",
@@ -5038,8 +5038,8 @@ export const generatedWebsiteCopy = {
     "derivationMethod": "加速、方法與原始證據",
     "downloadEyebrow": "一個錢包，每個螢幕",
     "downloadTitle": "為您的裝置取得正確的軟體包。",
-    "downloadBody": "在公開發布之前，連結會指向 GitHub 版本。每個平台通過驗收後，簽名的包將出現在此。",
-    "coming": "發佈區域",
+    "downloadBody": "The alpha release is available as an Android APK and a DMG for Apple Silicon. More platforms are coming soon.",
+    "coming": "Coming soon",
     "packages": {
       "apk": "下載 APK",
       "dmg": "下載 DMG",
@@ -5048,7 +5048,7 @@ export const generatedWebsiteCopy = {
       "deb": "下載 DEB",
       "appimage": "下載 AppImage"
     },
-    "releaseGate": "尚未批准任何公開發布的工件。",
+    "releaseGate": "Downloads use the privacy-minimised TEX8 download path. Release notes, files and checksums are also available on GitHub.",
     "nodeEyebrow": "Monero Fast Node · MFN",
     "nodeTitle": "進入 Monero 網路的快速路由。",
     "nodeBody": "MFN 是建構在 Monero Fast Node 上的 TEX8 節點基礎架構。高效傳遞區塊鏈資料；您的本機錢包核心會在本地檢查屬於您的內容。",
@@ -5100,8 +5100,8 @@ export const generatedWebsiteCopy = {
         "Monero Fast Node 是 TEX8 節點基礎架構的產品名稱。其技術引擎基於 Monero Fast Node 並保持 Monero 相容。"
       ],
       [
-        "下載是否已公開核准？",
-        "還沒有。來源是公開的；在發布和平台檢查通過後，簽署的軟體包將出現在 GitHub 版本中。"
+        "Which downloads are available?",
+        "The alpha release provides a DMG for macOS with Apple Silicon and an Android APK for ARM64. iOS, Windows and Linux are coming soon. All files and checksums are in the linked GitHub release."
       ]
     ],
     "assistantTitle": "Monero 幫助",

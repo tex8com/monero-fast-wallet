@@ -158,39 +158,51 @@ try {
     "document.readyState === 'complete' && document.querySelector('#mfw-name-check') !== null",
     "Registry form",
   );
-  await evaluate(
-    client,
-    sessionId,
-    `(() => {
-      const input = document.querySelector('#mfw-name-check');
-      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
-      setter.call(input, 'tex8');
-      input.dispatchEvent(new Event('input', { bubbles: true }));
-      return input.value === 'tex8';
-    })()`,
-  );
-  await delay(100);
-  await evaluate(
-    client,
-    sessionId,
-    "document.querySelector('.registry-check-form button[type=submit]').click()",
-  );
-  const result = await waitFor(
-    client,
-    sessionId,
-    `(() => {
-      const success = document.querySelector('.registry-check-result.is-taken');
-      const error = document.querySelector('.registry-check-result.is-error');
-      if (success) return { ok: true, text: success.textContent.trim() };
-      if (error) return { ok: false, text: error.textContent.trim() };
-      return null;
-    })()`,
-    "Registry result",
-  );
-  if (!result.ok || !result.text.includes("tex8.mfw")) {
-    throw new Error(`Registry frontend rejected tex8.mfw: ${result.text}`);
+  const cases = [
+    { label: "tex8", kind: "taken" }, // Legacy CLAIM record.
+    { label: "roland", kind: "taken" }, // Current owner-signed record.
+    { label: `registry-smoke-${Date.now().toString(36)}`, kind: "available" },
+  ];
+  for (const { label, kind } of cases) {
+    await evaluate(
+      client,
+      sessionId,
+      `(() => {
+        const input = document.querySelector('#mfw-name-check');
+        const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+        setter.call(input, ${JSON.stringify(label)});
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+      })()`,
+    );
+    await waitFor(
+      client,
+      sessionId,
+      `document.querySelector('#mfw-name-check').value === ${JSON.stringify(label)} &&
+       document.querySelector('.registry-check-result') === null`,
+      "Previous Registry result cleared",
+    );
+    await evaluate(
+      client,
+      sessionId,
+      "document.querySelector('.registry-check-form button[type=submit]').click()",
+    );
+    const result = await waitFor(
+      client,
+      sessionId,
+      `(() => {
+        const result = document.querySelector('.registry-check-result');
+        return result ? {
+          ok: result.classList.contains(${JSON.stringify(`is-${kind}`)}),
+          text: result.textContent.trim(),
+        } : null;
+      })()`,
+      `Registry result for ${label}.mfw`,
+    );
+    if (!result.ok || !result.text.includes(`${label}.mfw`)) {
+      throw new Error(`Registry frontend rejected ${label}.mfw (${kind}): ${result.text}`);
+    }
+    console.log(`Registry frontend smoke passed (${kind}): ${result.text}`);
   }
-  console.log(`Registry frontend smoke passed: ${result.text}`);
 } finally {
   client?.close();
   await stopBrowser(browser);

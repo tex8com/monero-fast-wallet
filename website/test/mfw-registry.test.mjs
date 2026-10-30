@@ -49,6 +49,118 @@ function finalizedResolution(overrides = {}) {
   });
 }
 
+// Sanitized HTTP 200 response from /v1/mfw/names/roland.mfw. Public key,
+// hash, binding and signature bytes are synthetic; the live wire shape and
+// 194-byte signed record are preserved. Payment verification stays native.
+function signedLiveResolution(overrides = {}) {
+  return finalizedResolution({
+    canonicalName: "roland.mfw",
+    publicSpendKeyHex: "11".repeat(32),
+    publicViewKeyHex: "22".repeat(32),
+    ownerPublicKeyHex: "33".repeat(32),
+    sequence: 0,
+    recordHeight: 3_774_848,
+    sourceTxidHex: "44".repeat(32),
+    expiryHeight: 4_037_648,
+    chainTipHeight: 3_795_153,
+    confirmations: 20_306,
+    recordPayloadHex: [
+      "4d46574e01020000000006726f6c616e64",
+      "33".repeat(32),
+      "00",
+      "11".repeat(32),
+      "22".repeat(32),
+      "55".repeat(16),
+      "66".repeat(64),
+    ].join(""),
+    signingOwnerPublicKeyHex: "33".repeat(32),
+    recordBlockHashHex: "77".repeat(32),
+    chainTipHashHex: "88".repeat(32),
+    ...overrides,
+  });
+}
+
+test("a registered signed name from the live resolver is taken, not an adapter error", async () => {
+  const live = signedLiveResolution();
+  assert.equal(live.recordPayloadHex.length / 2, 194);
+  const resolution = await lookupMfwName("roland", {
+    fetcher: async () => ({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify(live),
+    }),
+  });
+  assert.equal(availabilityFromResolution(resolution).kind, "taken");
+  assert.equal(resolution.canonicalName, "roland.mfw");
+  assert.equal(resolution.confirmations, 20_306);
+});
+
+test("signed records require their complete owner metadata and stay within protocol bounds", () => {
+  for (const label of ["a", "a".repeat(63)]) {
+    const canonicalName = `${label}.mfw`;
+    const live = signedLiveResolution();
+    const recordPayloadHex =
+      "4d46574e010200000000" +
+      label.length.toString(16).padStart(2, "0") +
+      Buffer.from(label, "ascii").toString("hex") +
+      live.recordPayloadHex.slice(34);
+    assert.equal(recordPayloadHex.length / 2, 188 + label.length);
+    assert.equal(
+      availabilityFromResolution(parseMfwResolution(
+        signedLiveResolution({ canonicalName, recordPayloadHex }), canonicalName,
+      )).kind,
+      "taken",
+    );
+  }
+  for (const change of [
+    { ownerPublicKeyHex: "" },
+    { signingOwnerPublicKeyHex: "" },
+    { sequence: 0x1_0000_0000 },
+    { recordPayloadHex: "ab".repeat(153) },
+    { recordPayloadHex: "ab".repeat(188) },
+    { recordPayloadHex: "ab".repeat(252) },
+    { recordPayloadHex: "ab".repeat(194) + "a" },
+  ]) {
+    assert.throws(
+      () => parseMfwResolution(signedLiveResolution(change), "roland.mfw"),
+      /invalid_record/,
+    );
+  }
+  const missingOwnerMetadata = signedLiveResolution();
+  delete missingOwnerMetadata.ownerPublicKeyHex;
+  delete missingOwnerMetadata.signingOwnerPublicKeyHex;
+  delete missingOwnerMetadata.sequence;
+  assert.throws(
+    () => parseMfwResolution(missingOwnerMetadata, "roland.mfw"),
+    /invalid_record/,
+  );
+});
+
+test("resolver failures and unknown statuses never become available", async () => {
+  for (const status of ["unknown", "error", "revoked"]) {
+    await assert.rejects(
+      lookupMfwName("roland", {
+        fetcher: async () => ({
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify(signedLiveResolution({ status })),
+        }),
+      }),
+      /invalid_response/,
+    );
+  }
+  await assert.rejects(
+    lookupMfwName("alice", {
+      fetcher: async () => ({
+        ok: false,
+        status: 503,
+        text: async () => JSON.stringify(emptyResolution()),
+      }),
+    }),
+    /resolver_http_503/,
+  );
+});
+
 test("MFW names are canonicalized with the strict V1 ASCII label", () => {
   assert.equal(canonicalMfwName(" Alice.MFW "), "alice.mfw");
   assert.equal(canonicalMfwName("fast-wallet"), "fast-wallet.mfw");
