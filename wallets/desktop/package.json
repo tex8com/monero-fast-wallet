@@ -19,6 +19,7 @@
     "test:mfw-contract": "node --test scripts/test-mfw-name-contract.mjs",
     "test:update-contract": "node --test scripts/test-app-update-contract.mjs",
     "test:push-contract": "node --experimental-strip-types --test scripts/test-fast-wallet-push-contract.mjs scripts/test-notification-self-test.mjs",
+    "test:notification-agent": "node --test scripts/test-notification-agent-lifecycle.mjs && node scripts/test-agent-runtime.mjs",
     "test:platform-contract": "node --test scripts/test-platform-release-contract.mjs",
     "test:acceleration-contract": "node --test scripts/test-fast-crypto-packaging-contract.mjs",
     "test:linux-push-e2e": "node scripts/test-linux-notification-agent-e2e.mjs",

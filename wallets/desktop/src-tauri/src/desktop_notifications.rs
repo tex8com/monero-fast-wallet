@@ -99,6 +99,7 @@ pub struct NotificationInstallationStatus {
     pub delivery: String,
     pub background_mode_supported: bool,
     pub background_agent_config_path: Option<String>,
+    pub background_agent_status: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -186,6 +187,47 @@ pub async fn reconcile_gateway(app: &AppHandle) -> Result<NotificationInstallati
     reconcile_gateway_locked(app, false).await
 }
 
+fn current_background_agent_status(
+    app: &AppHandle,
+    installation: &NotificationInstallation,
+) -> Result<Option<String>, String> {
+    if !matches!(installation.provider.as_str(), "windows-agent" | "linux-agent") {
+        return Ok(None);
+    }
+    if !installation.enabled || !installation.background_mode_enabled {
+        return Ok(Some("disabled".to_owned()));
+    }
+    Ok(Some(crate::background_agent_health::status(
+        &notification_path(app, "agent-health.json")?, now(),
+    ).to_owned()))
+}
+
+async fn reconcile_background_agent(
+    app: &AppHandle,
+    expected: &NotificationInstallation,
+    retry: bool,
+) -> Result<(), String> {
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
+    {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        static RECONCILED: AtomicBool = AtomicBool::new(false);
+        if !expected.background_mode_enabled { return Ok(()); }
+        if !retry && RECONCILED.load(Ordering::SeqCst)
+            && current_background_agent_status(app, expected)?.as_deref() == Some("connected")
+        { return Ok(()); }
+        let handle = app.clone();
+        tokio::task::spawn_blocking(move || {
+            crate::windows_notification_agent::reconcile(&handle, true)?;
+            crate::linux_notification_agent::reconcile(&handle, true)
+        }).await.map_err(|_| "Background notification startup could not be checked.".to_owned())??;
+        ensure_preference_current(app, expected)?;
+        RECONCILED.store(true, Ordering::SeqCst);
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+    let _ = (app, expected, retry);
+    Ok(())
+}
+
 pub async fn disable_delivery(app: &AppHandle) -> Result<NotificationInstallationStatus, String> {
     // Finish any provider POST before removing delivery. Persist the user's
     // off choice before awaiting the network, even if the remote call fails.
@@ -205,6 +247,7 @@ async fn reconcile_gateway_locked(app: &AppHandle, retry: bool) -> Result<Notifi
     if !installation.enabled {
         return status_for_installation(app, installation);
     }
+    reconcile_background_agent(app, &expected, retry).await?;
     resume_macos_apns_registration(app, &expected, &mut installation, retry).await?;
     refresh_platform_endpoint(&mut installation);
     write_installation_if_current(app, &expected, &installation)?;
@@ -388,7 +431,7 @@ pub fn consume_pending_open(app: &AppHandle) -> Result<Option<NotificationEvent>
     if !valid_open_event(&event) {
         return Err("Pending notification event is invalid.".to_owned());
     }
-    let _ = fs::remove_file(path);
+    crate::notification_inbox::persist_then_remove(&path, || record_notification_received(app, &event))?;
     Ok(Some(event))
 }
 
@@ -469,12 +512,16 @@ fn status_for_installation(
             "needs-refresh"
         }.to_owned();
     }
+    let background_agent_status = current_background_agent_status(app, &installation)?;
+    let actual_delivery = if background_agent_status.as_deref().is_some_and(|status| status != "connected")
+        && installation.enabled { "local-while-open".to_owned() } else { delivery(&installation) };
     Ok(NotificationInstallationStatus {
-        delivery: delivery(&installation),
+        delivery: actual_delivery,
         // APNs owns closed-app delivery on macOS. The optional local agent is
         // intentionally a Windows/Linux feature until a macOS fallback exists.
         background_mode_supported: matches!(platform(), "windows" | "linux"),
         background_agent_config_path: background_agent_config_path(app)?,
+        background_agent_status,
         installation,
     })
 }
@@ -544,24 +591,50 @@ fn load(app: &AppHandle) -> Result<Option<NotificationInstallation>, String> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(_) => return Err("Desktop notification installation could not be read.".to_owned()),
     };
-    let mut installation = serde_json::from_str::<NotificationInstallation>(&raw)
+    let installation = serde_json::from_str::<NotificationInstallation>(&raw)
         .map_err(|_| "Desktop notification installation is invalid.".to_owned())?;
+    normalize_loaded_installation(installation, platform(), provider(), default_endpoint).map(Some)
+}
+
+fn normalize_loaded_installation(
+    mut installation: NotificationInstallation,
+    native_platform: &str,
+    native_provider: &str,
+    new_endpoint: fn() -> String,
+) -> Result<NotificationInstallation, String> {
+    // Earlier Windows builds used WNS directly. Keep their notification choice,
+    // but never reuse a WNS channel or lease as a background-agent credential.
+    let legacy_wns = native_platform == "windows"
+        && installation.platform == "windows"
+        && installation.provider == "wns"
+        && matches!(installation.version, 1 | 2 | 3 | 4)
+        && installation.tenant_id == "tex8"
+        && installation.shop_id == "monero-wallet"
+        && installation.app_id == "monero-wallet-desktop";
     if !matches!(installation.version, 1 | 2 | 3 | 4 | CONTRACT_VERSION)
         || installation.installation_id.is_empty()
         || installation.installation_id.len() > 80
-        || !matches!(
+        || !(legacy_wns || matches!(
             installation.provider.as_str(),
             "apns" | "windows-agent" | "linux-agent" | "tauri-local"
-        )
+        ))
     {
         return Err("Desktop notification installation is invalid.".to_owned());
     }
-    installation.platform = platform().to_owned();
-    installation.provider = provider().to_owned();
-    if installation.endpoint.trim().is_empty() {
-        installation.endpoint = default_endpoint();
+    installation.platform = native_platform.to_owned();
+    installation.provider = native_provider.to_owned();
+    if legacy_wns {
+        installation.provider_status = "not-configured".to_owned();
+        installation.gateway_status = "unregistered".to_owned();
+        installation.gateway_generation = None;
+        installation.provider_token_hash = None;
+        installation.gateway_lease_expires_at = None;
+        installation.gateway_checked_at = None;
     }
-    Ok(Some(installation))
+    if legacy_wns || installation.endpoint.trim().is_empty() {
+        installation.endpoint = new_endpoint();
+    }
+    Ok(installation)
 }
 
 fn write_installation(
@@ -635,10 +708,13 @@ fn write_background_agent_config(
         // Persist the absolute application executable while the app is alive.
         // The user-level agent can then reopen this exact app after a click,
         // without relying on a globally registered URL scheme.
-        app_command: std::env::current_exe()
-            .ok()
-            .filter(|path| path.is_absolute())
-            .map(|path| path.to_string_lossy().into_owned()),
+        app_command: {
+            #[cfg(target_os = "linux")]
+            { crate::linux_notification_agent::persistent_app_command()? }
+            #[cfg(not(target_os = "linux"))]
+            { std::env::current_exe().ok().filter(|path| path.is_absolute())
+                .map(|path| path.to_string_lossy().into_owned()) }
+        },
         // The agent observes this state on a secure-stream heartbeat or a
         // reconnect.
         // Linux is additionally stopped by its user service; Windows is stopped
@@ -663,6 +739,11 @@ fn write_json<T: Serialize>(path: PathBuf, value: &T, message: &str) -> Result<(
     file.write_all(&content)
         .and_then(|_| file.sync_all())
         .map_err(|_| message.to_owned())?;
+    drop(file);
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
+    return crate::notification_inbox::commit_replacement(&temporary, &path)
+        .map_err(|_| message.to_owned());
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
     fs::rename(temporary, path).map_err(|_| message.to_owned())
 }
 
@@ -1135,6 +1216,7 @@ pub struct TestPushStatus {
     pub phase: String,
     pub receipt: Option<TestPushReceipt>,
     pub received_at: Option<u64>,
+    pub background_agent_status: Option<String>,
     pub permission_settings_available: bool,
 }
 fn read_test_push_state(app: &AppHandle) -> Result<TestPushState, String> {
@@ -1154,15 +1236,18 @@ fn test_setup_gate(app: &AppHandle) -> Result<String, String> {
         wallet.notifications_enabled, &wallet.alert_status, wallet.worker_receipt_verified,
         wallet.assignment_handle.is_some(), wallet.assignment_expires_at, now()));
     let status = status(app)?;
+    let background_agent_ready = status.background_agent_status.as_deref()
+        .is_none_or(|status| status == "connected");
     let installation = status.installation;
     let provider_ready = installation.provider_status == "ready" && match installation.provider.as_str() {
         "apns" => is_apns_device_token(&installation.endpoint),
         "windows-agent" | "linux-agent" => installation.background_mode_enabled,
         _ => false,
     };
-    Ok(crate::notification_test::setup_gate(has_fast, has_alerts,
+    let gate = crate::notification_test::setup_gate(has_fast, has_alerts,
         installation.enabled && installation.permission_status == "authorized", provider_ready,
-        installation.gateway_status == "active" && installation.gateway_lease_expires_at.is_some_and(|expires| expires > now())).to_owned())
+        installation.gateway_status == "active" && installation.gateway_lease_expires_at.is_some_and(|expires| expires > now()));
+    Ok(if gate == "ready" && !background_agent_ready { "agent-required" } else { gate }.to_owned())
 }
 #[cfg(target_os = "macos")]
 async fn macos_permission_settings_available(app: &AppHandle) -> bool {
@@ -1219,6 +1304,7 @@ pub async fn test_push_status(app: &AppHandle) -> Result<TestPushStatus, String>
         state.received.iter().find(|event| event.event_id == receipt.event_id));
     Ok(TestPushStatus {
         platform: platform().to_owned(),
+        background_agent_status: status(app)?.background_agent_status,
         available: reason == "ready", reason,
         phase: crate::notification_test::phase(state.receipt.as_ref().map(|receipt| receipt.event_id.as_str()),
             received.map(|event| event.event_id.as_str()), state.receipt.as_ref().map_or(0, |receipt| receipt.deliver_after), now()).to_owned(),
@@ -1239,7 +1325,7 @@ pub async fn request_test_push(app: &AppHandle) -> Result<TestPushStatus, String
     let mut gate = preflight.reason;
     crate::diagnostics::record(app, "notifications.test-push-preflight", &[
         ("phase", "preflight".to_owned()), ("reason", gate.clone())]);
-    if matches!(gate.as_str(), "provider-required" | "gateway-required") {
+    if matches!(gate.as_str(), "provider-required" | "gateway-required" | "agent-required") {
         if let Err(error) = reconcile_gateway_locked(app, true).await {
             crate::diagnostics::record(app, "notifications.test-push-resume-stopped", &[
                 ("phase", "resume".to_owned()), ("safeErrorCode", registration_error_code(&error).to_owned())]);
@@ -1247,10 +1333,25 @@ pub async fn request_test_push(app: &AppHandle) -> Result<TestPushStatus, String
         }
         gate = test_setup_gate(app)?;
     }
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
+    if gate == "agent-required" {
+        let expected = load_or_create(app)?;
+        let started = std::time::Instant::now();
+        while gate == "agent-required" && started.elapsed() < std::time::Duration::from_secs(45) {
+            ensure_preference_current(app, &expected)?;
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            gate = test_setup_gate(app)?;
+        }
+        crate::diagnostics::record(app, "notifications.agent-readiness", &[
+            ("phase", "waiting-for-agent".to_owned()), ("reason", gate.clone()),
+            ("elapsedMs", started.elapsed().as_millis().to_string())]);
+    }
     if gate != "ready" {
         crate::diagnostics::record(app, "notifications.test-push-gated", &[
             ("phase", "gated".to_owned()), ("reason", gate.clone())]);
-        return Err(format!("Push test setup is incomplete: {gate}"));
+        return Err(if gate == "agent-required" {
+            "push-test-agent-required: Background notification helper is not connected.".to_owned()
+        } else { format!("Push test setup is incomplete: {gate}") });
     }
     if preflight.phase == "scheduled" {
         return Err("A server push test is already awaiting receipt.".to_owned());
@@ -1329,7 +1430,11 @@ fn record_notification_received(app: &AppHandle, event: &NotificationEvent) -> R
     let _lock = TEST_PUSH_STATE_LOCK.lock().map_err(|_| "Push test state is busy.".to_owned())?;
     let mut state = read_test_push_state(app)?;
     if state.received.iter().any(|received| received.event_id == event.id) { return Ok(()); }
-    state.received.push(TestPushReceived { event_id: event.id.clone(), received_at: now() });
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
+    let received_at = crate::notification_inbox::received_timestamp(&event.received_at, now());
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+    let received_at = now();
+    state.received.push(TestPushReceived { event_id: event.id.clone(), received_at });
     if state.received.len() > 32 { state.received.remove(0); }
     write_json(notification_path(app, TEST_PUSH_STATE_FILE)?, &state, "Push test receipt could not be saved.")?;
     crate::diagnostics::record(app, "notifications.test-push-received", &[
@@ -1355,9 +1460,15 @@ pub fn consume_pending_events(app: &AppHandle) -> Result<Vec<NotificationEvent>,
             if let Ok(metadata) = fs::symlink_metadata(&path) {
                 if !metadata.is_file() || metadata.len() > 4096 { continue; }
             } else { continue; }
-            if let Ok(bytes) = fs::read(&path) {
-                if let Ok(event) = serde_json::from_slice::<NotificationEvent>(&bytes) {
-                    if valid_received_event(&event) { events.push(event); }
+            let bytes = match fs::read(&path) {
+                Ok(bytes) => bytes,
+                Err(_) => continue,
+            };
+            if let Ok(event) = serde_json::from_slice::<NotificationEvent>(&bytes) {
+                if valid_received_event(&event) {
+                    crate::notification_inbox::persist_then_remove(&path, || record_notification_received(app, &event))?;
+                    events.push(event);
+                    continue;
                 }
             }
             let _ = fs::remove_file(path);
@@ -1365,4 +1476,55 @@ pub fn consume_pending_events(app: &AppHandle) -> Result<Vec<NotificationEvent>,
     }
     for event in &events { record_notification_received(app, event)?; }
     Ok(events)
+}
+
+#[cfg(test)]
+mod installation_migration_tests {
+    use super::*;
+
+    fn legacy() -> NotificationInstallation {
+        let mut value = default_installation().unwrap();
+        value.version = 2;
+        value.platform = "windows".into();
+        value.provider = "wns".into();
+        value.endpoint = "https://synthetic.invalid/old-wns-channel".into();
+        value.enabled = true;
+        value.permission_status = "authorized".into();
+        value.background_mode_enabled = false;
+        value.gateway_status = "active".into();
+        value.gateway_generation = Some(10);
+        value.provider_token_hash = Some("synthetic-old-hash".into());
+        value.gateway_lease_expires_at = Some(100);
+        value.gateway_checked_at = Some(90);
+        value
+    }
+
+    #[test]
+    fn legacy_windows_wns_keeps_consent_but_clears_old_channel_and_lease() {
+        let old = legacy();
+        let id = old.installation_id.clone();
+        let value = normalize_loaded_installation(old, "windows", "windows-agent", String::new).unwrap();
+        assert_eq!(value.installation_id, id);
+        assert!(value.enabled);
+        assert_eq!(value.permission_status, "authorized");
+        assert!(!value.background_mode_enabled);
+        assert_eq!(value.provider, "windows-agent");
+        assert!(value.endpoint.is_empty());
+        assert_eq!(value.gateway_status, "unregistered");
+        assert_eq!(value.gateway_generation, None);
+        assert_eq!(value.provider_token_hash, None);
+        assert_eq!(value.gateway_lease_expires_at, None);
+        assert_eq!(value.gateway_checked_at, None);
+    }
+
+    #[test]
+    fn legacy_wns_is_not_accepted_on_other_platforms_or_newer_contracts() {
+        assert!(normalize_loaded_installation(legacy(), "macos", "apns", String::new).is_err());
+        let mut value = legacy();
+        value.version = CONTRACT_VERSION;
+        assert!(normalize_loaded_installation(value, "windows", "windows-agent", String::new).is_err());
+        let mut value = legacy();
+        value.app_id = "another-app".into();
+        assert!(normalize_loaded_installation(value, "windows", "windows-agent", String::new).is_err());
+    }
 }

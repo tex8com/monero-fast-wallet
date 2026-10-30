@@ -101,7 +101,7 @@ test('desktop embeds Tor for Onion profiles and keeps direct RPC available', () 
   );
   assert.match(native, /tor_transport::socks_address\(\)/);
   assert.match(notificationAgent, /connect_through_tor/);
-  assert.match(notificationAgent, /client_tls\(request, transport\)/);
+  assert.match(notificationAgent, /client_tls_with_config\(\s*request,\s*transport,/);
   assert.match(updateAdapter, /invoke<string>\('embedded_tor_proxy_uri'\)/);
   assert.match(tauriConfig, /connect-src 'self';/);
   assert.doesNotMatch(tauriConfig, /connect-src[^;]*https:/);

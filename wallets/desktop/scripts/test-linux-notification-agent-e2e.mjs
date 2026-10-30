@@ -23,7 +23,7 @@ const opaqueEventId = `evt_${'a'.repeat(64)}`;
 const event = {
   id: opaqueEventId,
   category: 'monero.fast_wallet.incoming',
-  deepLink: `tex8://notification/${opaqueEventId}`,
+  deepLink: 'tex8://notification/incoming',
 };
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const agentPath = process.env.MONERO_FAST_WALLETD

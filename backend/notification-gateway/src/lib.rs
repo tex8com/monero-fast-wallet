@@ -1489,15 +1489,25 @@ struct StreamEventMessage {
     event: OpaqueNotificationEvent,
 }
 
+async fn subscribe_with_pending(
+    state: &GatewayState,
+    installation_id: &str,
+) -> (broadcast::Receiver<DeliverySignal>, Vec<OpaqueNotificationEvent>) {
+    // Subscribe before awaiting the queue lock or sending its snapshot. An
+    // enqueue in either interval must remain visible to this connection.
+    let signals = state.signals.subscribe();
+    let queued = state.store.lock().await.pending(installation_id);
+    (signals, queued)
+}
+
 async fn stream_connection(mut socket: WebSocket, state: GatewayState, installation_id: String) {
-    let queued = state.store.lock().await.pending(&installation_id);
+    let (mut signals, queued) = subscribe_with_pending(&state, &installation_id).await;
     for event in queued {
         if send_stream_event(&mut socket, event).await.is_err() {
             return;
         }
     }
 
-    let mut signals = state.signals.subscribe();
     let mut heartbeat = tokio::time::interval(Duration::from_secs(25));
     heartbeat.tick().await;
     loop {
@@ -3370,6 +3380,37 @@ mod tests {
                 .await,
             Err(ApiError::Conflict)
         ));
+    }
+
+    #[tokio::test]
+    async fn stream_subscribes_before_waiting_for_the_queue_snapshot() {
+        let fixture = fixture().await;
+        let state = fixture.state.clone();
+        let mut store = fixture.state.store.lock().await;
+        let connection = tokio::spawn(async move {
+            subscribe_with_pending(&state, INSTALLATION).await
+        });
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while fixture.state.signals.receiver_count() == 0 {
+                tokio::task::yield_now().await;
+            }
+        }).await.expect("connection must subscribe while the queue is locked");
+        let event = OpaqueNotificationEvent {
+            id: EVENT.to_owned(),
+            category: TEST_EVENT_CATEGORY.to_owned(),
+            deep_link: "tex8://notification/test".to_owned(),
+            received_at: fixture.now.to_string(),
+            opened: false,
+        };
+        store.enqueue_trusted_installation_event(INSTALLATION, event.clone()).unwrap();
+        assert!(fixture.state.signals.send(DeliverySignal {
+            installation_id: INSTALLATION.to_owned(),
+            event,
+        }).is_ok());
+        drop(store);
+        let (mut signals, queued) = connection.await.unwrap();
+        assert!(queued.iter().any(|event| event.id == EVENT));
+        assert_eq!(signals.try_recv().unwrap().event.id, EVENT);
     }
 
     #[tokio::test]

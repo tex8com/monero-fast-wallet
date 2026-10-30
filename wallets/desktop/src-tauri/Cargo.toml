@@ -70,6 +70,7 @@ reqwest = { version = "0.12", default-features = false, features = ["blocking", 
 zbus = "5.18"
 
 [target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "=0.62.2", features = ["Data_Xml_Dom", "Foundation", "UI_Notifications"] }
 arti-client = { version = "0.47", default-features = false, features = ["compression", "native-tls", "onion-service-client", "tokio"] }
 notify-rust = "4.11"
 raw-window-handle = "0.6"

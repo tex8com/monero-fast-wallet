@@ -84,6 +84,46 @@ test('only the exact server receipt validates; acceptance alone never means rece
   assert.equal(receivedPushTest(received), true);
 });
 
+test('Windows and Linux helper readiness is separate from registration and recovers through one real test request', async () => {
+  for (const platform of ['windows', 'linux']) {
+    let current = { ...ready, available: false, reason: 'agent-required', platform, backgroundAgentStatus: 'connecting' };
+    const pending = deferred();
+    const requests = [];
+    const view = mount(async command => {
+      requests.push(command);
+      if (command === 'request_test_push_notification') return pending.promise;
+      return current;
+    });
+    view.render(); await tick(); view.render();
+    assert.match(view.markup(), /no recent connection confirmed/);
+    assert.doesNotMatch(view.markup(), /Set up macOS banners/);
+    view.button(t('settings.testPushNotification')).props.onClick();
+    await tick(); view.render();
+    assert.ok(view.button(t('settings.pushTestAgentStarting')).props.disabled);
+    assert.equal(requests.filter(command => command === 'request_test_push_notification').length, 1);
+    current = { ...scheduled, platform, backgroundAgentStatus: 'connected' };
+    pending.resolve(current); await tick(); view.render();
+    assert.match(view.markup(), /TEX8 background helper: connected/);
+    assert.doesNotMatch(view.markup(), /Test push received by this device/);
+    view.unmount();
+  }
+});
+
+test('helper health polling notices a connected or stale agent without focus and stops on unmount', async () => {
+  let current = { ...ready, platform: 'windows', backgroundAgentStatus: 'connected' };
+  const view = mount(async () => current);
+  view.render(); await tick(); view.render();
+  assert.match(view.markup(), /TEX8 background helper: connected/);
+  current = { ...current, available: false, reason: 'agent-required', backgroundAgentStatus: 'stale' };
+  const poll = [...view.timers.values()].find(timer => timer.delay === 5000);
+  assert.ok(poll);
+  poll.callback(); await tick(); view.render();
+  assert.match(view.markup(), /no recent connection confirmed/);
+  view.unmount();
+  // The fixture retains fired timeouts, so the active successor must be removed.
+  assert.equal([...view.timers.values()].filter(timer => timer !== poll).length, 0);
+});
+
 test('missing prerequisites give immediate visible help without sending a test', async () => {
   for (const reason of ['fast-wallet-required', 'alerts-required', 'permission-required']) {
     const commands = [];
@@ -503,10 +543,10 @@ test('native command uses authenticated fixed Tor gateway, strict 202 and persis
   assert.match(request, /valid_schedule/);
   assert.match(request, /let mut state = read_test_push_state\(app\)\?;\s*state\.receipt = Some\(receipt\.clone\(\)\)/);
   assert.match(native, /state\.received\.iter\(\)\.find\(\|event\| event\.event_id == receipt\.event_id\)/);
-  const gate = native.slice(native.indexOf('fn test_setup_gate'), native.indexOf('pub fn test_push_status'));
+  const gate = native.slice(native.indexOf('fn test_setup_gate'), native.indexOf('pub async fn test_push_status'));
   assert.match(gate, /notification_test::alerts_ready/);
   assert.doesNotMatch(gate, /wallet\.status/, 'encrypted alerts retain local-only legacy scanner status');
-  assert.doesNotMatch(request, /sleep|sendPrivacySafeNotificationTest|notifications_enabled\s*=/);
+  assert.doesNotMatch(request, /Duration::from_secs\(10\)|sendPrivacySafeNotificationTest|notifications_enabled\s*=/);
   for (const command of ['request_test_push_notification', 'test_push_notification_status', 'consume_pending_notification_events']) {
     const lib = read('../src-tauri/src/lib.rs');
     assert.match(lib, new RegExp(`fn ${command}[\\s\\S]*?require_app_unlocked\\(&protection\\)\\?;`));
@@ -521,7 +561,7 @@ test('APNs and WSS forward actual receipt through the common incoming wake witho
   assert.match(bridge, /g_apns_received_events\.emplace_back/);
   assert.match(bridge, /tex8_desktop_apns_take_received_event/);
   const daemon = read('../src-tauri/src/bin/monero-fast-walletd.rs');
-  assert.match(daemon, /forward_received_event\(config_path, &message\.event\)\?;\s*show_notification[\s\S]*?acknowledge_event/);
+  assert.match(daemon, /forward_received_event\(config_path, &event\)\?;[\s\S]*?DeliveryStage::PresentationPending[\s\S]*?show_notification[\s\S]*?DeliveryStage::OsAccepted[\s\S]*?acknowledge_event/);
   assert.match(daemon, /\.join\("received-events"\)/);
   assert.match(daemon, /opened: false/);
   const app = read('../src/App.tsx');

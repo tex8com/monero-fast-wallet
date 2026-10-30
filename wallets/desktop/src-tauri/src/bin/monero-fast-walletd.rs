@@ -1,3 +1,4 @@
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 //! Private, unprivileged background notification agent for Windows and Linux.
 //!
 //! It maintains one outbound WSS connection to the Tex8 notification gateway.
@@ -7,21 +8,28 @@
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 use keyring::Entry;
 use serde::Deserialize;
+use std::{env, fs};
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 use std::{
-    collections::VecDeque,
     io::{Read, Write},
     net::TcpStream,
     path::Path,
     process::Command,
     thread,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
-use std::{env, fs};
 #[cfg(any(target_os = "linux", target_os = "windows"))]
-use tungstenite::{client::IntoClientRequest, client_tls, connect, http::HeaderValue, Message};
+use tungstenite::{
+    client::IntoClientRequest, client_tls_with_config, handshake::HandshakeError,
+    http::HeaderValue, protocol::WebSocketConfig, Message,
+};
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 use zeroize::Zeroize;
+mod agent_runtime;
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+use agent_runtime::{AgentLog, DeliveryStage, Health, InstanceGuard, Journal};
+#[cfg(target_os = "windows")]
+mod windows_agent_toast;
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -80,9 +88,18 @@ fn main() {
 }
 
 fn run() -> Result<(), String> {
-    let config_path = parse_config_path()?;
+    let (config_path, open_notification) = agent_runtime::arguments(env::args().skip(1).collect())?;
     let config = read_config(&config_path)?;
     validate_config(&config)?;
+    if let Some(id) = open_notification {
+        #[cfg(target_os = "windows")]
+        return open_saved_notification(&config_path, &config, &id);
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = id;
+            return Err("persistent notification activation is Windows-only".into());
+        }
+    }
     #[cfg(not(any(target_os = "linux", target_os = "windows")))]
     {
         let _ = config;
@@ -107,57 +124,164 @@ fn validate_config(config: &AgentConfig) -> Result<(), String> {
     Ok(())
 }
 
-fn parse_config_path() -> Result<String, String> {
-    let mut args = env::args().skip(1);
-    while let Some(arg) = args.next() {
-        if arg == "--config" {
-            return args
-                .next()
-                .ok_or_else(|| "--config requires a path".to_owned());
-        }
-    }
-    Err("usage: monero-fast-walletd --config <path>".to_owned())
-}
-
 fn read_config(path: &str) -> Result<AgentConfig, String> {
+    if fs::metadata(path)
+        .map_err(|_| "config could not be read")?
+        .len()
+        > 16 * 1024
+    {
+        return Err("config exceeds its limit".into());
+    }
     let raw = fs::read_to_string(path).map_err(|_| "config could not be read".to_owned())?;
     serde_json::from_str(&raw).map_err(|_| "config is invalid".to_owned())
 }
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
-fn run_agent(config_path: String, mut config: AgentConfig) -> Result<(), String> {
-    let app_data_dir = Path::new(&config_path)
+fn run_agent(config_path: String, _initial_config: AgentConfig) -> Result<(), String> {
+    let config_path = fs::canonicalize(&config_path)
+        .map_err(|_| "agent config path is invalid")?
+        .into_os_string()
+        .into_string()
+        .map_err(|_| "agent config path is invalid")?;
+    let Some(_instance) = InstanceGuard::acquire(Path::new(&config_path))? else {
+        return Ok(());
+    };
+    let directory = Path::new(&config_path)
         .parent()
-        .and_then(Path::parent)
-        .ok_or_else(|| "notification app data directory is unavailable".to_owned())?;
-    monero_wallet_desktop::tor_transport::start_embedded_tor(app_data_dir.join("embedded-tor"));
+        .ok_or("agent directory is invalid")?;
+    let log = AgentLog::new(directory);
+    log.event("started", None);
+    Health::write(directory, "starting", false, None, None);
+    if !configuration_enabled(&config_path, None)? {
+        Health::write(directory, "disabled", false, None, None);
+        return Ok(());
+    }
+    let mut journal = Journal::open(directory).map_err(|error| {
+        log.event("journal_error", None);
+        Health::write(directory, "stopped", false, None, None);
+        error
+    })?;
+    // Independent process, independent Arti cache/state and state lock.
+    let tor_directory = directory.join("agent-tor");
+    fs::create_dir_all(&tor_directory).map_err(|_| "agent Tor directory unavailable")?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&tor_directory, fs::Permissions::from_mode(0o700))
+            .map_err(|_| "agent Tor directory unavailable")?;
+    }
+    monero_wallet_desktop::tor_transport::start_embedded_tor(tor_directory);
     let mut reconnect_delay_secs = 1_u64;
     loop {
-        config = read_config(&config_path)?;
+        let config = read_config(&config_path)?;
         validate_config(&config)?;
         if !config.enabled {
+            log.event("disabled", None);
+            Health::write(directory, "disabled", false, None, None);
             return Ok(());
         }
-        match run_stream_connection(&config_path, &config) {
+        Health::write(directory, "connecting", false, None, None);
+        let mut healthy = false;
+        let outcome =
+            run_stream_connection(&config_path, &config, &mut journal, &log, &mut healthy);
+        if healthy {
+            reconnect_delay_secs = 1;
+        }
+        match outcome {
             Ok(true) => return Ok(()),
             // A server-side close is still a disconnection. Wait before
             // reconnecting so a maintenance window can never turn into a
             // CPU-intensive reconnect loop.
-            Ok(false) => {
-                thread::sleep(Duration::from_secs(reconnect_delay_secs));
-                reconnect_delay_secs = (reconnect_delay_secs * 2).min(30);
-            }
-            Err(error) => {
-                eprintln!("monero-fast-walletd stream disconnected: {error}");
-                thread::sleep(Duration::from_secs(reconnect_delay_secs));
-                reconnect_delay_secs = (reconnect_delay_secs * 2).min(30);
-            }
+            Ok(false) => log.event("stream_closed", None),
+            Err(_) => log.event("stream_error", None),
         }
+        let deadline = Instant::now() + Duration::from_secs(reconnect_delay_secs);
+        Health::write(directory, "backoff", false, None, None);
+        let mut health_tick = Instant::now();
+        while Instant::now() < deadline {
+            if !configuration_enabled(&config_path, None)? {
+                log.event("disabled", None);
+                Health::write(directory, "disabled", false, None, None);
+                return Ok(());
+            }
+            if health_tick.elapsed() >= Duration::from_secs(5) {
+                Health::write(directory, "backoff", false, None, None);
+                health_tick = Instant::now();
+            }
+            thread::sleep(
+                Duration::from_millis(250).min(deadline.saturating_duration_since(Instant::now())),
+            );
+        }
+        reconnect_delay_secs = agent_runtime::retry_delay(reconnect_delay_secs, healthy);
     }
 }
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
-fn run_stream_connection(config_path: &str, config: &AgentConfig) -> Result<bool, String> {
+fn configuration_enabled(path: &str, expected: Option<&AgentConfig>) -> Result<bool, String> {
+    let current = read_config(path)?;
+    validate_config(&current)?;
+    if let Some(expected) = expected {
+        if current.installation_id != expected.installation_id
+            || current.service_url != expected.service_url
+            || current.app_command != expected.app_command
+        {
+            return Err("agent configuration changed".into());
+        }
+    }
+    Ok(current.enabled)
+}
+
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+struct PollingStream {
+    stream: TcpStream,
+    config_path: String,
+    expected: AgentConfig,
+}
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+impl PollingStream {
+    fn enabled(&self) -> std::io::Result<()> {
+        if configuration_enabled(&self.config_path, Some(&self.expected)).unwrap_or(false) {
+            Ok(())
+        } else {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::ConnectionAborted,
+                "agent configuration changed",
+            ))
+        }
+    }
+}
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+impl Read for PollingStream {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        self.enabled()?;
+        self.stream.read(buffer).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::TimedOut {
+                std::io::Error::new(std::io::ErrorKind::WouldBlock, "agent poll")
+            } else {
+                error
+            }
+        })
+    }
+}
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+impl Write for PollingStream {
+    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        self.enabled()?;
+        self.stream.write(buffer)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.stream.flush()
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+fn run_stream_connection(
+    config_path: &str,
+    config: &AgentConfig,
+    journal: &mut Journal,
+    log: &AgentLog,
+    healthy: &mut bool,
+) -> Result<bool, String> {
     let mut request = stream_url(config)?
         .into_client_request()
         .map_err(|_| "notification stream URL is invalid".to_owned())?;
@@ -166,7 +290,10 @@ fn run_stream_connection(config_path: &str, config: &AgentConfig) -> Result<bool
     request
         .headers_mut()
         .insert("x-fast-wallet-installation-id", capability);
-    let mut auth = load_installation_auth(&config.installation_id)?;
+    let mut auth = load_installation_auth(&config.installation_id).map_err(|error| {
+        log.event("auth_unavailable", None);
+        error
+    })?;
     let auth_header = HeaderValue::from_str(&auth)
         .map_err(|_| "notification installation authentication is invalid".to_owned())?;
     request
@@ -190,16 +317,65 @@ fn run_stream_connection(config_path: &str, config: &AgentConfig) -> Result<bool
     let local_test = cfg!(debug_assertions)
         && env::var_os("MONERO_FAST_WALLETD_TEST_AUTH").is_some()
         && matches!(host.as_str(), "127.0.0.1" | "localhost" | "::1");
-    let (mut socket, _) = if local_test {
-        connect(request)
-            .map_err(|_| "local notification test stream could not be connected".to_owned())?
+    let transport = if local_test {
+        let stream = TcpStream::connect((host.as_str(), port))
+            .map_err(|_| "local notification test stream unavailable")?;
+        stream
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .map_err(|_| "agent poll unavailable")?;
+        stream
+            .set_write_timeout(Some(Duration::from_secs(1)))
+            .map_err(|_| "agent poll unavailable")?;
+        stream
     } else {
-        let transport = connect_through_tor(&host, port)?;
-        client_tls(request, transport)
-            .map_err(|_| "notification stream could not be connected through Tor".to_owned())?
+        connect_through_tor(config_path, &host, port)?
     };
-    let mut recent_event_ids = VecDeque::with_capacity(64);
+    let transport = PollingStream {
+        stream: transport,
+        config_path: config_path.into(),
+        expected: config.clone(),
+    };
+    let mut attempt = client_tls_with_config(
+        request,
+        transport,
+        Some(WebSocketConfig {
+            max_message_size: Some(8192),
+            max_frame_size: Some(8192),
+            ..Default::default()
+        }),
+        None,
+    );
+    let handshake_started = Instant::now();
+    let (mut socket, _) = loop {
+        match attempt {
+            Ok(connected) => break connected,
+            Err(HandshakeError::Interrupted(handshake))
+                if handshake_started.elapsed() < Duration::from_secs(20) =>
+            {
+                attempt = handshake.handshake()
+            }
+            Err(_) => return Err("notification stream handshake failed".into()),
+        }
+    };
+    let directory = Path::new(config_path)
+        .parent()
+        .ok_or("agent directory invalid")?;
+    let mut last_peer = Instant::now();
+    let mut last_peer_at = agent_runtime::now();
+    let mut health_tick = Instant::now();
+    let mut os_phase = None;
+    log.event("stream_connected", None);
+    Health::write(directory, "connected", true, Some(last_peer_at), os_phase);
     loop {
+        if !configuration_enabled(config_path, Some(config))? {
+            log.event("disabled", None);
+            Health::write(directory, "disabled", false, Some(last_peer_at), os_phase);
+            return Ok(true);
+        }
+        if health_tick.elapsed() >= Duration::from_secs(5) {
+            Health::write(directory, "connected", true, Some(last_peer_at), os_phase);
+            health_tick = Instant::now();
+        }
         match socket.read() {
             Ok(Message::Text(text)) => {
                 let Ok(message) = serde_json::from_str::<StreamEventMessage>(&text) else {
@@ -211,41 +387,109 @@ fn run_stream_connection(config_path: &str, config: &AgentConfig) -> Result<bool
                 if !valid_supported_event(&message.event) {
                     continue;
                 }
-                if recent_event_ids.iter().any(|id| id == &message.event.id) {
-                    acknowledge_event(&mut socket, &message.event.id)?;
-                    continue;
+                *healthy = true;
+                last_peer = Instant::now();
+                last_peer_at = agent_runtime::now();
+                log.event("socket_received", Some(&message.event.id));
+                let record = journal.receive_event(
+                    &message.event.id,
+                    &message.event.category,
+                    &message.event.deep_link,
+                    agent_runtime::now(),
+                )?;
+                let mut event = message.event;
+                event.received_at = record.received_at.to_string();
+                forward_received_event(config_path, &event)?;
+                if !configuration_enabled(config_path, Some(config))? {
+                    return Ok(true);
                 }
-                forward_received_event(config_path, &message.event)?;
-                show_notification(config_path, config, &message.event)?;
-                acknowledge_event(&mut socket, &message.event.id)?;
-                recent_event_ids.push_back(message.event.id);
-                if recent_event_ids.len() > 64 {
-                    recent_event_ids.pop_front();
+                if !record.os_accepted() {
+                    if record.uncertain() {
+                        journal.mark(&event.id, DeliveryStage::PresentationUnknown)?;
+                        log.event("presentation_unknown", Some(&event.id));
+                    }
+                    validate_app_command(config).map_err(|error| {
+                        log.event("app_command_unavailable", Some(&event.id));
+                        error
+                    })?;
+                    journal.mark(&event.id, DeliveryStage::PresentationPending)?;
+                    Health::write(
+                        directory,
+                        "connected",
+                        true,
+                        Some(last_peer_at),
+                        Some("presentation_pending"),
+                    );
+                    if show_notification(config_path, config, &event, log).is_err() {
+                        journal.mark(&event.id, DeliveryStage::PresentationUnknown)?;
+                        log.event("os_submit_error", Some(&event.id));
+                        Health::write(
+                            directory,
+                            "connected",
+                            true,
+                            Some(last_peer_at),
+                            Some("presentation_unknown"),
+                        );
+                        return Err("notification presentation uncertain".into());
+                    }
+                    journal.mark(&event.id, DeliveryStage::OsAccepted)?;
+                    log.event("os_accepted", Some(&event.id));
+                    os_phase = Some("os_accepted");
+                } else {
+                    log.event("duplicate_suppressed", Some(&event.id));
                 }
+                if acknowledge_event(&mut socket, &event.id).is_err() {
+                    log.event("ack_error", Some(&event.id));
+                    return Err("notification acknowledgement failed".into());
+                }
+                journal.mark(&event.id, DeliveryStage::Acknowledged)?;
+                log.event("ack_sent", Some(&event.id));
             }
             Ok(Message::Ping(payload)) => {
+                *healthy = true;
+                last_peer = Instant::now();
+                last_peer_at = agent_runtime::now();
                 socket.send(Message::Pong(payload)).map_err(|_| {
                     "notification stream heartbeat could not be acknowledged".to_owned()
                 })?;
-                let updated = read_config(config_path)?;
-                validate_config(&updated)?;
-                if !updated.enabled {
-                    return Ok(true);
-                }
+            }
+            Ok(Message::Pong(_)) => {
+                *healthy = true;
+                last_peer = Instant::now();
+                last_peer_at = agent_runtime::now();
             }
             Ok(Message::Close(_)) => return Ok(false),
             Ok(_) => {}
-            Err(_) => return Err("notification stream connection was interrupted".to_owned()),
+            Err(tungstenite::Error::Io(error))
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock
+                        | std::io::ErrorKind::TimedOut
+                        | std::io::ErrorKind::Interrupted
+                ) =>
+            {
+                if last_peer.elapsed() > Duration::from_secs(75) {
+                    return Err("notification heartbeat expired".into());
+                }
+            }
+            Err(_) => {
+                if matches!(configuration_enabled(config_path, Some(config)), Ok(false)) {
+                    log.event("disabled", None);
+                    Health::write(directory, "disabled", false, Some(last_peer_at), os_phase);
+                    return Ok(true);
+                }
+                return Err("notification stream connection was interrupted".to_owned());
+            }
         }
     }
 }
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
-fn connect_through_tor(host: &str, port: u16) -> Result<TcpStream, String> {
+fn connect_through_tor(config_path: &str, host: &str, port: u16) -> Result<TcpStream, String> {
     if host.is_empty() || host.len() > 255 || !host.is_ascii() || port == 0 {
         return Err("notification Tor destination is invalid".to_owned());
     }
-    let timeout = Duration::from_secs(20);
+    let timeout = Duration::from_secs(1);
     let mut stream = TcpStream::connect_timeout(
         &monero_wallet_desktop::tor_transport::socks_address()
             .parse()
@@ -263,9 +507,7 @@ fn connect_through_tor(host: &str, port: u16) -> Result<TcpStream, String> {
         .write_all(&[5, 1, 0])
         .map_err(|_| "embedded Tor handshake failed".to_owned())?;
     let mut greeting = [0_u8; 2];
-    stream
-        .read_exact(&mut greeting)
-        .map_err(|_| "embedded Tor is still connecting".to_owned())?;
+    responsive_read_exact(&mut stream, config_path, &mut greeting)?;
     if greeting != [5, 0] {
         return Err("embedded Tor rejected the connection".to_owned());
     }
@@ -278,9 +520,7 @@ fn connect_through_tor(host: &str, port: u16) -> Result<TcpStream, String> {
         .write_all(&request)
         .map_err(|_| "embedded Tor request failed".to_owned())?;
     let mut response = [0_u8; 4];
-    stream
-        .read_exact(&mut response)
-        .map_err(|_| "embedded Tor destination did not respond".to_owned())?;
+    responsive_read_exact(&mut stream, config_path, &mut response)?;
     if response[0] != 5 || response[1] != 0 {
         return Err("embedded Tor could not open the notification route".to_owned());
     }
@@ -288,19 +528,47 @@ fn connect_through_tor(host: &str, port: u16) -> Result<TcpStream, String> {
         1 => 6,
         3 => {
             let mut length = [0_u8; 1];
-            stream
-                .read_exact(&mut length)
-                .map_err(|_| "embedded Tor returned an invalid response".to_owned())?;
+            responsive_read_exact(&mut stream, config_path, &mut length)?;
             usize::from(length[0]) + 2
         }
         4 => 18,
         _ => return Err("embedded Tor returned an invalid response".to_owned()),
     };
     let mut ignored = vec![0_u8; remaining];
-    stream
-        .read_exact(&mut ignored)
-        .map_err(|_| "embedded Tor returned an incomplete response".to_owned())?;
+    responsive_read_exact(&mut stream, config_path, &mut ignored)?;
     Ok(stream)
+}
+
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+fn responsive_read_exact(
+    stream: &mut TcpStream,
+    config_path: &str,
+    mut buffer: &mut [u8],
+) -> Result<(), String> {
+    let started = Instant::now();
+    while !buffer.is_empty() {
+        if !configuration_enabled(config_path, None)? {
+            return Err("agent disabled".into());
+        }
+        if started.elapsed() >= Duration::from_secs(20) {
+            return Err("Tor handshake timed out".into());
+        }
+        match stream.read(buffer) {
+            Ok(0) => return Err("Tor handshake closed".into()),
+            Ok(count) => {
+                buffer = &mut buffer[count..];
+            }
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock
+                        | std::io::ErrorKind::TimedOut
+                        | std::io::ErrorKind::Interrupted
+                ) => {}
+            Err(_) => return Err("Tor handshake failed".into()),
+        }
+    }
+    Ok(())
 }
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
@@ -358,45 +626,77 @@ where
 }
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
-fn show_notification(
-    config_path: &str,
-    config: &AgentConfig,
-    event: &NotificationEvent,
-) -> Result<(), String> {
-    if !valid_supported_event(event) {
-        return Ok(());
-    }
-    let handle = notify_rust::Notification::new()
-        .summary("Monero Fast Wallet")
-        .body(if event.category == "monero.fast_wallet.vanity" {
-            "Your Vanity address status changed."
-        } else if event.category == "monero.fast_wallet.test" {
-            "Test notification. Open the wallet to refresh."
-        } else {
-            "New private activity. Open the wallet to refresh."
-        })
-        .appname("Monero Fast Wallet")
-        .action("open", "Open wallet")
-        .show()
-        .map_err(|_| "desktop notification could not be shown".to_owned())?;
-    let event = event.clone();
-    let config_path = config_path.to_owned();
-    let command = config
+fn validate_app_command(config: &AgentConfig) -> Result<String, String> {
+    config
         .app_command
         .as_ref()
         .filter(|value| Path::new(value).is_absolute() && Path::new(value).is_file())
         .cloned()
-        .ok_or_else(|| "wallet app command is unavailable".to_owned())?;
-    thread::spawn(move || {
-        handle.wait_for_action(move |action| {
-            if matches!(action, "default" | "open") {
-                if let Err(error) = open_wallet_for_event(&(config_path, command), &event) {
-                    eprintln!("monero-fast-walletd open failed: {error}");
-                }
-            }
+        .ok_or_else(|| "wallet app command is unavailable".into())
+}
+
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+fn show_notification(
+    config_path: &str,
+    config: &AgentConfig,
+    event: &NotificationEvent,
+    log: &AgentLog,
+) -> Result<(), String> {
+    if !valid_supported_event(event) {
+        return Ok(());
+    }
+    if !configuration_enabled(config_path, Some(config))? {
+        return Err("agent disabled".into());
+    }
+    let command = validate_app_command(config)?;
+    let body = if event.category == "monero.fast_wallet.vanity" {
+        "Your Vanity address status changed."
+    } else if event.category == "monero.fast_wallet.test" {
+        "Test notification. Open the wallet to refresh."
+    } else {
+        "New private activity. Open the wallet to refresh."
+    };
+    #[cfg(target_os = "windows")]
+    {
+        let _ = command;
+        return windows_agent_toast::show(&event.id, body, log);
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let handle = notify_rust::Notification::new()
+            .summary("Monero Fast Wallet")
+            .body(body)
+            .appname("Monero Fast Wallet")
+            .action("open", "Open wallet")
+            .show()
+            .map_err(|_| "desktop notification could not be shown".to_owned())?;
+        let event = event.clone();
+        let config_path = config_path.to_owned();
+        let log = log.clone();
+        thread::spawn(move || {
+            let _ =
+                handle.wait_for_response(move |response: &notify_rust::NotificationResponse| {
+                    let activation = match response {
+                        notify_rust::NotificationResponse::Default => {
+                            agent_runtime::Activation::Body
+                        }
+                        notify_rust::NotificationResponse::Action(action) => {
+                            agent_runtime::Activation::Action(action)
+                        }
+                        _ => agent_runtime::Activation::Dismissed,
+                    };
+                    if agent_runtime::opens_wallet(activation) {
+                        log.event("open_requested", Some(&event.id));
+                        if open_wallet_for_event(&(config_path, command), &event).is_err() {
+                            log.event("open_error", Some(&event.id));
+                        }
+                    } else {
+                        log.event("dismissed", Some(&event.id));
+                    }
+                });
         });
-    });
-    Ok(())
+        Ok(())
+    }
 }
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
@@ -412,7 +712,6 @@ fn open_wallet_for_event(
         .parent()
         .ok_or_else(|| "notification directory is unavailable".to_owned())?
         .join("pending-open-event.json");
-    let temporary = pending_path.with_extension("json.tmp");
     let pending_event = NotificationEvent {
         id: event.id.clone(),
         category: event.category.clone(),
@@ -430,15 +729,67 @@ fn open_wallet_for_event(
     };
     let content = serde_json::to_vec_pretty(&pending_event)
         .map_err(|_| "pending notification event could not be stored".to_owned())?;
-    fs::write(&temporary, content)
-        .and_then(|_| fs::rename(&temporary, &pending_path))
-        .map_err(|_| "pending notification event could not be stored".to_owned())?;
+    agent_runtime::atomic_write(&pending_path, &content)?;
     Command::new(&config_and_command.1)
         .arg("--notification")
         .arg(&event.id)
         .spawn()
         .map_err(|_| "wallet app could not be opened".to_owned())?;
     Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn open_saved_notification(
+    config_path: &str,
+    config: &AgentConfig,
+    id: &str,
+) -> Result<(), String> {
+    // This short process never owns the daemon lock, starts Tor, refreshes
+    // enrollment, or overwrites the running agent's health.
+    let path = Path::new(config_path)
+        .canonicalize()
+        .map_err(|_| "agent_config_path_invalid")?;
+    let directory = path.parent().ok_or("agent_directory_invalid")?;
+    let log = AgentLog::new(directory);
+    let started = Instant::now();
+    let record = loop {
+        let journal = Journal::open(directory)?;
+        match journal.accepted_event(id) {
+            Ok(record) => break record,
+            Err(_)
+                if journal.pending_activation(id) && started.elapsed() < Duration::from_secs(2) =>
+            {
+                thread::sleep(Duration::from_millis(40))
+            }
+            Err(error) => {
+                log.event("open_rejected", Some(id));
+                return Err(error);
+            }
+        }
+    };
+    let event = NotificationEvent {
+        id: id.into(),
+        category: record
+            .category
+            .ok_or("agent_notification_metadata_missing")?,
+        deep_link: record
+            .deep_link
+            .ok_or("agent_notification_metadata_missing")?,
+        received_at: record.received_at.to_string(),
+        opened: true,
+    };
+    let command = validate_app_command(config)?;
+    log.event("open_requested", Some(id));
+    let result = open_wallet_for_event(&(path.to_string_lossy().into_owned(), command), &event);
+    log.event(
+        if result.is_ok() {
+            "open_launched"
+        } else {
+            "open_error"
+        },
+        Some(id),
+    );
+    result
 }
 
 fn valid_supported_event(event: &NotificationEvent) -> bool {
@@ -457,34 +808,57 @@ fn forward_received_event(config_path: &str, event: &NotificationEvent) -> Resul
     if !is_opaque_event_id(&event.id) || !valid_supported_event(event) {
         return Err("notification receipt is invalid".to_owned());
     }
-    let directory = Path::new(config_path).parent()
+    let directory = Path::new(config_path)
+        .parent()
         .ok_or_else(|| "notification directory is unavailable".to_owned())?
         .join("received-events");
-    fs::create_dir_all(&directory).map_err(|_| "notification receipt directory is unavailable".to_owned())?;
-    #[cfg(unix)] {
+    fs::create_dir_all(&directory)
+        .map_err(|_| "notification receipt directory is unavailable".to_owned())?;
+    #[cfg(unix)]
+    {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))
             .map_err(|_| "notification receipt directory is unavailable".to_owned())?;
     }
     let received = NotificationEvent {
-        id: event.id.clone(), category: event.category.clone(), deep_link: event.deep_link.clone(),
-        received_at: SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs().to_string(),
+        id: event.id.clone(),
+        category: event.category.clone(),
+        deep_link: event.deep_link.clone(),
+        received_at: event.received_at.clone(),
         opened: false,
     };
     let path = directory.join(format!("{}.json", event.id));
-    let temporary = path.with_extension("json.tmp");
-    let bytes = serde_json::to_vec(&received).map_err(|_| "notification receipt is invalid".to_owned())?;
-    if bytes.len() > 4096 { return Err("notification receipt exceeds its limit".to_owned()); }
-    fs::write(&temporary, bytes).and_then(|_| fs::rename(temporary, path))
-        .map_err(|_| "notification receipt could not be saved".to_owned())?;
-    let mut files = fs::read_dir(&directory).map_err(|_| "notification receipt directory is unavailable".to_owned())?
-        .flatten().filter(|entry| entry.path().extension().is_some_and(|extension| extension == "json"))
+    let bytes =
+        serde_json::to_vec(&received).map_err(|_| "notification receipt is invalid".to_owned())?;
+    if bytes.len() > 4096 {
+        return Err("notification receipt exceeds its limit".to_owned());
+    }
+    agent_runtime::atomic_write(&path, &bytes)?;
+    let mut files = fs::read_dir(&directory)
+        .map_err(|_| "notification receipt directory is unavailable".to_owned())?
+        .flatten()
+        .filter(|entry| {
+            entry
+                .path()
+                .extension()
+                .is_some_and(|extension| extension == "json")
+        })
         .collect::<Vec<_>>();
-    files.sort_by_key(|entry| entry.metadata().and_then(|metadata| metadata.modified()).ok());
+    files.sort_by_key(|entry| {
+        entry
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .ok()
+    });
     let excess = files.len().saturating_sub(64);
-    for entry in files.into_iter().take(excess) { let _ = fs::remove_file(entry.path()); }
+    for entry in files.into_iter().take(excess) {
+        let _ = fs::remove_file(entry.path());
+    }
     if event.category == "monero.fast_wallet.test" {
-        eprintln!("MONERO_DESKTOP_PUSH_RECEIVED event_id={} phase=received", event.id);
+        eprintln!(
+            "MONERO_DESKTOP_PUSH_RECEIVED event_id={} phase=received",
+            event.id
+        );
     }
     Ok(())
 }
@@ -505,15 +879,7 @@ fn valid_vanity_deep_link(value: &str) -> bool {
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 fn is_opaque_event_id(value: &str) -> bool {
-    (value.len() == 68
-        && value.starts_with("evt_")
-        && value[4..].bytes().all(|byte| byte.is_ascii_hexdigit()))
-        || (value.len() == 39
-            && value.starts_with("fwpush_")
-            && value[7..].bytes().all(|byte| byte.is_ascii_hexdigit()))
-        || (value.len() == 68
-            && value.starts_with("sig_")
-            && value[4..].bytes().all(|byte| byte.is_ascii_hexdigit()))
+    agent_runtime::opaque_id(value)
 }
 
 #[cfg(test)]

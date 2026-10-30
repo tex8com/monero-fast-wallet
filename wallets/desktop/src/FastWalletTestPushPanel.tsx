@@ -58,6 +58,16 @@ export default function FastWalletTestPushPanel({ onSetupFastWallet, onManageAle
     };
   }, [refresh]);
   useEffect(() => {
+    if (status?.platform !== 'windows' && status?.platform !== 'linux') return;
+    let active = true;
+    let timer: number;
+    const poll = () => {
+      void refresh().finally(() => { if (active) timer = window.setTimeout(poll, 5_000); });
+    };
+    timer = window.setTimeout(poll, 5_000);
+    return () => { active = false; window.clearTimeout(timer); };
+  }, [refresh, status?.platform]);
+  useEffect(() => {
     if (status?.phase !== 'scheduled' || !status.receipt) return;
     const delay = Math.max(0, (status.receipt.deliverAfter + 121) * 1000 - Date.now());
     const timer = window.setTimeout(() => { void refresh(); }, Math.min(delay, 2_147_483_647));
@@ -106,11 +116,12 @@ export default function FastWalletTestPushPanel({ onSetupFastWallet, onManageAle
     } catch (reason) {
       if (mounted.current) {
         const message = String(reason);
-        providerRecoveryError.current = message.includes('push-test-provider-required') || message.includes('push-test-gateway-required')
+        providerRecoveryError.current = message.includes('push-test-provider-required') || message.includes('push-test-gateway-required') || message.includes('push-test-agent-required')
           || message.includes('apns-registration-timeout') || message.includes('apns-registration-error') || message.includes('apns-registration-failed')
           || message.includes('apns-authorization-denied');
         setError(message.includes('push-test-worker-unsupported') ? t('settings.pushTestWorkerUnsupported')
           : message.includes('push-test-rate-limited') ? t('settings.pushTestRateLimited')
+          : message.includes('push-test-agent-required') ? t('settings.pushTestAgentRequired')
           : message.includes('push-test-fast-wallet-required') ? t('settings.pushTestAlertsRequired')
             : message.includes('apns-authorization-denied') ? t('settings.pushTestMacPermissionRequired')
               : providerRecoveryError.current ? t('settings.pushTestProviderRequired')
@@ -125,11 +136,13 @@ export default function FastWalletTestPushPanel({ onSetupFastWallet, onManageAle
     : status.permissionSettingsAvailable === true ? t('settings.pushTestMacPermissionRequired')
     : status.reason === 'fast-wallet-required' ? t('settings.pushTestFastWalletRequired')
       : status.reason === 'alerts-required' ? t('settings.pushTestAlertsRequired')
+        : status.reason === 'agent-required' ? t('settings.pushTestAgentRequired')
         : status.reason === 'permission-required' ? t('settings.pushTestPermissionRequired')
           : status.reason === 'gateway-required' ? t('settings.pushTestGatewayRequired')
             : status.reason === 'ready' ? t('settings.pushTestHint') : t('settings.pushTestProviderRequired');
   const openingLabel = t(openingSettings === 'focus' ? 'settings.pushTestOpeningFocusSettings' : 'settings.pushTestOpeningSettings');
-  const progress = openingSettings ? openingLabel : requesting ? t('settings.pushTestRequesting')
+  const requestLabel = t(status?.reason === 'agent-required' ? 'settings.pushTestAgentStarting' : 'settings.pushTestRequesting');
+  const progress = openingSettings ? openingLabel : requesting ? requestLabel
     : status?.available !== true ? setup
     : status && receivedPushTest(status) ? t('settings.pushTestReceived')
       : status?.phase === 'scheduled' ? t('settings.pushTestScheduled')
@@ -142,11 +155,14 @@ export default function FastWalletTestPushPanel({ onSetupFastWallet, onManageAle
         <p className={`push-test-feedback${explainSetup ? ' is-attention' : ''}`} id="settings-push-test-feedback" aria-live="polite" role="status">
           {error ? `${status && receivedPushTest(status) ? `${t('settings.pushTestReceived')} ` : ''}${error}`
             : explainSetup ? `${t('settings.pushTestNotStarted')} ${setup}` : progress}
-        </p></div>
+        </p>
+        {(status?.platform === 'windows' || status?.platform === 'linux') && <p role="status">
+          {t(status.backgroundAgentStatus === 'connected' ? 'settings.pushAgentConnected' : 'settings.pushAgentNotConnected')}
+        </p>}</div>
       <div className="button-row push-test-actions">
         <button className="secondary" disabled={busy} aria-busy={busy} aria-describedby="settings-push-test-feedback" onClick={() => void request()} type="button">
           {busy && <span className="mfw-inline-spinner" aria-hidden="true" />}
-          {openingSettings ? openingLabel : requesting ? t('settings.pushTestRequesting') : waiting ? t('settings.pushTestWaiting') : t('settings.testPushNotification')}
+          {openingSettings ? openingLabel : requesting ? requestLabel : waiting ? t('settings.pushTestWaiting') : t('settings.testPushNotification')}
         </button>
         {status?.reason === 'fast-wallet-required' && onSetupFastWallet && <button className="primary" ref={setupAction} onClick={onSetupFastWallet} type="button">{t('settings.pushTestSetupFastWallet')}</button>}
         {status && status.reason !== 'fast-wallet-required' && onManageAlerts && <button className="primary" ref={setupAction} onClick={onManageAlerts} type="button">{t('settings.pushTestManageAlerts')}</button>}

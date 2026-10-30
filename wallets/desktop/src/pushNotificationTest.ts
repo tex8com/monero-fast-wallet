@@ -12,6 +12,7 @@ export type PushTestStatus = {
   receivedAt?: number | null;
   permissionSettingsAvailable?: boolean;
   platform?: 'macos' | 'windows' | 'linux' | 'unknown';
+  backgroundAgentStatus?: string | null;
 };
 
 export function validPushTestReceipt(value: unknown): value is PushTestReceipt {
@@ -35,5 +36,6 @@ export function pushTestCanStart(status: PushTestStatus | null, requesting: bool
   // The native request can resume an existing provider installation before
   // scheduling. Missing owner permissions, wallet or alerts remain blocked.
   return (status.available === true && status.reason === 'ready')
-    || status.reason === 'provider-required' || status.reason === 'gateway-required';
+    || status.reason === 'provider-required' || status.reason === 'gateway-required'
+    || status.reason === 'agent-required';
 }

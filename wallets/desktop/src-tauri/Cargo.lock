@@ -5050,6 +5050,7 @@ dependencies = [
  "tor-rtcompat",
  "tungstenite",
  "unicode-normalization",
+ "windows",
  "zbus 5.19.0",
  "zeroize",
 ]

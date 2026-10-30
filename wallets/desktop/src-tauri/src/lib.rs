@@ -7,6 +7,8 @@ mod desktop_notifications;
 #[cfg(any(target_os = "macos", test))]
 mod apns_registration;
 mod notification_test;
+mod notification_inbox;
+mod background_agent_health;
 mod diagnostics;
 mod daemon_health;
 mod enthusiast_v1;

@@ -388,6 +388,7 @@ try {
     'test:mfw-contract',
     'test:update-contract',
     'test:push-contract',
+    'test:notification-agent',
     'test:platform-contract',
     'test:acceleration-contract',
     'test:wallet-contract'
