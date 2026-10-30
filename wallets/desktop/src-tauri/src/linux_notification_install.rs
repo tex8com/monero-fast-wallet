@@ -96,7 +96,7 @@ pub fn render_unit(
             &format!("\"LD_LIBRARY_PATH={library}\""),
         ))
 }
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     #[test]
