@@ -54,7 +54,7 @@ function ServiceAddressStrip() {
 
 function ReleaseFollow({ product, text }) {
   if (product === "MFW") {
-    return <p className="release-follow"><strong>MFW · Alpha {walletReleases.macos.version}</strong>{Object.entries(walletReleases).map(([platform, release]) => <a href={release.releaseUrl} target="_blank" rel="noreferrer" key={platform}>{platform === "macos" ? "macOS" : "Android"} · {text.releaseNotes} ↗</a>)}</p>;
+    return <p className="release-follow"><strong>MFW · Alpha {walletReleases.macos.version}</strong>{Object.entries(walletReleases).filter(([platform]) => publishedWalletRelease(platform)).map(([platform, release]) => <a href={release.releaseUrl} target="_blank" rel="noreferrer" key={platform}>{platforms.find((item) => item.id === platform).title} · {text.releaseNotes} ↗</a>)}</p>;
   }
   return (
     <p className="release-follow">
@@ -334,6 +334,7 @@ function Hero({ text }) {
 }
 
 function ProductFocus({ language }) {
+  const windowsAvailable = Boolean(publishedWalletRelease("windows"));
   const content = language === "de" ? {
     eyebrow: "Wallet und Node im Mittelpunkt",
     title: "Eine einfache Wallet. Ein schneller Datenweg.",
@@ -344,8 +345,8 @@ function ProductFocus({ language }) {
       title: "Monero Fast Wallet",
       body: "Monero senden, empfangen und mit Ledger nutzen – auf Mobilgerät und Desktop, mit demselben nativen Wallet-Core.",
       points: ["Selbstverwahrt: deine Schlüssel bleiben bei dir", "Eine Oberfläche für Software- und Ledger-Wallets", "Guthaben und Transaktionen werden lokal geprüft"],
-      metric: "Android + macOS",
-      metricText: "iOS, Windows und Linux folgen",
+      metric: windowsAvailable ? "Android + macOS + Windows ARM64" : "Android + macOS",
+      metricText: windowsAvailable ? "iOS und Linux folgen" : "iOS, Windows und Linux folgen",
       primary: "Wallet-Vorteile",
       secondary: "Downloads",
     },
@@ -372,8 +373,8 @@ function ProductFocus({ language }) {
       title: "Monero Fast Wallet",
       body: "Send, receive, and use Monero with Ledger on mobile and desktop, powered by the same native wallet core.",
       points: ["Self-custodial: your keys stay with you", "One experience for software and Ledger wallets", "Balances and transactions are verified locally"],
-      metric: "Android + macOS",
-      metricText: "iOS, Windows and Linux are coming soon",
+      metric: windowsAvailable ? "Android + macOS + Windows ARM64" : "Android + macOS",
+      metricText: windowsAvailable ? "iOS and Linux are coming soon" : "iOS, Windows and Linux are coming soon",
       primary: "Wallet benefits",
       secondary: "Downloads",
     },
@@ -747,18 +748,30 @@ function Benchmark({ text }) {
 
 const platforms = [
   { id: "android", title: "Android", packages: ["apk"], publishedPackage: "apk", requirements: "androidRequirements" },
-  { id: "macos", title: "macOS", packages: ["dmg"], publishedPackage: "dmg", requirements: "macosRequirements" },
+  { id: "macos", title: "macOS", packages: ["dmg"], publishedPackage: "dmg", requirements: "macosRequirements", signing: "macosSigning" },
   { id: "ios", title: "iPhone & iPad", packages: ["appstore"] },
-  { id: "windows", title: "Windows", packages: ["exe"] },
+  { id: "windows", title: "Windows ARM64", packages: ["exe"], publishedPackage: "exe", packageLabel: "Setup EXE", requirements: "windowsRequirements", signing: "windowsSigning" },
   { id: "linux", title: "Linux", packages: ["rpm", "deb", "appimage"] },
 ];
 
+function publishedWalletRelease(platformId) {
+  const platform = platforms.find((item) => item.id === platformId);
+  const release = walletReleases[platformId];
+  return platform?.publishedPackage && release?.package === platform.publishedPackage
+    && typeof release.version === "string" && release.version.length > 0
+    && /^[0-9a-f]{64}$/.test(release.sha256)
+    && Number.isSafeInteger(release.size) && release.size > 0
+    && Number.isSafeInteger(release.alpha) && release.alpha > 0
+    && typeof release.releaseTag === "string" && release.releaseTag.length > 0
+    && typeof release.downloadUrl === "string" && release.downloadUrl.startsWith(`${repositoryUrl}/releases/download/${release.releaseTag}/`)
+    && release.releaseUrl === `${repositoryUrl}/releases/tag/${release.releaseTag}`
+    ? release : null;
+}
+
 function walletReleaseMap(releases) {
   return new Map(releases.filter((release) => {
-    const platform = platforms.find((item) => item.id === release?.platform);
-    const approved = walletReleases[release?.platform];
-    return release?.product === "mfw" && Boolean(platform?.publishedPackage) && platform.publishedPackage === release.package
-      && approved && release.version === approved.version
+    const approved = publishedWalletRelease(release?.platform);
+    return release?.product === "mfw" && approved && release.version === approved.version
       && release.sha256 === approved.sha256 && release.size === approved.size
       && release.download_path === `/download/mfw/${release.platform}/${release.package}`
       && release.package === approved.package;
@@ -772,18 +785,18 @@ function Downloads({ text, releases }) {
       <header className="section-head centered"><p className="eyebrow">{text.downloadEyebrow}</p><h2>{text.downloadTitle}</h2><p>{text.downloadBody}</p><ReleaseFollow product="MFW" text={text} /></header>
       <div className="download-grid">{platforms.map((platform) => {
         const primary = available.get(`${platform.id}:${platform.publishedPackage}`);
-        const published = walletReleases[platform.id];
+        const published = publishedWalletRelease(platform.id);
         return <article className="download-card" key={platform.id}>
           <h3>{platform.title}</h3>
-          <span className={`download-platform-status ${platform.publishedPackage ? "available" : "pending"}`}>{platform.publishedPackage ? text.available : text.coming}</span>
-          {platform.publishedPackage ? <a className="store-badge is-live" href={primary ? primary.download_path : published.downloadUrl}>
-            <strong>{platform.publishedPackage.toUpperCase()}</strong><span>{text.packages[platform.publishedPackage]} ↓</span>
+          <span className={`download-platform-status ${published ? "available" : "pending"}`}>{published ? text.available : text.coming}</span>
+          {published ? <a className="store-badge is-live" href={primary ? primary.download_path : published.downloadUrl}>
+            <strong>{platform.packageLabel ?? platform.publishedPackage.toUpperCase()}</strong><span>{text.packages[platform.publishedPackage]} ↓</span>
           </a> : <div className="store-badge is-pending"><strong>{text.coming}</strong></div>}
-          <div className="package-links">{platform.publishedPackage ? <>
+          <div className="package-links">{published ? <>
             <span className="release-version">{published.version} · Alpha {published.alpha}</span>
             <a href={published.releaseUrl} target="_blank" rel="noreferrer">GitHub · {text.releaseNotes} ↗</a>
           </> : <span>{platform.packages.map((kind) => kind === "appstore" ? "App Store" : kind === "appimage" ? "AppImage" : kind.toUpperCase()).join(" · ")}</span>}</div>
-          {platform.requirements && <small className="download-install-note">{text[platform.requirements]}{platform.id === "macos" && <><br />{text.macosSigning}</>}</small>}
+          {published && platform.requirements && <small className="download-install-note">{text[platform.requirements]}{platform.signing && <><br />{text[platform.signing]}</>}</small>}
         </article>;
       })}</div>
       <p className="release-note">{text.releaseGate}<br /><a href={repositoryUrl} target="_blank" rel="noreferrer">GitHub · {text.viewSource} ↗</a></p>

@@ -31,7 +31,10 @@ const { copy, localeMetadata, releaseTag, releaseUrl, repositoryUrl, walletRelea
 const downloadComponents = app.slice(app.indexOf("function ReleaseFollow("), app.indexOf("function localizedPath("))
   + app.slice(app.indexOf("const platforms ="), app.indexOf("function OpenSource("));
 const compiledDownloads = await transformWithOxc(downloadComponents, "downloads.jsx", { lang: "jsx", jsx: { runtime: "classic", pragma: "React.createElement", pragmaFrag: "React.Fragment" } });
-const { Downloads, walletReleaseMap, ReleaseFollow, NodeSection } = Function("React", "releaseTag", "releaseUrl", "walletReleases", "repositoryUrl", "releaseUpdatesUrl", `${compiledDownloads.code}\nreturn { Downloads, walletReleaseMap, ReleaseFollow, NodeSection };`)(React, releaseTag, releaseUrl, walletReleases, repositoryUrl, "https://x.com/roland_kk");
+function downloadComponentsFor(approvedReleases = walletReleases) {
+  return Function("React", "releaseTag", "releaseUrl", "walletReleases", "repositoryUrl", "releaseUpdatesUrl", `${compiledDownloads.code}\nreturn { Downloads, walletReleaseMap, ReleaseFollow, NodeSection };`)(React, releaseTag, releaseUrl, approvedReleases, repositoryUrl, "https://x.com/roland_kk");
+}
+const { Downloads, walletReleaseMap, ReleaseFollow, NodeSection } = downloadComponentsFor();
 
 function approvedWalletCatalog() {
   return Object.entries(walletReleases).map(([platform, release]) => ({
@@ -48,7 +51,7 @@ function downloadCard(markup, title) {
 }
 
 function assertPublishedDownloadCards(markup, gateway = false) {
-  for (const [platform, title] of [["android", "Android"], ["macos", "macOS"]]) {
+  for (const [platform, title] of [["android", "Android"], ["macos", "macOS"], ["windows", "Windows ARM64"]]) {
     const release = walletReleases[platform];
     const card = downloadCard(markup, title);
     const expectedDownload = gateway ? `/download/mfw/${platform}/${release.package}` : release.downloadUrl;
@@ -58,9 +61,9 @@ function assertPublishedDownloadCards(markup, gateway = false) {
     assert.match(visibleText, /1\.0\.116/);
     assert.match(visibleText, new RegExp(`Alpha\\s*${release.alpha}`));
   }
-  assert.equal((markup.match(/store-badge is-live/g) ?? []).length, 2);
-  assert.equal((markup.match(/store-badge is-pending/g) ?? []).length, 3);
-  assert.doesNotMatch(markup, /href="\/download\/mfw\/(?:windows|ios|linux)\//);
+  assert.equal((markup.match(/store-badge is-live/g) ?? []).length, 3);
+  assert.equal((markup.match(/store-badge is-pending/g) ?? []).length, 2);
+  assert.doesNotMatch(markup, /href="\/download\/mfw\/(?:ios|linux)\//);
   assert.ok(markup.includes(`href="${repositoryUrl}"`), "downloads link the public source repository");
 }
 
@@ -133,17 +136,24 @@ test("download formats stay visible with a concrete alpha release and honest pla
       sha256: "aff9c7e23e406b97d58ed8fb4232cac01897b1b8991313e44a93da7a892541ac",
       size: 304832066, alpha: 2,
     },
+    windows: {
+      version: "1.0.116", package: "exe", releaseTag: "v1.0.116-windows-alpha.1",
+      releaseUrl: "https://github.com/tex8com/monero-fast-wallet/releases/tag/v1.0.116-windows-alpha.1",
+      downloadUrl: "https://github.com/tex8com/monero-fast-wallet/releases/download/v1.0.116-windows-alpha.1/Monero-Fast-Wallet-1.0.116-windows-arm64-setup.exe",
+      sha256: "82b493752ff648264557eb00ad24c49fafd66a7eeb3914a5c887415863cf21f7",
+      size: 275232218, alpha: 1,
+    },
   });
 });
 
-test("real download rendering links only exact current DMG and APK through the existing gateway", () => {
+test("real download rendering links only exact current DMG, APK and ARM64 setup through the existing gateway", () => {
   const releases = [
     ...approvedWalletCatalog(),
     ...[["windows", "exe"], ["ios", "appstore"], ["linux", "appimage"]].map(([platform, packageKind]) => ({ product: "mfw", platform, package: packageKind, version: "fixture", download_path: `/download/mfw/${platform}/${packageKind}` })),
     { product: "mfw", platform: "android", package: "apk", version: "untrusted", download_path: "https://invalid.example/wallet.apk" },
     null,
   ];
-  assert.equal(walletReleaseMap(releases).size, 2);
+  assert.equal(walletReleaseMap(releases).size, 3);
   for (const language of ["en", "de"]) {
     const html = renderToStaticMarkup(React.createElement(Downloads, { text: copy[language], releases }));
     assertPublishedDownloadCards(html, true);
@@ -163,11 +173,47 @@ test("a missing release catalog preserves the published GitHub fallback without 
   }
 });
 
+test("the Windows setup is explicitly ARM64 and unsigned in all 18 locales", () => {
+  for (const text of Object.values(copy)) {
+    const html = renderToStaticMarkup(React.createElement(Downloads, { text, releases: approvedWalletCatalog() }));
+    const card = downloadCard(html, "Windows ARM64");
+    assert.match(card, /Setup EXE/);
+    assert.ok(card.includes(text.windowsRequirements));
+    assert.ok(card.includes(text.windowsSigning));
+    assert.match(text.windowsRequirements, /Windows 11/);
+    assert.match(text.windowsRequirements, /ARM64/);
+    assert.match(text.windowsRequirements, /Intel\/AMD x64/);
+    assert.doesNotMatch(card, /Apple-notarized|Developer ID|Developer-ID|Apple-notarisiert/);
+    assert.match(text.downloadBody, /Windows ARM64/);
+    assert.doesNotMatch(text.faqs.at(-1)[1], /iOS, Windows (?:and|und) Linux/);
+  }
+});
+
+test("missing or incomplete Windows approval cannot activate an EXE from the catalog", () => {
+  const { windows, ...otherReleases } = walletReleases;
+  for (const release of [undefined, {},
+    { ...windows, package: "msix" }, { ...windows, sha256: undefined },
+    { ...windows, size: 0 }, { ...windows, size: String(windows.size) },
+    { ...windows, version: "" }, { ...windows, alpha: 0 },
+    { ...windows, downloadUrl: "https://invalid.example/wallet.exe" },
+    { ...windows, releaseUrl: "https://invalid.example/release" },
+  ]) {
+    const components = downloadComponentsFor({ ...otherReleases, windows: release });
+    assert.equal(components.walletReleaseMap(approvedWalletCatalog()).size, 2);
+    const html = renderToStaticMarkup(React.createElement(components.Downloads, { text: copy.en, releases: approvedWalletCatalog() }));
+    const card = downloadCard(html, "Windows ARM64");
+    assert.match(card, /store-badge is-pending/);
+    assert.doesNotMatch(card, /href=|download-platform-status available/);
+    const notes = renderToStaticMarkup(React.createElement(components.ReleaseFollow, { product: "MFW", text: copy.en }));
+    assert.ok(!notes.includes(windows.releaseUrl));
+  }
+});
+
 test("stale or mismatched gateway metadata cannot replace the configured GitHub files", () => {
   for (const approved of approvedWalletCatalog()) {
     const invalidEntries = [
       { ...approved, product: "mfn" },
-      { ...approved, platform: "windows" },
+      { ...approved, platform: approved.platform === "windows" ? "android" : "windows" },
       { ...approved, package: "zip" },
       { ...approved, version: "1.0.111" },
       { ...approved, sha256: "0".repeat(64) },
