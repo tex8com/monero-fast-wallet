@@ -55,12 +55,16 @@ function mount(invoke, language = 'en') {
       pendingEffects.push(() => { previous?.cleanup?.(); hooks[index] = { deps, cleanup: effect() }; });
     }
   };
+  const copiedHashes = [];
   const scope = { React, useState, useRef, useEffect, useI18n: () => ({ t }), invoke, window: {
     setInterval: (callback, delay) => { const id = ++intervalId; intervals.set(id, { callback, delay }); return id; },
     clearInterval: id => intervals.delete(id),
     addEventListener: (name, callback) => { listeners.set(name, callback); },
     removeEventListener: (name, callback) => { if (listeners.get(name) === callback) listeners.delete(name); },
   }, transactionConfirmationProgress, parseNativeJson: JSON.parse, errorMessage: reason => reason.message ?? String(reason),
+  navigator: { clipboard: { writeText: async hash => { copiedHashes.push(hash); } } },
+  atomicValue: value => { try { return BigInt(value ?? '0'); } catch { return 0n; } },
+  walletDisplayName: wallet => wallet.displayName ?? wallet.id,
   shortHash: hash => hash, transactionTimestamp: timestamp => timestamp, formatAtomicXmr: atomic => atomic,
   FixedAtomicXmr: ({ value }) => React.createElement('span', null, value), WalletFeature: ({ text }) => React.createElement('p', null, text) };
   const production = new Function(...Object.keys(scope), `${compiled}\nreturn { ${names.join(', ')} };`)(...Object.values(scope));
@@ -82,7 +86,7 @@ function mount(invoke, language = 'en') {
     };
     return walk(tree);
   };
-  return { production, render, find, intervals, wake: () => listeners.get('mfw-wallet-notification-wake')?.(), markup: () => renderToStaticMarkup(tree), poll: () => { assert.equal(intervals.size, 1); [...intervals.values()][0].callback(); }, unmount: () => { for (const hook of hooks) hook.cleanup?.(); } };
+  return { production, render, find, intervals, copiedHashes, wake: () => listeners.get('mfw-wallet-notification-wake')?.(), markup: () => renderToStaticMarkup(tree), poll: () => { assert.equal(intervals.size, 1); [...intervals.values()][0].callback(); }, unmount: () => { for (const hook of hooks) hook.cleanup?.(); } };
 }
 
 test('desktop status shows the real count/target and confirms at the shared threshold', () => {
@@ -127,7 +131,7 @@ test('an open detail advances with existing polls, keeps selection across inclus
     assert.match(detail, new RegExp(`${confirmations}/10 confirmations`));
     assert.equal(detail.includes('Receiving Monero'), confirmations !== '10');
     assert.equal(detail.includes('Confirmed'), confirmations === '10');
-    assert.match(view.markup(), /transaction-row selected/);
+    assert.equal(view.find(node => node.props?.className === 'transaction-list'), undefined, 'details must replace the long list');
   }
   current = transaction({ pending: true, confirmations: '0', timestamp: '3000' });
   view.poll(); await tick(); view.render();
@@ -178,4 +182,72 @@ test('incoming and test notification wakes refresh the real history immediately'
   view.unmount();
   view.wake();
   assert.equal(calls, 2);
+});
+
+
+test('Home opens the exact clicked transaction rather than the history list', () => {
+  const { production } = mount(async () => '[]');
+  const first = transaction({ hash: 'first' });
+  const second = transaction({ hash: 'second', subaddressAccount: 4 });
+  let clicked;
+  const tree = production.RecentTransactions({ hasOpenWallet: true, items: [first, second], onActivity() { assert.fail('a row must open its details'); }, onTransaction(item) { clicked = item; } });
+  const walk = node => {
+    if (!node || typeof node !== 'object') return [];
+    return [node, ...React.Children.toArray(node.props?.children).flatMap(walk)];
+  };
+  const rows = walk(tree).filter(node => typeof node.props?.className === 'string' && node.props.className.startsWith('home-transaction-row'));
+  rows[1].props.onClick();
+  assert.equal(clicked, second);
+});
+
+test('the direct detail route loads a stable wallet-scoped identity and keeps exact native fields', async () => {
+  const current = transaction({ hash: 'direct', subaddressAccount: 4, subaddressIndices: [2, 5], amountAtomic: '1191306869968', feeAtomic: '30700000', label: 'Own account', description: 'Local note', unlockTime: '123456', transfers: [{ address: 'recipient-exact', amountAtomic: '1191306869968' }] });
+  const view = mount(async () => JSON.stringify([current]));
+  let back = 0;
+  view.render({ initialSelection: { context: 'wallet-a:session-a', key: 'direct:in:4' }, detailOnly: true, onBack() { back++; } });
+  assert.match(view.markup(), /Loading transaction details/);
+  await tick(); view.render();
+  const markup = view.markup();
+  for (const exact of ['1191306869968', '30700000', '2, 5', '123456', 'Local note', 'recipient-exact']) assert.ok(markup.includes(exact), exact);
+  assert.equal(view.find(node => node.props?.className === 'transaction-list'), undefined);
+  await view.find(node => node.props?.className === 'secondary transaction-copy').props.onClick();
+  await tick(); view.render();
+  assert.deepEqual(view.copiedHashes, ['direct']);
+  assert.match(view.markup(), /Copied/);
+  view.find(node => node.props?.className === 'quiet-button transaction-detail-back').props.onClick();
+  assert.equal(back, 1);
+  view.unmount();
+});
+
+test('direct details discard wrong-wallet targets and disappear when native history removes the transaction', async () => {
+  let current = [transaction()];
+  const view = mount(async () => JSON.stringify(current));
+  view.render({ initialSelection: { context: 'wallet-a:session-a', key: 'tx-one:in:0' }, detailOnly: true });
+  await tick(); view.render();
+  assert.ok(view.find(node => node.props?.className === 'transaction-detail'));
+  current = [];
+  view.poll(); await tick(); view.render();
+  assert.match(view.markup(), /no longer in the current wallet history/);
+  assert.equal(view.find(node => node.props?.className === 'transaction-detail'), undefined);
+  current = [transaction({ hash: 'foreign' })];
+  view.render({ walletId: 'session-b', wallet: { id: 'wallet-b' } });
+  await tick(); view.render();
+  assert.doesNotMatch(view.markup(), /foreign|Receiving Monero/);
+  view.unmount();
+});
+
+test('Activity dispatches the exact row to its dedicated detail route', async () => {
+  const first = transaction({ hash: 'first' });
+  const second = transaction({ hash: 'second', direction: 'out', subaddressAccount: 7 });
+  const view = mount(async () => JSON.stringify([first, second]));
+  let clicked;
+  view.render({ onTransaction(item) { clicked = item; } });
+  await tick(); view.render();
+  // Traverse by the row's rendered native hash instead of assuming its order.
+  const row = view.find(node => node.type === 'button' && node.props.className.startsWith('transaction-row') && renderToStaticMarkup(node).includes('second'));
+  row.props.onClick();
+  assert.equal(clicked.hash, 'second');
+  assert.equal(clicked.direction, 'out');
+  assert.equal(clicked.subaddressAccount, 7);
+  view.unmount();
 });

@@ -5,6 +5,8 @@ export type ManualTranslationLocale =
 type TranslationMap = Readonly<Record<string, string>>;
 
 const es: TranslationMap = {
+  '{seconds}s elapsed': '{seconds} s transcurridos',
+  'The node accepted the transaction.': 'El nodo aceptó la transacción.',
   'Checking name availability…': 'Comprobando la disponibilidad del nombre…',
   'Use separate optimized routes: fast blockchain sync over Clearnet and the remaining daemon traffic over Onion.':
     'Use rutas optimizadas separadas: sincronización rápida de la cadena de bloques por Clearnet y el resto del tráfico del daemon por Onion.',
@@ -504,6 +506,8 @@ const es: TranslationMap = {
 };
 
 const ptBR: TranslationMap = {
+  '{seconds}s elapsed': '{seconds} s decorridos',
+  'The node accepted the transaction.': 'O nó aceitou a transação.',
   'Checking name availability…': 'Verificando a disponibilidade do nome…',
   'Lock all wallets': 'Bloquear todas as wallets',
   'Use separate optimized routes: fast blockchain sync over Clearnet and the remaining daemon traffic over Onion.':
@@ -913,6 +917,8 @@ const ptBR: TranslationMap = {
 };
 
 const ru: TranslationMap = {
+  '{seconds}s elapsed': 'Прошло {seconds} с',
+  'The node accepted the transaction.': 'Узел принял транзакцию.',
   'Checking name availability…': 'Проверяем доступность имени…',
   'AI Assistant': 'ИИ-ассистент',
   'Tex8 Assistant': 'Tex8 Assistant',
@@ -1065,6 +1071,8 @@ const ru: TranslationMap = {
 };
 
 const vi: TranslationMap = {
+  '{seconds}s elapsed': 'Đã qua {seconds} giây',
+  'The node accepted the transaction.': 'Nút đã chấp nhận giao dịch.',
   'Checking name availability…': 'Đang kiểm tra xem tên còn trống không…',
   Delete: 'Xóa',
   Create: 'Tạo',
@@ -1233,6 +1241,8 @@ const vi: TranslationMap = {
 };
 
 const id: TranslationMap = {
+  '{seconds}s elapsed': '{seconds} dtk berlalu',
+  'The node accepted the transaction.': 'Node menerima transaksi.',
   'Checking name availability…': 'Memeriksa ketersediaan nama…',
   '{amount} XMR incoming': '{amount} XMR masuk',
   '{amount} XMR locked': '{amount} XMR terkunci',
@@ -1483,6 +1493,8 @@ const id: TranslationMap = {
 };
 
 const fr: TranslationMap = {
+  '{seconds}s elapsed': '{seconds} s écoulées',
+  'The node accepted the transaction.': 'Le nœud a accepté la transaction.',
   'Checking name availability…': 'Vérification de la disponibilité du nom…',
   '{amount} XMR incoming': '{amount} XMR reçus',
   '{amount} XMR spent': '{amount} XMR dépensés',
@@ -1713,6 +1725,8 @@ const fr: TranslationMap = {
 };
 
 const fil: TranslationMap = {
+  '{seconds}s elapsed': 'Lumipas ang {seconds}s',
+  'The node accepted the transaction.': 'Tinanggap ng node ang transaksyon.',
   'Checking name availability…': 'Sinusuri kung magagamit ang pangalan…',
   '{amount} XMR incoming': '{amount} XMR na papasok',
   '{amount} XMR pending': '{amount} XMR na nakabinbin',
@@ -2090,6 +2104,8 @@ const fil: TranslationMap = {
 };
 
 const zhCN: TranslationMap = {
+  '{seconds}s elapsed': '已过 {seconds} 秒',
+  'The node accepted the transaction.': '节点已接受交易。',
   'Checking name availability…': '正在检查名称是否可用…',
   Delete: '删除',
   Published: '已发布',
@@ -2121,6 +2137,8 @@ const zhCN: TranslationMap = {
 };
 
 const zhTW: TranslationMap = {
+  '{seconds}s elapsed': '已過 {seconds} 秒',
+  'The node accepted the transaction.': '節點已接受交易。',
   'Checking name availability…': '正在檢查名稱是否可用…',
   Delete: '刪除',
   Open: '開啟',
@@ -2169,6 +2187,8 @@ const zhTW: TranslationMap = {
 };
 
 const ko: TranslationMap = {
+  '{seconds}s elapsed': '{seconds}초 경과',
+  'The node accepted the transaction.': '노드가 거래를 수락했습니다.',
   'Checking name availability…': '이름을 사용할 수 있는지 확인하는 중…',
   'Get Started': '시작하기',
   Share: '공유',
@@ -2231,6 +2251,8 @@ const ko: TranslationMap = {
 };
 
 const ja: TranslationMap = {
+  '{seconds}s elapsed': '{seconds}秒経過',
+  'The node accepted the transaction.': 'ノードが取引を受け付けました。',
   'Checking name availability…': '名前が使用できるか確認中…',
   'Monero Fast Wallet Registry price': 'Monero Fast Wallet レジストリの価格',
   Import: 'インポート',
@@ -2323,6 +2345,8 @@ const ja: TranslationMap = {
 };
 
 const ar: TranslationMap = {
+  '{seconds}s elapsed': 'مرّت {seconds} ث',
+  'The node accepted the transaction.': 'قبلت العقدة المعاملة.',
   'Checking name availability…': 'جارٍ التحقق من توفر الاسم…',
   Clear: 'مسح',
   Delete: 'حذف',
@@ -2418,6 +2442,8 @@ const ar: TranslationMap = {
 };
 
 const ur: TranslationMap = {
+  '{seconds}s elapsed': '{seconds} سیکنڈ گزرے',
+  'The node accepted the transaction.': 'نوڈ نے ٹرانزیکشن قبول کر لی۔',
   'Checking name availability…': 'نام کی دستیابی چیک کی جا رہی ہے…',
   Create: 'بنائیں',
   Off: 'بند',
@@ -2536,6 +2562,8 @@ const ur: TranslationMap = {
 };
 
 const hi: TranslationMap = {
+  '{seconds}s elapsed': '{seconds} सेकंड बीते',
+  'The node accepted the transaction.': 'नोड ने लेनदेन स्वीकार किया।',
   'Checking name availability…': 'नाम की उपलब्धता जाँची जा रही है…',
   'Monero Fast Wallet Registry price': 'Monero Fast Wallet रजिस्ट्री मूल्य',
   Cancel: 'रद्द करें',
@@ -2678,6 +2706,8 @@ const hi: TranslationMap = {
 };
 
 const uk: TranslationMap = {
+  '{seconds}s elapsed': 'Минуло {seconds} с',
+  'The node accepted the transaction.': 'Вузол прийняв транзакцію.',
   'Checking name availability…': 'Перевіряємо доступність імені…',
   Create: 'Створити',
   Open: 'Відкрити',
@@ -2840,6 +2870,8 @@ const uk: TranslationMap = {
 };
 
 const tr: TranslationMap = {
+  '{seconds}s elapsed': '{seconds} sn geçti',
+  'The node accepted the transaction.': 'Düğüm işlemi kabul etti.',
   'Checking name availability…': 'Adın kullanılabilirliği kontrol ediliyor…',
   Cancel: 'İptal',
   Delete: 'Sil',

@@ -13,6 +13,7 @@ export default function FastWalletTestPushPanel({ onSetupFastWallet, onManageAle
   const [openingSettings, setOpeningSettings] = useState<'notifications' | 'focus' | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [explainSetup, setExplainSetup] = useState(false);
+  const [bannerHelpOpen, setBannerHelpOpen] = useState(false);
   const setupAction = useRef<HTMLButtonElement | null>(null);
   const inFlight = useRef(false);
   const settingsInFlight = useRef(false);
@@ -73,7 +74,8 @@ export default function FastWalletTestPushPanel({ onSetupFastWallet, onManageAle
     const timer = window.setTimeout(() => { void refresh(); }, Math.min(delay, 2_147_483_647));
     return () => window.clearTimeout(timer);
   }, [refresh, status?.phase, status?.receipt]);
-  const macosSettings = status?.platform === 'macos' || status?.permissionSettingsAvailable === true;
+  const macosSettings = status?.platform === 'macos'
+    || (!status?.platform && status?.permissionSettingsAvailable === true);
   const openSystemSettings = async (target: 'notifications' | 'focus') => {
     if (inFlight.current || settingsInFlight.current || !macosSettings) return;
     settingsInFlight.current = true;
@@ -91,6 +93,10 @@ export default function FastWalletTestPushPanel({ onSetupFastWallet, onManageAle
     if (inFlight.current || settingsInFlight.current || requesting || status?.phase === 'scheduled') return;
     if (status?.permissionSettingsAvailable === true) {
       await openSystemSettings('notifications');
+      return;
+    }
+    if (status?.reason === 'assignment-required') {
+      setError(null); setExplainSetup(true); onManageAlerts?.();
       return;
     }
     if (!pushTestCanStart(status, requesting)) {
@@ -122,9 +128,10 @@ export default function FastWalletTestPushPanel({ onSetupFastWallet, onManageAle
         setError(message.includes('push-test-worker-unsupported') ? t('settings.pushTestWorkerUnsupported')
           : message.includes('push-test-rate-limited') ? t('settings.pushTestRateLimited')
           : message.includes('push-test-agent-required') ? t('settings.pushTestAgentRequired')
-          : message.includes('push-test-fast-wallet-required') ? t('settings.pushTestAlertsRequired')
+          : message.includes('push-test-fast-wallet-required') ? t('settings.pushTestSetupRequired')
             : message.includes('apns-authorization-denied') ? t('settings.pushTestMacPermissionRequired')
               : providerRecoveryError.current ? t('settings.pushTestProviderRequired')
+              : message.includes('push-test-hosting-check-required') ? t('settings.pushTestHostingCheckRequired')
               : message.includes('push-test-unavailable') ? t('settings.pushTestUnavailable') : t('settings.pushTestFailed'));
       }
     } finally {
@@ -134,14 +141,16 @@ export default function FastWalletTestPushPanel({ onSetupFastWallet, onManageAle
   };
   const setup = !status ? t('common.loading')
     : status.permissionSettingsAvailable === true ? t('settings.pushTestMacPermissionRequired')
+    : status.reason === 'assignment-check-required' ? t('settings.pushTestLegacyCheck')
+    : status.reason === 'assignment-required' ? t('settings.pushTestSetupRequired')
     : status.reason === 'fast-wallet-required' ? t('settings.pushTestFastWalletRequired')
       : status.reason === 'alerts-required' ? t('settings.pushTestAlertsRequired')
         : status.reason === 'agent-required' ? t('settings.pushTestAgentRequired')
         : status.reason === 'permission-required' ? t('settings.pushTestPermissionRequired')
           : status.reason === 'gateway-required' ? t('settings.pushTestGatewayRequired')
-            : status.reason === 'ready' ? t('settings.pushTestHint') : t('settings.pushTestProviderRequired');
+            : status.reason === 'ready' ? t('settings.pushTestReady') : t('settings.pushTestProviderRequired');
   const openingLabel = t(openingSettings === 'focus' ? 'settings.pushTestOpeningFocusSettings' : 'settings.pushTestOpeningSettings');
-  const requestLabel = t(status?.reason === 'agent-required' ? 'settings.pushTestAgentStarting' : 'settings.pushTestRequesting');
+  const requestLabel = t(status?.reason === 'assignment-check-required' ? 'settings.pushTestCheckingSetup' : status?.reason === 'agent-required' ? 'settings.pushTestAgentStarting' : 'settings.pushTestRequesting');
   const progress = openingSettings ? openingLabel : requesting ? requestLabel
     : status?.available !== true ? setup
     : status && receivedPushTest(status) ? t('settings.pushTestReceived')
@@ -149,9 +158,10 @@ export default function FastWalletTestPushPanel({ onSetupFastWallet, onManageAle
         : status?.phase === 'not-received' ? t('settings.pushTestNotReceived') : setup;
   const waiting = status?.phase === 'scheduled';
   const busy = requesting || openingSettings !== null || waiting;
+  const needsAssignment = status?.reason === 'assignment-required';
   return <section className="settings-section"><header><h3>{t('settings.pushTestTitle')}</h3></header>
     <article className="settings-panel settings-wallet-actions push-test-panel">
-      <div><strong>{t('settings.pushTestTitle')}</strong><p>{t('settings.pushTestHint')}{macosSettings && ` ${t('settings.pushBannerTestHint')}`}</p>
+      <div><strong>{t('settings.pushTestTitle')}</strong><p>{t('settings.pushTestHint')}</p>
         <p className={`push-test-feedback${explainSetup ? ' is-attention' : ''}`} id="settings-push-test-feedback" aria-live="polite" role="status">
           {error ? `${status && receivedPushTest(status) ? `${t('settings.pushTestReceived')} ` : ''}${error}`
             : explainSetup ? `${t('settings.pushTestNotStarted')} ${setup}` : progress}
@@ -160,31 +170,30 @@ export default function FastWalletTestPushPanel({ onSetupFastWallet, onManageAle
           {t(status.backgroundAgentStatus === 'connected' ? 'settings.pushAgentConnected' : 'settings.pushAgentNotConnected')}
         </p>}</div>
       <div className="button-row push-test-actions">
-        <button className="secondary" disabled={busy} aria-busy={busy} aria-describedby="settings-push-test-feedback" onClick={() => void request()} type="button">
+        <button className={needsAssignment ? 'primary' : 'secondary'} disabled={busy} aria-busy={busy} aria-describedby="settings-push-test-feedback" onClick={() => void request()} type="button">
           {busy && <span className="mfw-inline-spinner" aria-hidden="true" />}
-          {openingSettings ? openingLabel : requesting ? requestLabel : waiting ? t('settings.pushTestWaiting') : t('settings.testPushNotification')}
+          {openingSettings ? openingLabel : requesting ? requestLabel : waiting ? t('settings.pushTestWaiting') : needsAssignment ? t('settings.pushTestRepairSetup') : status?.permissionSettingsAvailable === true ? t('settings.pushTestOpenMacSettings') : t('settings.testPushNotification')}
         </button>
         {status?.reason === 'fast-wallet-required' && onSetupFastWallet && <button className="primary" ref={setupAction} onClick={onSetupFastWallet} type="button">{t('settings.pushTestSetupFastWallet')}</button>}
-        {status && status.reason !== 'fast-wallet-required' && onManageAlerts && <button className="primary" ref={setupAction} onClick={onManageAlerts} type="button">{t('settings.pushTestManageAlerts')}</button>}
+        {status && status.reason !== 'fast-wallet-required' && !needsAssignment && onManageAlerts && <button className="primary" ref={setupAction} onClick={onManageAlerts} type="button">{t('settings.pushTestManageAlerts')}</button>}
       </div>
     </article>
-    {macosSettings && <article className="settings-panel push-test-panel" aria-labelledby="settings-macos-banner-title">
-      <div><strong id="settings-macos-banner-title">{t('settings.pushBannerSetupTitle')}</strong>
-        <p>{t('settings.pushBannerSetupHint')}</p>
-        <p>{t('settings.pushBannerFocusStep')}</p>
-        <p>{t('settings.pushBannerNotificationsStep')}</p>
-        <p>{t('settings.pushBannerManualCheck')}</p>
-      </div>
-      <div className="button-row push-test-actions">
-        <button className="secondary" disabled={requesting || openingSettings !== null} aria-busy={openingSettings === 'focus'} onClick={() => void openSystemSettings('focus')} type="button">
-          {openingSettings === 'focus' && <span className="mfw-inline-spinner" aria-hidden="true" />}
-          {t('settings.pushTestOpenFocusSettings')}
-        </button>
-        <button className="secondary" disabled={requesting || openingSettings !== null} aria-busy={openingSettings === 'notifications'} onClick={() => void openSystemSettings('notifications')} type="button">
-          {openingSettings === 'notifications' && <span className="mfw-inline-spinner" aria-hidden="true" />}
-          {t('settings.pushTestOpenMacSettings')}
-        </button>
-      </div>
-    </article>}
+    {macosSettings && <div className="push-banner-help">
+      <button className="quiet-button" aria-expanded={bannerHelpOpen} aria-controls="settings-macos-banner-help" onClick={() => setBannerHelpOpen(open => !open)} type="button">{t('settings.pushBannerHelp')}</button>
+      {bannerHelpOpen && <article className="settings-panel push-test-panel" id="settings-macos-banner-help">
+        <div><strong>{t('settings.pushBannerSetupTitle')}</strong><p>{t('settings.pushBannerSetupHint')}</p><p>{t('settings.pushBannerManualCheck')}</p></div>
+        <div className="button-row push-test-actions">
+          <button className="secondary" disabled={requesting || openingSettings !== null} aria-busy={openingSettings === 'focus'} onClick={() => void openSystemSettings('focus')} type="button">
+            {openingSettings === 'focus' && <span className="mfw-inline-spinner" aria-hidden="true" />}
+            {t('settings.pushTestOpenFocusSettings')}
+          </button>
+          <button className="secondary" disabled={requesting || openingSettings !== null} aria-busy={openingSettings === 'notifications'} onClick={() => void openSystemSettings('notifications')} type="button">
+            {openingSettings === 'notifications' && <span className="mfw-inline-spinner" aria-hidden="true" />}
+            {t('settings.pushTestOpenMacSettings')}
+          </button>
+        </div>
+      </article>}
+    </div>}
+
   </section>;
 }

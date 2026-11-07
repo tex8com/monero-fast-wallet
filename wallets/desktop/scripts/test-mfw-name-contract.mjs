@@ -85,6 +85,8 @@ test("desktop MFW registration uses the frozen development release contract", ()
 test("every desktop MFW command has generated permission and invoke coverage", () => {
   for (const command of [
     "list_mfw_names",
+    "load_mfw_resolver_preference",
+    "save_mfw_resolver_preference",
     "resolve_mfw_name_for_payment",
     "check_mfw_name_availability",
     "suggest_mfw_names",
@@ -183,6 +185,27 @@ test("MFW resolver and wallet-address waits never block the desktop UI thread", 
       ),
     );
   }
+});
+
+test("availability failure offers a retry and blocks the current registration", () => {
+  assert.match(
+    namesUi,
+    /availabilityScope = JSON\.stringify\(\[\s*availabilityCandidate,\s*availabilityNetwork,\s*availabilityRetry,/,
+  );
+  assert.match(namesUi, /availabilityCheck\?\.scope === availabilityScope/);
+  assert.match(
+    namesUi,
+    /\.catch\(\(\) => \{\s*if \(active\)\s*setAvailabilityCheck\(\{ scope: availabilityScope, result: null \}\)/,
+  );
+  assert.match(
+    namesUi,
+    /: availabilityFailed \? \(\s*"Availability could not be verified\. Please try again\."\s*\) : \(\s*"Enter a name\./,
+  );
+  assert.match(namesUi, /setAvailabilityRetry\(\(current\) => current \+ 1\)\}[\s\S]*?>\s*Check again/);
+  assert.match(
+    namesUi,
+    /const advanceRegistration = \(\) => \{[\s\S]*?!availability \|\|\s*!\["available", "available-again"\]\.includes\(availability\.status\)[\s\S]*?return;[\s\S]*?if \(registrationStep === 1\)/,
+  );
 });
 
 test("resolver supports the pinned direct-Onion resolvers and native signature verification", () => {

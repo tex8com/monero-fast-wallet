@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import test from 'node:test';
+import { sendPlanOutcome } from '../../../packages/wallet-shared/src/sendPlan.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const desktopRoot = resolve(here, '..');
@@ -27,6 +28,7 @@ const releaseFeaturesManifest = readFileSync(resolve(repoRoot, 'config', 'v1-rel
 const desktopBridgeHeader = readFileSync(resolve(repoRoot, 'native', 'desktop-bridge', 'include', 'DesktopWalletCore.h'), 'utf8');
 const desktopBridgeSource = readFileSync(resolve(repoRoot, 'native', 'desktop-bridge', 'cpp', 'DesktopWalletCore.cpp'), 'utf8');
 const walletEngineSource = readFileSync(resolve(repoRoot, 'native', 'monero-bridge', 'cpp', 'WalletEngine.cpp'), 'utf8');
+const walletUnlockSummary = readFileSync(resolve(repoRoot, 'native', 'monero-bridge', 'cpp', 'WalletUnlockSummary.h'), 'utf8');
 const walletEngineTypes = readFileSync(resolve(repoRoot, 'native', 'monero-bridge', 'cpp', 'WalletEngineTypes.h'), 'utf8');
 const mobileWalletStateSource = readFileSync(resolve(repoRoot, 'wallets', 'mobile', 'src', 'services', 'WalletState.tsx'), 'utf8');
 const desktopDiagnosticsSource = readFileSync(resolve(desktopRoot, 'src-tauri', 'src', 'diagnostics.rs'), 'utf8');
@@ -85,10 +87,13 @@ test('desktop Project Page mirrors mobile project routes and self-hosting links'
 
 test('desktop counts complete wallet balances once and delays wallet scan UI until ready', () => {
   assert.match(walletEngineSource, /wallet->numSubaddressAccounts\(\)/);
-  assert.match(walletEngineSource, /next\.balanceAtomic \+= balance/);
+  assert.match(walletEngineSource, /wallet->balanceUnlockStatus\(static_cast<uint32_t>\(accountIndex\)\)/);
+  assert.match(walletEngineSource, /unlockSummary\.add\(info\.balance, info\.unlockedBalance/);
+  assert.match(walletEngineSource, /next\.balanceAtomic = unlockSummary\.balance/);
+  assert.match(walletUnlockSummary, /balance \+= accountBalance/);
   assert.doesNotMatch(walletEngineSource, /next\.balanceAtomic = wallet->balance\(0\)/);
-  assert.match(appSource, /const selectedSnapshot = wallet\?\.id/);
-  assert.match(appSource, /const balanceAtomic = atomicValue\(publishedSnapshot\?\.balanceAtomic\)\.toString\(\)/);
+  assert.match(appSource, /selectDesktopWalletSnapshot\(walletId, wallet\?\.id, snapshotObservation, registeredSnapshot\)/);
+  assert.match(appSource, /const balanceAtomic = atomicValue\(displayBalanceSnapshot\?\.balanceAtomic\)\.toString\(\)/);
   assert.match(
     appSource,
     /const showWalletSync = connected && walletOpened && network\.targetHeight !== undefined/,
@@ -101,7 +106,10 @@ test('desktop publishes only terminal wallet state and retains it during recover
   assert.match(appSource, /publishedSnapshot/);
   assert.match(appSource, /sessionRecovering/);
   assert.match(appSource, /home\.sessionRecovering/);
-  assert.match(appSource, /hasPublishedBalance \? `\$\{balanceXmr\} XMR` : '— XMR'/);
+  assert.match(appSource, /hasDisplayBalance \? `\$\{balanceXmr\} XMR` : '— XMR'/);
+  assert.match(appSource, /ledgerBalanceSnapshotForDisplay\(publishedSnapshot, viewingBalanceSnapshot\)/);
+  assert.match(appSource, /const viewingBalanceSnapshot = isLedgerWallet && activeLedgerHasReadOnly && !sessionRecovering/);
+  assert.match(appSource, /const publishedTransactions = publication\?\.publishedTransactions/);
   assert.doesNotMatch(appSource, /LedgerViewKeyExportOverlay title="Verify with your Ledger"/);
 });
 
@@ -268,7 +276,7 @@ test('desktop Send keeps the same simple recipient-first flow as mobile', () => 
   assert.match(sendSource, /send-keypad/);
   assert.match(sendSource, /className="send-amount-input"/);
   assert.match(sendSource, /inputMode="decimal"/);
-  assert.match(sendSource, /onChange=\{\(event\) => updateAmount\(event\.currentTarget\.value\)\}/);
+  assert.match(sendSource, /onChange=\{\(?event\)? => updateAmount\(event\.currentTarget\.value\)\}/);
   assert.match(stylesSource, /\.send-amount-input\s*\{/);
   assert.match(sendSource, /useXmrPrice\(\)/);
   assert.match(sendSource, /amountCurrency/);
@@ -285,28 +293,28 @@ test('desktop Send keeps the same simple recipient-first flow as mobile', () => 
   assert.equal(/RecentTransactions/.test(sendSource), false, 'recent activity must not distract from the send journey');
 });
 
-test('desktop keeps a confirmed broadcast successful when local follow-up work fails', () => {
+test('desktop keeps the authoritative grouped receipt when local follow-up work fails', () => {
   const sendSource = appSource.slice(appSource.indexOf('function Send('), appSource.indexOf('function Receive('));
-  const commitSource = sendSource.slice(
-    sendSource.indexOf('const commit = async () => {'),
-    sendSource.indexOf('const useMaximum ='),
-  );
-  const postBroadcastStart = commitSource.indexOf('const runPostBroadcastStep = async');
-  assert.notEqual(postBroadcastStart, -1);
+  const commitSource = sendSource.slice(sendSource.indexOf('const commit = async () => {'), sendSource.indexOf('const finishSuccess ='));
+  assert.match(commitSource, /'commit_send_plan'/);
+  assert.match(commitSource, /planId: prepared\.id/);
+  assert.match(commitSource, /'send_plan_status'/);
+  assert.doesNotMatch(commitSource, /prepare_send_plan|prepare_transaction|commit_transaction/);
+  const receiptBoundary = commitSource.indexOf('setSuccessReceipt(result);');
+  const maintenanceBoundary = commitSource.indexOf('setSuccessRefreshing(true);');
+  assert.ok(receiptBoundary >= 0 && maintenanceBoundary > receiptBoundary);
+  const followUp = commitSource.slice(maintenanceBoundary);
+  assert.match(followUp, /await onWalletsChanged\(\)/);
+  assert.match(followUp, /await loadSnapshot\(true\)/);
+  assert.doesNotMatch(followUp, /setSuccessReceipt|send\.broadcastFailed|commit_send_plan|prepare_send_plan/);
 
-  const broadcastBoundary = commitSource.slice(0, postBroadcastStart);
-  const postBroadcastSource = commitSource.slice(postBroadcastStart);
-  assert.match(broadcastBoundary, /commit_transaction/);
-  assert.match(broadcastBoundary, /send\.broadcastFailed/);
-  assert.match(broadcastBoundary, /catch \(reason\)[\s\S]*setBusy\(false\);[\s\S]*return;/);
-  assert.doesNotMatch(postBroadcastSource, /send\.broadcastFailed/);
-  assert.match(postBroadcastSource, /MONERO_DESKTOP_POST_BROADCAST_FAILED/);
-  assert.match(postBroadcastSource, /runPostBroadcastStep\(\s*'ledger-reconciliation'/);
-  assert.match(postBroadcastSource, /runPostBroadcastStep\('wallet-list-refresh', onWalletsChanged\)/);
-  assert.match(postBroadcastSource, /runPostBroadcastStep\('send-form-reset'[\s\S]*setMessage\(t\('send\.sent'\)\)/);
-  assert.match(postBroadcastSource, /runPostBroadcastStep\('recipient-history'[\s\S]*rememberRecipient/);
-  assert.match(postBroadcastSource, /runPostBroadcastStep\('recipient-reset'[\s\S]*setAddress\(''\)/);
-  assert.match(postBroadcastSource, /runPostBroadcastStep\('snapshot-refresh'[\s\S]*loadSnapshot\(true\)/);
+  const receipt = { id: 'fixture-plan', txCount: 2, txIds: ['fixture-a', 'fixture-b'],
+    status: 'ok', phase: 'complete', broadcastedTxIds: ['fixture-a', 'fixture-b'],
+    broadcastedAmountAtomic: '1000', broadcastedFeeAtomic: '20', broadcastedTotalsKnown: true };
+  assert.equal(sendPlanOutcome(receipt), 'complete');
+  assert.equal(sendPlanOutcome({ ...receipt, status: 'partial', broadcastedTxIds: ['fixture-a'] }), 'partial');
+  assert.equal(sendPlanOutcome({ ...receipt, status: 'uncertain', broadcastedTotalsKnown: false,
+    broadcastedAmountAtomic: null, uncertainTxIds: ['fixture-b'] }), 'uncertain');
 });
 
 test('desktop recipient scanning uses the Mac webcam without depending on BarcodeDetector', () => {
@@ -344,7 +352,9 @@ test('desktop Receive keeps QR and copy primary while address tools stay optiona
   assert.match(receiveSource, /copy-icon-button/);
   assert.match(receiveSource, /showAddressTools/);
   assert.match(receiveSource, /receive\.manageAddresses/);
-  assert.match(receiveSource, /invoke<string>\('list_subaddresses'/);
+  assert.match(receiveSource, /invoke<string>\('wallet_address_catalog'/);
+  assert.match(receiveSource, /catalog\?\.accounts\.map/);
+  assert.doesNotMatch(receiveSource, /filter\(\(item\) => item\.address !== address\)/);
   assert.match(receiveSource, /manageAddressesRequest\?\.walletId === wallet\?\.id/);
   const walletsSource = appSource.slice(appSource.indexOf('function Wallets('), appSource.indexOf('function LedgerViewKeyExportOverlay('));
   assert.match(walletsSource, /onManageAddresses\(wallet\)/);
@@ -359,8 +369,8 @@ test('desktop keeps the balance summary and separate collapsible blockchain and 
   assert.match(appSource, /const blockchainCurrent =/);
   assert.doesNotMatch(appSource, /walletProvesCurrentDownload/);
   assert.match(appSource, /const blockchainPercent = displaySyncPercent\(/);
-  assert.match(appSource, /const blockchainDetail = network\.ready \? t\('home\.syncComplete'\)/);
-  assert.match(appSource, /complete=\{network\.ready\}/);
+  assert.match(appSource, /const blockchainDetail = network\.downloadComplete \? t\('home\.syncComplete'\)/);
+  assert.match(appSource, /complete=\{network\.downloadComplete\}/);
   assert.match(appSource, /complete=\{sync\.coreConfirmed\}/);
   assert.match(appSource, /home\.blockchainData/);
   assert.match(appSource, /home\.walletScan/);
@@ -583,14 +593,13 @@ test('Ledger read-only setup and spent-output reconciliation are reachable throu
   assert.match(hostSource, /ledger-hardware-session-validate/);
   assert.match(hostSource, /native_wallet::is_session_stale/);
   assert.match(commitSource, /ledger_hardware_session_key/);
-  assert.match(commitSource, /commit_transaction\(&transaction_wallet_id/);
+  assert.match(commitSource, /legacy_send_plan::commit\([\s\S]*&transaction_wallet_id/);
   assert.match(appSource, /registrationId: wallet\.id/);
-  assert.match(appSource, /sentLedgerRefreshPending/);
-  assert.match(
-    appSource,
-    /native Core has confirmed the broadcast[\s\S]*Every local[\s\S]*never present a successful payment as failed/,
-    'a failed post-send Ledger refresh must never present a successful broadcast as failed',
-  );
+  const groupCommit = rustFunction(hostSource, 'commit_send_plan');
+  assert.match(groupCommit, /require_fresh_app_authorization/);
+  assert.match(groupCommit, /validate_send_plan_bindings/);
+  assert.match(groupCommit, /send_plan::commit/);
+  assert.match(appSource, /setSuccessReceipt\(result\)/);
   assert.match(
     appSource,
     /deferSync: persistLedgerViewOnly/,
@@ -791,10 +800,13 @@ test('desktop promotes only the exact receipt-acknowledged assignment candidate'
 
 test('desktop persists a grey outgoing transaction until native history becomes authoritative', () => {
   const hostSource = readFileSync(resolve(desktopRoot, 'src-tauri', 'src', 'lib.rs'), 'utf8');
-  const commit = rustFunction(hostSource, 'commit_transaction');
+  const commit = rustFunction(hostSource, 'commit_send_plan');
   const history = rustFunction(hostSource, 'registered_wallet_transactions');
 
-  assert.match(commit, /pending_outgoing::record/);
+  assert.match(commit, /pending_outgoing::record_details/);
+  assert.match(commit, /&member\.broadcasted/);
+  assert.match(pendingOutgoingSource, /pub fn record_details/);
+  assert.match(pendingOutgoingSource, /amount_atomic:detail\.amount_atomic\.clone\(\)/);
   assert.match(history, /pending_outgoing::merge/);
   assert.match(pendingOutgoingSource, /wallet\.pending-outgoing\.v1/);
   assert.match(pendingOutgoingSource, /"pending": true/);
@@ -937,7 +949,7 @@ test('desktop keeps the setup instruction dialog but never overlays balance reco
   assert.match(i18nSource, /approve Export view key once/);
   assert.doesNotMatch(appSource, /ledgerVerificationPhase && <LedgerViewKeyExportOverlay/);
   assert.match(appSource, /readinessPhase=\{publication\?\.phase\}/);
-  assert.match(appSource, /ledgerStatus \?\? t\('home\.ledgerRequired'\)/);
+  assert.match(appSource, /readinessPhase === 'waiting-ledger'\s*\? t\('home\.ledgerVerificationWaiting'\)/);
   assert.match(appSource, /finally \{\s*setLedgerVerificationPhase\(null\);\s*\}/);
   assert.doesNotMatch(appSource, /mode: 'open'/);
   assert.doesNotMatch(appSource, /wallet-switch-open-flow-shown/);
@@ -1014,7 +1026,9 @@ test('desktop recovery-seed authorization follows the protection method selected
   assert.doesNotMatch(appSource, /mode=\{appProtection\.mode \?\? 'password'\}/);
   assert.match(fastUiSource, /const systemAuthorization = appProtection\.mode === 'system'/);
   assert.match(fastUiSource, /will confirm before the recovery words are shown/);
-  assert.match(fastUiSource, /You will confirm this payment with/);
+  assert.match(fastUiSource, /present_fast_wallet_recovery_seed/);
+  assert.match(fastUiSource, /const appPassword = backupPassword/);
+  assert.doesNotMatch(fastUiSource, /'prepare_transaction'|'commit_transaction'/);
   assert.doesNotMatch(fastUiSource, /App password \(only if/);
 });
 
@@ -1453,6 +1467,7 @@ test('every renderer-accessible wallet and privacy command fails closed behind t
     'wallet_unlocked_balance',
     'create_subaddress',
     'list_subaddresses',
+    'wallet_address_catalog',
     'wallet_transactions',
     'prepare_transaction',
     'commit_transaction',

@@ -140,6 +140,20 @@ pub fn record(
     Ok(true)
 }
 
+/// Record only native-proven per-transaction values. Group totals are never
+/// copied onto each hash when Monero splits a payment into several transactions.
+pub fn record_details(registration_id:&str, details:&[crate::send_plan::TransactionDetail], address:&str, timestamp:u64)->Result<(),String> {
+    if details.is_empty(){return Ok(());}
+    let mut registry=load()?;
+    let values=registry.wallets.entry(registration_id.to_owned()).or_default();
+    for detail in details {
+        if !valid_hash(&detail.hash) || !valid_atomic(&detail.amount_atomic) || !valid_atomic(&detail.fee_atomic) {return Err("Native transaction detail is invalid.".to_owned());}
+        let hash=detail.hash.to_lowercase();values.retain(|old|old.hash!=hash);
+        values.insert(0,PendingOutgoing{hash,address:address.to_owned(),amount_atomic:detail.amount_atomic.clone(),fee_atomic:detail.fee_atomic.clone(),timestamp,subaddress_account:detail.subaddress_account,subaddress_indices:detail.subaddress_indices.clone()});
+    }
+    values.truncate(MAX_PENDING_PER_WALLET);store(&registry)
+}
+
 pub fn merge(registration_id: &str, authoritative_json: &str, now: u64) -> Result<String, String> {
     let mut authoritative: Vec<Value> = serde_json::from_str(authoritative_json)
         .map_err(|_| "The native wallet transaction history was invalid.".to_owned())?;

@@ -92,6 +92,13 @@ impl SessionSecretCache {
         before.saturating_sub(self.entries.len())
     }
 
+    fn invalidate_missing(&mut self, key: &str) -> bool {
+        if matches!(self.entries.get(key), Some(SessionSecretCacheEntry::Missing)) {
+            self.entries.remove(key);
+            true
+        } else { false }
+    }
+
     fn clear_failures(&mut self) {
         self.entries
             .retain(|_, entry| !matches!(entry, SessionSecretCacheEntry::Failure(_)));
@@ -580,6 +587,17 @@ pub fn load_fast_wallet_assignment_state(identity_id: &str) -> Result<Option<Str
         identity_id,
         "Fast Wallet assignment state",
     )
+}
+
+/// Explicit Check/Setup may revisit an earlier NotFound result for this
+/// identity only. Positive entries and denied/failed reads stay untouched.
+pub fn retry_missing_fast_wallet_assignment_reads(identity_id: &str) -> Result<(), String> {
+    account_name_with_prefix(FAST_WALLET_ASSIGNMENT_PREFIX, identity_id)?;
+    let mut cache = session_secret_cache().lock()
+        .map_err(|_| "Secure session cache is busy.".to_owned())?;
+    cache.invalidate_missing(&cache_key(FAST_WALLET_ASSIGNMENT_PREFIX, identity_id));
+    cache.invalidate_missing(&cache_key(FAST_WALLET_PENDING_ASSIGNMENT_PREFIX, identity_id));
+    Ok(())
 }
 
 pub fn delete_fast_wallet_assignment_state(identity_id: &str) -> Result<(), String> {
@@ -1499,6 +1517,22 @@ mod tests {
             super::should_migrate_legacy_macos_secret("app-protection-mode"),
             migrate_app_lock
         );
+    }
+
+    #[test]
+    fn explicit_missing_retry_preserves_successes_denials_and_other_identities() {
+        let mut cache = super::SessionSecretCache::default();
+        cache.replace("missing-a".into(), super::SessionSecretCacheEntry::Missing);
+        cache.replace("missing-b".into(), super::SessionSecretCacheEntry::Missing);
+        cache.replace("present".into(), super::SessionSecretCacheEntry::Secret("protected".into()));
+        cache.replace("denied".into(), super::SessionSecretCacheEntry::Failure("denied".into()));
+        assert!(cache.invalidate_missing("missing-a"));
+        assert!(cache.lookup("missing-a").is_none());
+        assert!(matches!(cache.lookup("missing-b"), Some(Ok(None))));
+        assert!(!cache.invalidate_missing("present"));
+        assert!(matches!(cache.lookup("present"), Some(Ok(Some(_)))));
+        assert!(!cache.invalidate_missing("denied"));
+        assert!(matches!(cache.lookup("denied"), Some(Err(_))));
     }
 
     #[test]

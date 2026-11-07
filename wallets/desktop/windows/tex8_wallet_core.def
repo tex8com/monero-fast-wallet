@@ -24,6 +24,7 @@ EXPORTS
   tex8_desktop_wallet_get_address
   tex8_desktop_wallet_get_seed
   tex8_desktop_wallet_snapshot
+  tex8_desktop_wallet_accounts
   tex8_desktop_wallet_sync_ledger_key_images
   tex8_desktop_wallet_get_balance
   tex8_desktop_wallet_create_subaddress
@@ -33,8 +34,11 @@ EXPORTS
   tex8_desktop_wallet_get_transactions
   tex8_desktop_wallet_prepare_transaction
   tex8_desktop_wallet_commit_transaction
+  tex8_desktop_discard_transaction
+  tex8_desktop_commit_transaction_report
   tex8_desktop_wallet_hardware_status
   tex8_desktop_wallet_reconnect_hardware
   tex8_desktop_wallet_prime_hardware_from_view_only
+  tex8_desktop_wallet_prime_hardware_view_capability_from_view_only
   tex8_desktop_wallet_rebuild_hardware_wallet_cache_from_view_only
   tex8_desktop_wallet_show_hardware_address

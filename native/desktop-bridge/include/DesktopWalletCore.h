@@ -120,6 +120,8 @@ extern "C" Tex8DesktopResult tex8_desktop_wallet_get_seed(
     const char* seed_offset) noexcept;
 extern "C" Tex8DesktopResult tex8_desktop_wallet_snapshot(
     Tex8DesktopWalletCore* core, const char* wallet_id) noexcept;
+extern "C" Tex8DesktopResult tex8_desktop_wallet_accounts(
+    Tex8DesktopWalletCore* core, const char* wallet_id) noexcept;
 extern "C" Tex8DesktopResult tex8_desktop_wallet_sync_ledger_key_images(
     Tex8DesktopWalletCore* core, const char* hardware_wallet_id,
     const char* view_only_wallet_id) noexcept;
@@ -180,11 +182,20 @@ extern "C" Tex8DesktopResult tex8_desktop_wallet_prepare_mfw_name_transition(
 extern "C" Tex8DesktopResult tex8_desktop_wallet_commit_transaction(
     Tex8DesktopWalletCore* core, const char* wallet_id,
     const char* pending_id) noexcept;
+extern "C" Tex8DesktopResult tex8_desktop_discard_transaction(
+    Tex8DesktopWalletCore* core, const char* wallet_id,
+    const char* pending_id) noexcept;
+extern "C" Tex8DesktopResult tex8_desktop_commit_transaction_report(
+    Tex8DesktopWalletCore* core, const char* wallet_id,
+    const char* pending_id) noexcept;
 extern "C" Tex8DesktopResult tex8_desktop_wallet_hardware_status(
     Tex8DesktopWalletCore* core, const char* wallet_id) noexcept;
 extern "C" Tex8DesktopResult tex8_desktop_wallet_reconnect_hardware(
     Tex8DesktopWalletCore* core, const char* wallet_id) noexcept;
 extern "C" Tex8DesktopResult tex8_desktop_wallet_prime_hardware_from_view_only(
+    Tex8DesktopWalletCore* core, const char* hardware_wallet_id,
+    const char* view_only_wallet_id) noexcept;
+extern "C" Tex8DesktopResult tex8_desktop_wallet_prime_hardware_view_capability_from_view_only(
     Tex8DesktopWalletCore* core, const char* hardware_wallet_id,
     const char* view_only_wallet_id) noexcept;
 extern "C" Tex8DesktopResult tex8_desktop_wallet_rebuild_hardware_wallet_cache_from_view_only(

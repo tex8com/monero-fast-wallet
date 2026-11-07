@@ -1,13 +1,114 @@
 use crate::{mfw_names, release_features};
 use reqwest::{blocking::Client, redirect::Policy, Url};
 use serde::{Deserialize, Serialize};
-use std::{collections::HashSet, io::Read, time::Duration};
+use std::{
+    collections::HashSet,
+    fs,
+    io::{Read, Write},
+    path::PathBuf,
+    time::Duration,
+};
+use tauri::{AppHandle, Manager};
 
 const MAX_RESPONSE_BYTES: u64 = 16 * 1024;
 const MAX_SUGGESTION_RESPONSE_BYTES: u64 = 4 * 1024;
 const MAX_NAME_SUGGESTIONS: usize = 5;
 const MAX_REVERSE_NAMES: usize = 100;
 const MIN_CONFIRMATIONS: u64 = 15;
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ResolverPreference {
+    #[default]
+    Both,
+    Tex8,
+    Community,
+}
+
+fn preference_path(app: &AppHandle) -> Result<PathBuf, String> {
+    app.path()
+        .app_data_dir()
+        .map(|directory| directory.join("mfw-resolver-preference.json"))
+        .map_err(|_| "Application data directory is unavailable.".to_owned())
+}
+
+pub fn load_preference(app: &AppHandle) -> Result<ResolverPreference, String> {
+    match fs::read(preference_path(app)?) {
+        Ok(value) => Ok(serde_json::from_slice(&value).unwrap_or_default()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            Ok(ResolverPreference::default())
+        }
+        Err(_) => Err("The .mfw resolver preference could not be read.".to_owned()),
+    }
+}
+
+pub fn save_preference(
+    app: &AppHandle,
+    preference: ResolverPreference,
+) -> Result<ResolverPreference, String> {
+    resolver_origins(preference)?;
+    let path = preference_path(app)?;
+    let directory = path
+        .parent()
+        .ok_or_else(|| "Application data directory is unavailable.".to_owned())?;
+    let encoded = serde_json::to_vec(&preference)
+        .map_err(|_| "The .mfw resolver preference could not be encoded.".to_owned())?;
+    fs::create_dir_all(directory)
+        .map_err(|_| "The .mfw resolver preference could not be saved.".to_owned())?;
+    let mut nonce = [0u8; 8];
+    getrandom::getrandom(&mut nonce)
+        .map_err(|_| "The .mfw resolver preference could not be saved.".to_owned())?;
+    let temporary = path.with_extension(format!("{}.tmp", hex::encode(nonce)));
+    let mut file = fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&temporary)
+        .map_err(|_| "The .mfw resolver preference could not be saved.".to_owned())?;
+    let written = file.write_all(&encoded).and_then(|_| file.sync_all());
+    drop(file);
+    if written
+        .and_then(|_| crate::notification_inbox::commit_replacement(&temporary, &path))
+        .is_err()
+    {
+        let _ = fs::remove_file(&temporary);
+        return Err("The .mfw resolver preference could not be saved.".to_owned());
+    }
+    Ok(preference)
+}
+
+fn resolver_origins(preference: ResolverPreference) -> Result<Vec<String>, String> {
+    let origins = release_features::mfw_name_resolver_origins()
+        .ok_or_else(|| "MFW resolvers are not configured for this release.".to_owned())?;
+    // The release manifest lists the TEX8 resolver followed by the Community resolver.
+    let [tex8, community] = origins.as_slice() else {
+        return Err("The release must configure two .mfw resolver choices.".to_owned());
+    };
+    if !origins.iter().all(|origin| {
+        Url::parse(origin).is_ok_and(|url| {
+            url.scheme() == "http"
+                && url.host_str().is_some_and(|host| host.ends_with(".onion"))
+                && url.port().is_none()
+                && *origin == url.origin().ascii_serialization()
+        })
+    }) {
+        return Err("The release must configure Tor .mfw resolvers.".to_owned());
+    }
+    Ok(match preference {
+        ResolverPreference::Both => origins,
+        ResolverPreference::Tex8 => vec![tex8.clone()],
+        ResolverPreference::Community => vec![community.clone()],
+    })
+}
+
+fn suggestion_origins(preference: ResolverPreference) -> Result<Vec<String>, String> {
+    match preference {
+        ResolverPreference::Both => release_features::mfw_name_suggestion_onion_origins()
+            .ok_or_else(|| {
+                "MFW suggestion resolver is not configured for this release.".to_owned()
+            }),
+        ResolverPreference::Tex8 | ResolverPreference::Community => resolver_origins(preference),
+    }
+}
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -68,41 +169,42 @@ pub struct ReverseOwnedName {
     pub address: String,
 }
 
-pub fn resolve(name: &str) -> Result<Resolution, String> {
+pub fn resolve(app: &AppHandle, name: &str) -> Result<Resolution, String> {
     let canonical_name = mfw_names::canonical_name(name)?;
-    let origins = release_features::mfw_name_resolver_origins()
-        .ok_or_else(|| "MFW resolver quorum is not configured for this release.".to_owned())?;
+    let origins = resolver_origins(load_preference(app)?)?;
     resolve_with_origins(&canonical_name, &origins)
 }
 
-pub fn resolve_payment(name: &str, network: &str) -> Result<String, String> {
+pub fn resolve_payment(app: &AppHandle, name: &str, network: &str) -> Result<String, String> {
     release_features::require(
         "mfwNameResolution",
         "MFW name resolution is not enabled in this release.",
     )?;
-    let resolution = resolve(name)?;
+    let resolution = resolve(app, name)?;
     validate_active(&resolution, name, network, None)?;
     verify_record_address(&resolution, name, network)
 }
 
-pub fn suggest(prefix: &str) -> Result<SuggestionResponse, String> {
+pub fn suggest(app: &AppHandle, prefix: &str) -> Result<SuggestionResponse, String> {
     release_features::require(
         "mfwNameResolution",
         "MFW name suggestions are not enabled in this release.",
     )?;
     let prefix = normalize_suggestion_prefix(prefix)?;
-    let origins = release_features::mfw_name_suggestion_onion_origins()
-        .ok_or_else(|| "MFW suggestion resolver is not configured for this release.".to_owned())?;
+    let origins = suggestion_origins(load_preference(app)?)?;
     suggest_with_origins(&prefix, &origins)
 }
 
-pub fn reverse_for_wallet(address: &str, network: &str) -> Result<Vec<ReverseOwnedName>, String> {
+pub fn reverse_for_wallet(
+    app: &AppHandle,
+    address: &str,
+    network: &str,
+) -> Result<Vec<ReverseOwnedName>, String> {
     release_features::require(
         "mfwNameRegistration",
         "MFW name reverse discovery is not enabled in this release.",
     )?;
-    let origins = release_features::mfw_name_resolver_origins()
-        .ok_or_else(|| "MFW resolver quorum is not configured for this release.".to_owned())?;
+    let origins = resolver_origins(load_preference(app)?)?;
     let reverse = reverse_with_origins(address, network, &origins)?;
     if reverse.truncated {
         return Err("MFW reverse discovery returned more than 100 names.".to_owned());
@@ -126,6 +228,7 @@ pub fn reverse_for_wallet(address: &str, network: &str) -> Result<Vec<ReverseOwn
 }
 
 pub fn resolve_predecessor(
+    app: &AppHandle,
     name: &str,
     network: &str,
     expected_owner_public_key_hex: &str,
@@ -134,7 +237,7 @@ pub fn resolve_predecessor(
         "mfwNameRegistration",
         "MFW name registration is not enabled in this release.",
     )?;
-    let resolution = resolve(name)?;
+    let resolution = resolve(app, name)?;
     validate_active(
         &resolution,
         name,
@@ -145,24 +248,28 @@ pub fn resolve_predecessor(
     Ok(resolution)
 }
 
-pub fn resolve_for_import(name: &str, network: &str) -> Result<(Resolution, String), String> {
+pub fn resolve_for_import(
+    app: &AppHandle,
+    name: &str,
+    network: &str,
+) -> Result<(Resolution, String), String> {
     release_features::require(
         "mfwNameRegistration",
         "MFW name recovery is not enabled in this release.",
     )?;
-    let resolution = resolve(name)?;
+    let resolution = resolve(app, name)?;
     validate_active(&resolution, name, network, None)?;
     let address = verify_record_address(&resolution, name, network)?;
     Ok((resolution, address))
 }
 
-pub fn availability(name: &str, network: &str) -> Result<Availability, String> {
+pub fn availability(app: &AppHandle, name: &str, network: &str) -> Result<Availability, String> {
     release_features::require(
         "mfwNameRegistration",
         "MFW name availability is not enabled in this release.",
     )?;
     let canonical_name = mfw_names::canonical_name(name)?;
-    let resolution = resolve(&canonical_name)?;
+    let resolution = resolve(app, &canonical_name)?;
     if resolution.canonical_name != canonical_name || resolution.network != network {
         return Err("MFW availability response is malformed or wrong-network.".to_owned());
     }
@@ -647,10 +754,32 @@ fn is_bounded_hex(value: &str, minimum_bytes: usize, maximum_bytes: usize) -> bo
 #[cfg(test)]
 mod tests {
     use super::{
-        normalize_suggestion_prefix, require_empty_record, validate_origin,
-        validate_reverse_response, validate_shape, validate_suggestion_response, Resolution,
-        ReverseResponse, SuggestionResponse,
+        normalize_suggestion_prefix, require_empty_record, resolver_origins, suggestion_origins,
+        validate_origin, validate_reverse_response, validate_shape, validate_suggestion_response,
+        Resolution, ResolverPreference, ReverseResponse, SuggestionResponse,
     };
+
+    #[test]
+    fn selected_policy_never_contacts_an_unselected_resolver() {
+        let both = resolver_origins(ResolverPreference::default()).unwrap();
+        let tex8 = resolver_origins(ResolverPreference::Tex8).unwrap();
+        let community = resolver_origins(ResolverPreference::Community).unwrap();
+        assert_eq!(both, [tex8.clone(), community.clone()].concat());
+        assert_eq!(tex8.len(), 1);
+        assert_eq!(community.len(), 1);
+        assert_ne!(tex8, community);
+        assert_eq!(suggestion_origins(ResolverPreference::Both).unwrap(), tex8);
+        assert_eq!(suggestion_origins(ResolverPreference::Tex8).unwrap(), tex8);
+        assert_eq!(
+            suggestion_origins(ResolverPreference::Community).unwrap(),
+            community
+        );
+        assert_eq!(
+            serde_json::from_str::<ResolverPreference>(r#""community""#).unwrap(),
+            ResolverPreference::Community
+        );
+        assert!(serde_json::from_str::<ResolverPreference>(r#""http://other.onion""#).is_err());
+    }
 
     fn empty_resolution() -> Resolution {
         Resolution {

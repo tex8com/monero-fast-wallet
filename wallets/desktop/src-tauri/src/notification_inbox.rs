@@ -22,9 +22,7 @@ pub fn received_timestamp(raw: &str, observed_at: u64) -> u64 {
         .unwrap_or(observed_at)
 }
 
-/// Finish the durable replacement before an inbox receipt may be removed.
-/// The caller has already synced and closed the new file.
-#[cfg(any(target_os = "windows", target_os = "linux", test))]
+/// Replace an existing file durably after the caller has synced and closed the new file.
 pub fn commit_replacement(temporary: &Path, destination: &Path) -> std::io::Result<()> {
     #[cfg(windows)]
     {

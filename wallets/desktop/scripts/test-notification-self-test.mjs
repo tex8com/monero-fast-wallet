@@ -229,9 +229,13 @@ test('macOS banner setup stays available after authorization and receipt, withou
       return command === 'open_focus_settings' ? response.promise : Promise.resolve({ ...current, platform: 'macos', permissionSettingsAvailable: false });
     });
     view.render(); await tick(); view.render();
-    assert.match(view.markup(), /Set up macOS banners/);
-    assert.match(view.markup(), /Focus and screen sharing can suppress banners even when a push was received/);
-    assert.match(view.markup(), /cannot fully verify your Focus and screen-sharing settings/);
+    assert.equal(view.button(t('settings.pushBannerHelp')).props['aria-expanded'], false);
+    assert.equal(view.button(t('settings.pushTestOpenFocusSettings')), undefined);
+    view.button(t('settings.pushBannerHelp')).props.onClick(); view.render();
+    assert.equal(view.button(t('settings.pushBannerHelp')).props['aria-expanded'], true);
+    assert.match(view.markup(), /Show banners/);
+    assert.match(view.markup(), /Allow Monero Fast Wallet in Focus/);
+    assert.match(view.markup(), /Focus and screen sharing can hide banners/);
     assert.doesNotMatch(view.markup(), /Notifications are blocked in macOS/);
     const focus = view.button(t('settings.pushTestOpenFocusSettings'));
     const notifications = view.button(t('settings.pushTestOpenMacSettings'));
@@ -259,6 +263,7 @@ test('a failed Focus opener gives a manual route, while other native platforms h
     return { ...received, platform: 'macos', permissionSettingsAvailable: false };
   });
   view.render(); await tick(); view.render();
+  view.button(t('settings.pushBannerHelp')).props.onClick(); view.render();
   view.button(t('settings.pushTestOpenFocusSettings')).props.onClick(); await tick(); view.render();
   assert.match(view.markup(), /Focus settings could not be opened/);
   assert.match(view.markup(), /System Settings → Focus/);
@@ -270,7 +275,7 @@ test('a failed Focus opener gives a manual route, while other native platforms h
     other.render(); await tick(); other.render();
     assert.equal(other.button(t('settings.pushTestOpenFocusSettings')), undefined);
     assert.equal(other.button(t('settings.pushTestOpenMacSettings')), undefined);
-    assert.doesNotMatch(other.markup(), /Set up macOS banners/);
+    assert.doesNotMatch(other.markup(), /Show banners|No banner/);
     other.unmount();
   }
 });
@@ -513,7 +518,7 @@ test('unsupported remote workers show a failure and allow retry without enabling
 
 test('server-side missing setup is shown clearly and preserves the disabled preference', async () => {
   for (const [code, message] of [
-    ['push-test-fast-wallet-required', /Enable incoming-payment alerts/],
+    ['push-test-fast-wallet-required', /Fast Wallet setup needs attention/],
     ['push-test-provider-required', /registration for this device is still pending/],
   ]) {
     const commands = [];
@@ -572,4 +577,44 @@ test('APNs and WSS forward actual receipt through the common incoming wake witho
   assert.doesNotMatch(consume, /amountAtomic|setBalance|transactions\.push|start_refresh/);
   const diagnostics = read('../src-tauri/src/diagnostics.rs');
   for (const name of ['pushTestEventId', 'scheduledAt', 'deliverAfter']) assert.ok(diagnostics.includes(`"${name}"`));
+});
+
+
+test('missing protected assignment opens the authorized setup route without requesting a push', async () => {
+  const commands = []; let managed = 0;
+  const view = mount(async command => { commands.push(command); return { ...ready, available: false, reason: 'assignment-required', platform: 'macos' }; }, { onManageAlerts() { managed++; } });
+  view.render(); await tick(); view.render();
+  assert.match(view.markup(), /Fast Wallet setup needs attention/);
+  view.button(t('settings.pushTestRepairSetup')).props.onClick(); await tick(); view.render();
+  assert.equal(managed, 1);
+  assert.deepEqual(commands, ['test_push_notification_status']);
+  assert.doesNotMatch(view.markup(), /Server test scheduled/);
+  view.unmount();
+});
+
+test('an intact legacy connection is checked by the native request without opening enrollment', async () => {
+  let current = { ...ready, available: false, reason: 'assignment-check-required', platform: 'macos' };
+  const pending = deferred(); const commands = []; let managed = 0;
+  const view = mount(command => { commands.push(command); return command === 'request_test_push_notification' ? pending.promise : Promise.resolve(current); }, { onManageAlerts() { managed++; } });
+  view.render(); await tick(); view.render();
+  assert.match(view.markup(), /saved connection will be verified/);
+  view.button().props.onClick(); view.render();
+  assert.match(view.markup(), /Checking connection/);
+  assert.equal(managed, 0);
+  current = scheduled; pending.resolve(scheduled); await tick(); view.render();
+  assert.equal(commands.filter(command => command === 'request_test_push_notification').length, 1);
+  assert.equal(managed, 0);
+  view.unmount();
+});
+
+test('native legacy recovery checks hosting only and rejected requests log safe status and code', () => {
+  const native = read('../src-tauri/src/desktop_notifications.rs');
+  const recovery = native.slice(native.indexOf('async fn verify_legacy_assignment_bindings'), native.indexOf('fn test_setup_gate'));
+  assert.match(recovery, /check_hosting/);
+  assert.doesNotMatch(recovery, /enable_encrypted|sponsor_assignment|seal_fast_receive|submit_watch|request_installation/);
+  const rejected = native.slice(native.indexOf('if response_status != reqwest::StatusCode::ACCEPTED'), native.indexOf('let receipt: TestPushReceipt'));
+  assert.match(rejected, /test_rejection_code/);
+  assert.match(rejected, /"httpStatus"/);
+  assert.match(rejected, /"safeErrorCode"/);
+  assert.doesNotMatch(rejected, /\("error",|\("message",/);
 });

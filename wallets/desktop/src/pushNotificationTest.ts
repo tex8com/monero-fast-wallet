@@ -37,5 +37,5 @@ export function pushTestCanStart(status: PushTestStatus | null, requesting: bool
   // scheduling. Missing owner permissions, wallet or alerts remain blocked.
   return (status.available === true && status.reason === 'ready')
     || status.reason === 'provider-required' || status.reason === 'gateway-required'
-    || status.reason === 'agent-required';
+    || status.reason === 'agent-required' || status.reason === 'assignment-check-required';
 }

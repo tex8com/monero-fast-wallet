@@ -1,4 +1,5 @@
 mod app_vault;
+mod address_catalog;
 mod community;
 mod community_preferences;
 mod compute_preferences;
@@ -22,6 +23,8 @@ mod native_wallet;
 mod node_settings;
 mod payment_links;
 mod pending_outgoing;
+mod send_plan;
+mod legacy_send_plan;
 mod platform_auth;
 mod release_features;
 mod secure_store;
@@ -32,6 +35,7 @@ pub mod tor_transport;
 mod vanity_service;
 mod wallet_core;
 mod wallet_registry;
+mod wallet_removal;
 mod windows_notification_agent;
 
 use rfd::{MessageButtons, MessageDialog, MessageDialogResult, MessageLevel};
@@ -481,6 +485,7 @@ struct PendingTransactionApproval {
     address: String,
     amount_atomic: String,
     fee_atomic: String,
+    prepared: serde_json::Value,
     expires_at: u64,
     mfw: Option<MfwPendingApproval>,
 }
@@ -830,8 +835,10 @@ struct PresentRecoverySeedInput {
 #[serde(rename_all = "camelCase")]
 struct HardwareAddressInput {
     wallet_id: String,
+    registration_id: Option<String>,
     account_index: Option<u32>,
     address_index: Option<u32>,
+    expected_address: Option<String>,
 }
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1560,6 +1567,9 @@ fn require_fresh_app_password(password: &mut String) -> Result<(), String> {
         if !secure_store::app_protection_configured()? {
             return Err("App protection is not configured on this device.".to_owned());
         }
+        if password.is_empty() {
+            return Err("authorization-required: Enter the app password to authorize this action.".to_owned());
+        }
         let (failures, blocked_until) = secure_store::load_app_unlock_throttle()?;
         let current_time = now();
         if blocked_until > current_time {
@@ -2285,6 +2295,7 @@ fn lock_app_native(
     sessions: &WalletSessionState,
     fast_sessions: &FastWalletSessionState,
     approvals: &PendingTransactionApprovalState,
+    send_plans: &SendPlanState,
     protection: &AppProtectionState,
     community_v1: &enthusiast_v1::CommunityV1State,
 ) -> Result<(), String> {
@@ -2295,6 +2306,7 @@ fn lock_app_native(
         .0
         .lock()
         .map_err(|_| "App protection state is busy.".to_owned())? = true;
+    send_plans.0.lock().map_err(|_| "Payment plan state is busy.".to_owned())?.clear();
     let wallet_ids = {
         let normal = sessions
             .0
@@ -2356,6 +2368,7 @@ fn lock_app(
     sessions: State<'_, WalletSessionState>,
     fast_sessions: State<'_, FastWalletSessionState>,
     approvals: State<'_, PendingTransactionApprovalState>,
+    send_plans: State<'_, SendPlanState>,
     protection: State<'_, AppProtectionState>,
     community_v1: State<'_, enthusiast_v1::CommunityV1State>,
 ) -> Result<(), String> {
@@ -2368,6 +2381,7 @@ fn lock_app(
         &sessions,
         &fast_sessions,
         &approvals,
+        &send_plans,
         &protection,
         &community_v1,
     );
@@ -3110,6 +3124,7 @@ fn prime_ledger_hardware_from_open_companion(
     source: &wallet_registry::RegisteredWallet,
     hardware_wallet_id: &str,
     diagnostic_flow: &str,
+    adopt_scan_state: bool,
 ) -> Result<Option<String>, String> {
     let registry = wallet_registry::list(app)?;
     let companion_wallet_id = {
@@ -3125,9 +3140,16 @@ fn prime_ledger_hardware_from_open_companion(
     if companion_wallet_id == hardware_wallet_id {
         return Err("Ledger signing and viewing sessions must be separate.".to_owned());
     }
-    lock_native_wallet(app, state, "ledger-signing-prime-from-companion")?
-        .prime_hardware_from_view_only(hardware_wallet_id, &companion_wallet_id)
-        .map_err(|error| {
+    ledger_operation::report(app, "verifying-ledger", 0, 0, Duration::ZERO, Duration::ZERO);
+    let primed = {
+        let native = lock_native_wallet(app, state, "ledger-signing-prime-from-companion")?;
+        if adopt_scan_state {
+            native.prime_hardware_from_view_only(hardware_wallet_id, &companion_wallet_id)
+        } else {
+            native.prime_hardware_view_capability_from_view_only(hardware_wallet_id, &companion_wallet_id)
+        }
+    };
+    primed.map_err(|error| {
             // Native code reports a true public-key mismatch itself. A BLE
             // exchange failure is not evidence of a different Ledger.
             format!("The Ledger viewing-key preparation failed. {error}")
@@ -3135,7 +3157,8 @@ fn prime_ledger_hardware_from_open_companion(
     diagnostics::record(
         app,
         "ledger.hardware-session-primed-from-companion",
-        &[("flow", diagnostic_flow.to_owned())],
+        &[("flow", diagnostic_flow.to_owned()),
+          ("operation", if adopt_scan_state { "scan-adoption" } else { "view-capability" }.to_owned())],
     );
     Ok(Some(companion_wallet_id))
 }
@@ -3148,7 +3171,7 @@ fn synchronize_and_verify_ledger_signing_session(
     hardware_wallet_id: &str,
     account_index: u32,
     diagnostic_flow: &str,
-) -> Result<(), String> {
+) -> Result<u64, String> {
     let registry = wallet_registry::list(app)?;
     let companion_wallet_id = {
         let open_sessions = sessions
@@ -3176,6 +3199,7 @@ fn synchronize_and_verify_ledger_signing_session(
             source,
             hardware_wallet_id,
             diagnostic_flow,
+            true,
         )?
         .ok_or_else(|| "The encrypted Ledger viewing companion closed unexpectedly.".to_owned())?;
 
@@ -3213,21 +3237,39 @@ fn synchronize_and_verify_ledger_signing_session(
                 "The securely adopted Ledger spend state does not match its encrypted viewing companion."
                     .to_owned(),
             ),
+        }?;
+        // Complete every comparison while the canonical scanner is stopped.
+        // Resuming first could compare different revisions or publish a newer
+        // height as if it had already been adopted by the Ledger.
+        let native = lock_native_wallet(app, state, "ledger-signing-all-accounts-verify")?;
+        let viewing: Vec<send_plan::Account> = serde_json::from_str(&native.accounts(&companion_wallet_id)?)
+            .map_err(|_| "The Ledger viewing accounts are invalid.".to_owned())?;
+        let signing: Vec<send_plan::Account> = serde_json::from_str(&native.accounts(hardware_wallet_id)?)
+            .map_err(|_| "The Ledger signing accounts are invalid.".to_owned())?;
+        if viewing != signing {
+            return Err("The Ledger signing wallet does not match all viewing-wallet account balances.".to_owned());
         }
+        let final_snapshot: serde_json::Value = serde_json::from_str(&native.snapshot(&companion_wallet_id)?)
+            .map_err(|_| "The Ledger snapshot is invalid.".to_owned())?;
+        if final_snapshot.get("pendingOutputKeyImageCount")
+            .and_then(|v| v.as_u64().or_else(|| v.as_str()?.parse().ok())) != Some(0) {
+            return Err("Ledger spend verification is incomplete. No payment was prepared.".to_owned());
+        }
+        Ok(companion_height)
     })();
     let resume = lock_native_wallet(app, state, "ledger-signing-companion-resume")
         .and_then(|native| native.start_refresh(&companion_wallet_id));
-    if let Err(error) = verification {
-        let _ = resume;
-        return Err(error);
-    }
+    let verified_height = match verification {
+        Ok(height) => height,
+        Err(error) => { let _ = resume; return Err(error); }
+    };
     resume?;
     diagnostics::record(
         app,
         "ledger.hardware-signing-scan-state-adopted",
         &[("flow", diagnostic_flow.to_owned())],
     );
-    Ok(())
+    Ok(verified_height)
 }
 
 fn ensure_ledger_hardware_session(
@@ -3306,6 +3348,7 @@ fn ensure_ledger_hardware_session(
                 source,
                 &wallet_id,
                 diagnostic_flow,
+                false,
             )?;
             return Ok(wallet_id);
         }
@@ -3329,6 +3372,7 @@ fn ensure_ledger_hardware_session(
                     source,
                     &wallet_id,
                     diagnostic_flow,
+                    false,
                 )?;
                 return Ok(wallet_id);
             }
@@ -3468,6 +3512,7 @@ fn ensure_ledger_hardware_session(
         source,
         &wallet_id,
         diagnostic_flow,
+        false,
     ) {
         let _ = lock_native_wallet(app, state, "ledger-hardware-session-prime-cleanup")?
             .close(&wallet_id, false);
@@ -4240,8 +4285,6 @@ fn rename_wallet(
 #[tauri::command]
 async fn remove_registered_wallet(
     app: AppHandle,
-    state: State<'_, NativeWalletState>,
-    sessions: State<'_, WalletSessionState>,
     protection: State<'_, AppProtectionState>,
     mut input: RemoveRegisteredWalletInput,
 ) -> Result<(), String> {
@@ -4252,150 +4295,121 @@ async fn remove_registered_wallet(
         "Permanently delete this wallet and its local data",
     )
     .await?;
-    let registry = wallet_registry::list(&app)?;
-    let removed_wallets = registry
-        .wallets
-        .iter()
-        .filter(|wallet| {
-            wallet.id == input.wallet_id
-                || wallet.source_wallet_id.as_deref() == Some(input.wallet_id.as_str())
-        })
-        .cloned()
-        .collect::<Vec<_>>();
-    if removed_wallets.is_empty() {
-        return Err("Saved wallet was not found.".to_owned());
-    }
-    let removed_ids = removed_wallets
-        .iter()
-        .map(|wallet| wallet.id.clone())
-        .collect::<Vec<_>>();
-    diagnostics::record(
-        &app,
-        "wallet.delete-started",
-        &[("registrations", removed_ids.len().to_string())],
-    );
-    let mut native_close_failures = 0_u8;
-    if let Some(signing_session_id) = sessions
-        .0
-        .lock()
-        .map_err(|_| "Wallet session state is busy.".to_owned())?
-        .remove(&ledger_hardware_session_key(&input.wallet_id))
-    {
-        let close_deferred = match state.0.try_lock() {
-            Ok(native) => {
-                if let Err(error) = native.close(&signing_session_id, false) {
-                    eprintln!(
-                        "MONERO_DESKTOP_WALLET_DELETE ledger-signing-close-warning deletion-continues error={error}"
-                    );
-                }
-                false
+    // Closing Core can wait for its bounded execution barrier. Keep both that
+    // wait and secure-storage/file work off the async IPC executor.
+    tauri::async_runtime::spawn_blocking(move || {
+        let protection = app.state::<AppProtectionState>();
+        require_app_unlocked(&protection)?;
+        let started = Instant::now();
+        let mut phase = "registry";
+        let result = (|| -> Result<(), String> {
+            let registry = wallet_registry::list(&app)?;
+            let removed_wallets = registry
+                .wallets
+                .iter()
+                .filter(|wallet| {
+                    wallet.id == input.wallet_id
+                        || wallet.source_wallet_id.as_deref() == Some(input.wallet_id.as_str())
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            if removed_wallets.is_empty() {
+                return Err("Saved wallet was not found.".to_owned());
             }
-            Err(_) => {
-                diagnostics::record(&app, "wallet.remove-ledger-signing-close-deferred", &[]);
-                true
+            let removed_ids = removed_wallets
+                .iter()
+                .map(|wallet| wallet.id.clone())
+                .collect::<Vec<_>>();
+            diagnostics::record(
+                &app,
+                "wallet.delete-started",
+                &[("ownerCount", removed_ids.len().to_string())],
+            );
+            phase = "native-close";
+            let phase_started = Instant::now();
+            diagnostics::record(&app, "wallet.delete-phase-started", &[("phase", phase.to_owned())]);
+            {
+                let state = app.state::<NativeWalletState>();
+                let sessions = app.state::<WalletSessionState>();
+                // Keep aliases stable. Native is acquired only for a session
+                // that actually needs closing; both locks are nonblocking.
+                let mut open_sessions = sessions.0.try_lock()
+                    .map_err(|_| "Wallet session state is busy. Try deleting again.".to_owned())?;
+                let mut removed_keys = removed_ids.clone();
+                removed_keys.push(ledger_hardware_session_key(&input.wallet_id));
+                wallet_removal::close_and_remove_session_owners(
+                    &mut open_sessions,
+                    &removed_keys,
+                    |session_id| {
+                        let native = state.0.try_lock().map_err(|_| {
+                            diagnostics::record(&app, "wallet.remove-native-close-deferred", &[]);
+                            "The wallet is still busy with background work. Wait a moment and delete it again."
+                                .to_owned()
+                        })?;
+                        native.close(session_id, false)
+                    },
+                )?;
             }
-        };
-        if close_deferred {
-            native_close_failures = native_close_failures.saturating_add(1);
-            sessions
-                .0
-                .lock()
-                .map_err(|_| "Wallet session state is busy.".to_owned())?
-                .insert(
-                    ledger_hardware_session_key(&input.wallet_id),
-                    signing_session_id,
-                );
-        }
-    }
-    for removed_id in &removed_ids {
-        let session_id = sessions
-            .0
-            .lock()
-            .map_err(|_| "Wallet session state is busy.".to_owned())?
-            .remove(removed_id);
-        if let Some(session_id) = session_id {
-            let shared_session_remains = sessions
-                .0
-                .lock()
-                .map_err(|_| "Wallet session state is busy.".to_owned())?
-                .values()
-                .any(|native_id| native_id == &session_id);
-            if shared_session_remains {
-                diagnostics::record(&app, "wallet.remove-shared-container-retained", &[]);
-                continue;
+            diagnostics::record(&app, "wallet.delete-phase-complete", &[
+                ("phase", phase.to_owned()),
+                ("elapsedMs", started.elapsed().as_millis().to_string()),
+                ("waitMs", phase_started.elapsed().as_millis().to_string()),
+            ]);
+            phase = "credentials";
+            let phase_started = Instant::now();
+            diagnostics::record(&app, "wallet.delete-phase-started", &[("phase", phase.to_owned())]);
+            for removed_id in &removed_ids {
+                secure_store::delete_wallet_password(removed_id)?;
             }
-            let close_deferred = match state.0.try_lock() {
-                Ok(native) => {
-                    if let Err(error) = native.close(&session_id, false) {
-                        eprintln!(
-                            "MONERO_DESKTOP_WALLET_DELETE native-close-warning deletion-continues error={error}"
-                        );
-                    }
-                    false
-                }
-                Err(TryLockError::WouldBlock) => {
-                    diagnostics::record(&app, "wallet.remove-native-close-deferred", &[]);
-                    true
-                }
-                Err(TryLockError::Poisoned(_)) => true,
-            };
-            if close_deferred {
-                native_close_failures = native_close_failures.saturating_add(1);
-                sessions
-                    .0
-                    .lock()
-                    .map_err(|_| "Wallet session state is busy.".to_owned())?
-                    .insert(removed_id.clone(), session_id);
-                eprintln!(
-                    "MONERO_DESKTOP_WALLET_DELETE native-close-deferred deletion-retry-required"
-                );
+            let removed_view_only_source_ids = removed_wallets
+                .iter()
+                .filter_map(|wallet| {
+                    (wallet.kind == "view-only")
+                        .then(|| wallet.source_wallet_id.clone())
+                        .flatten()
+                })
+                .collect::<Vec<_>>();
+            for source_id in removed_view_only_source_ids {
+                secure_store::delete_ledger_private_view_key(&source_id)?;
             }
-        }
-    }
-    if native_close_failures > 0 {
-        return Err(
-            "The wallet is still busy with background work. Wait a moment and delete it again."
-                .to_owned(),
-        );
-    }
-    for removed_id in &removed_ids {
-        secure_store::delete_wallet_password(removed_id)?;
-    }
-    let removed_view_only_source_ids = registry
-        .wallets
-        .iter()
-        .filter(|wallet| {
-            wallet.id == input.wallet_id
-                || wallet.source_wallet_id.as_deref() == Some(input.wallet_id.as_str())
-        })
-        .filter_map(|wallet| {
-            (wallet.kind == "view-only")
-                .then(|| wallet.source_wallet_id.clone())
-                .flatten()
-        })
-        .collect::<Vec<_>>();
-    for source_id in removed_view_only_source_ids {
-        secure_store::delete_ledger_private_view_key(&source_id)?;
-    }
-    if registry
-        .wallets
-        .iter()
-        .any(|wallet| wallet.id == input.wallet_id && wallet.kind == "hardware")
-    {
-        secure_store::delete_ledger_private_view_key(&input.wallet_id)?;
-    }
-    for wallet in &removed_wallets {
-        let path = wallet_path(&app, &wallet.wallet_name)?;
-        remove_wallet_files_completely(&path)?;
-    }
-    wallet_registry::remove(&app, &input.wallet_id)?;
-    eprintln!(
-        "MONERO_DESKTOP_WALLET_REMOVE complete registrations={} native_close_failures={native_close_failures}",
-        removed_ids.len()
-    );
-    diagnostics::record(&app, "wallet.deleted", &[]);
-    Ok(())
+            if removed_wallets
+                .iter()
+                .any(|wallet| wallet.id == input.wallet_id && wallet.kind == "hardware")
+            {
+                secure_store::delete_ledger_private_view_key(&input.wallet_id)?;
+            }
+            diagnostics::record(&app, "wallet.delete-phase-complete", &[
+                ("phase", phase.to_owned()),
+                ("elapsedMs", started.elapsed().as_millis().to_string()),
+                ("waitMs", phase_started.elapsed().as_millis().to_string()),
+            ]);
+            phase = "files";
+            let phase_started = Instant::now();
+            diagnostics::record(&app, "wallet.delete-phase-started", &[("phase", phase.to_owned())]);
+            for wallet in &removed_wallets {
+                let path = wallet_path(&app, &wallet.wallet_name)?;
+                remove_wallet_files_completely(&path)?;
+            }
+            diagnostics::record(&app, "wallet.delete-phase-complete", &[
+                ("phase", phase.to_owned()),
+                ("elapsedMs", started.elapsed().as_millis().to_string()),
+                ("waitMs", phase_started.elapsed().as_millis().to_string()),
+            ]);
+            phase = "registry";
+            wallet_registry::remove(&app, &input.wallet_id)?;
+            Ok(())
+        })();
+        diagnostics::record(&app, if result.is_ok() { "wallet.deleted" } else { "wallet.delete-failed" }, &[
+            ("phase", phase.to_owned()),
+            ("elapsedMs", started.elapsed().as_millis().to_string()),
+            ("filesRetained", (result.is_err() && phase == "native-close").to_string()),
+        ]);
+        result
+    })
+    .await
+    .map_err(|_| "The wallet deletion task stopped unexpectedly. No further deletion was attempted.".to_owned())?
 }
+
 #[tauri::command]
 fn list_registered_wallets(
     app: AppHandle,
@@ -4917,6 +4931,10 @@ async fn renew_expiring_fast_wallet_assignments(app: &AppHandle) -> Result<(), S
         let result = async {
             let previous = fast_wallet_enrollment::load_assignment(&record.id)?
                 .ok_or_else(|| "The local payment-alert assignment is missing.".to_owned())?;
+            let installation = desktop_notifications::status(app)?.installation;
+            if previous.installation_id.as_deref() != Some(installation.installation_id.as_str()) {
+                return Err("The payment-alert assignment needs an explicit hosting check for this installation.".to_owned());
+            }
             let worker = fast_wallet_enrollment::worker_for_assignment(
                 &record.network,
                 &previous,
@@ -5106,8 +5124,6 @@ fn close_fast_wallet(
 #[tauri::command]
 async fn remove_fast_wallet(
     app: AppHandle,
-    state: State<'_, NativeWalletState>,
-    sessions: State<'_, FastWalletSessionState>,
     protection: State<'_, AppProtectionState>,
     mut input: AuthorizedFastWalletIdInput,
 ) -> Result<(), String> {
@@ -5121,6 +5137,7 @@ async fn remove_fast_wallet(
         "Permanently delete this Fast Wallet and its scan data",
     )
     .await?;
+    let started = Instant::now();
     diagnostics::record(
         &app,
         "fast-wallet.remove-started",
@@ -5134,46 +5151,95 @@ async fn remove_fast_wallet(
     });
     if let Some(assignment_handle) = assignment_handle {
         diagnostics::record(&app, "fast-wallet.remove-hosted-data-started", &[]);
-        fast_wallet_enrollment::delete_assignment(&app, &record.id, assignment_handle).await?;
-        diagnostics::record(&app, "fast-wallet.remove-hosted-data-complete", &[]);
+        let hosted_started = Instant::now();
+        let hosted_result =
+            fast_wallet_enrollment::delete_assignment(&app, &record.id, assignment_handle).await;
+        diagnostics::record(
+            &app,
+            if hosted_result.is_ok() {
+                "fast-wallet.remove-hosted-data-complete"
+            } else {
+                "fast-wallet.remove-failed"
+            },
+            &[
+                ("phase", "hosted-data".to_owned()),
+                ("elapsedMs", started.elapsed().as_millis().to_string()),
+                ("waitMs", hosted_started.elapsed().as_millis().to_string()),
+                ("filesRetained", hosted_result.is_err().to_string()),
+            ],
+        );
+        hosted_result?;
     }
-    let wallet_id = sessions
-        .0
-        .lock()
-        .map_err(|_| "Fast Wallet session state is busy.".to_owned())?
-        .get(&record.id)
-        .cloned();
-    if let Some(wallet_id) = wallet_id {
-        state
-            .0
-            .lock()
-            .map_err(|_| "Native wallet is busy.".to_owned())?
-            .close(&wallet_id, false)?;
-        sessions
-            .0
-            .lock()
-            .map_err(|_| "Fast Wallet session state is busy.".to_owned())?
-            .remove(&record.id);
-    }
-    let path = fast_wallet::wallet_path(&app, &record.id)?;
-    remove_wallet_files_completely(&path)?;
-    secure_store::delete_fast_wallet_password(&record.id)?;
-    secure_store::delete_fast_wallet_assignment_state(&record.id)?;
-    fast_wallet::remove(&app, &record.id)?;
-    diagnostics::record(&app, "fast-wallet.removed", &[]);
-    Ok(())
+    tauri::async_runtime::spawn_blocking(move || {
+        let protection = app.state::<AppProtectionState>();
+        require_app_unlocked(&protection)?;
+        let mut phase = "native-close";
+        let result = (|| -> Result<(), String> {
+            let phase_started = Instant::now();
+            diagnostics::record(&app, "fast-wallet.remove-phase-started", &[("phase", phase.to_owned())]);
+            {
+                let state = app.state::<NativeWalletState>();
+                let sessions = app.state::<FastWalletSessionState>();
+                let mut open_sessions = sessions.0.try_lock()
+                    .map_err(|_| "Fast Wallet session state is busy. Try deleting again.".to_owned())?;
+                wallet_removal::close_and_remove_session_owners(
+                    &mut open_sessions,
+                    std::slice::from_ref(&record.id),
+                    |session_id| {
+                        let native = state.0.try_lock().map_err(|_| {
+                            "The wallet is still busy with background work. Wait a moment and delete it again."
+                                .to_owned()
+                        })?;
+                        native.close(session_id, false)
+                    },
+                )?;
+            }
+            diagnostics::record(&app, "fast-wallet.remove-phase-complete", &[
+                ("phase", phase.to_owned()),
+                ("elapsedMs", started.elapsed().as_millis().to_string()),
+                ("waitMs", phase_started.elapsed().as_millis().to_string()),
+            ]);
+            phase = "files";
+            let phase_started = Instant::now();
+            diagnostics::record(&app, "fast-wallet.remove-phase-started", &[("phase", phase.to_owned())]);
+            let path = fast_wallet::wallet_path(&app, &record.id)?;
+            remove_wallet_files_completely(&path)?;
+            diagnostics::record(&app, "fast-wallet.remove-phase-complete", &[
+                ("phase", phase.to_owned()),
+                ("waitMs", phase_started.elapsed().as_millis().to_string()),
+            ]);
+            phase = "credentials";
+            let phase_started = Instant::now();
+            diagnostics::record(&app, "fast-wallet.remove-phase-started", &[("phase", phase.to_owned())]);
+            secure_store::delete_fast_wallet_password(&record.id)?;
+            secure_store::delete_fast_wallet_assignment_state(&record.id)?;
+            diagnostics::record(&app, "fast-wallet.remove-phase-complete", &[
+                ("phase", phase.to_owned()),
+                ("waitMs", phase_started.elapsed().as_millis().to_string()),
+            ]);
+            phase = "registry";
+            fast_wallet::remove(&app, &record.id)?;
+            Ok(())
+        })();
+        diagnostics::record(&app, if result.is_ok() { "fast-wallet.removed" } else { "fast-wallet.remove-failed" }, &[
+            ("phase", phase.to_owned()),
+            ("elapsedMs", started.elapsed().as_millis().to_string()),
+            ("filesRetained", (result.is_err() && phase == "native-close").to_string()),
+        ]);
+        result
+    })
+    .await
+    .map_err(|_| "The Fast Wallet deletion task stopped unexpectedly. No further deletion was attempted.".to_owned())?
 }
 
 /// Compatibility alias for older renderers. Removal is always complete.
 #[tauri::command]
 async fn remove_fast_wallet_entry(
     app: AppHandle,
-    state: State<'_, NativeWalletState>,
-    sessions: State<'_, FastWalletSessionState>,
     protection: State<'_, AppProtectionState>,
     input: AuthorizedFastWalletIdInput,
 ) -> Result<(), String> {
-    remove_fast_wallet(app, state, sessions, protection, input).await
+    remove_fast_wallet(app, protection, input).await
 }
 
 fn show_native_recovery_seed_backup(wallet_label: &str, seed: &str, fast_wallet: bool) -> bool {
@@ -5597,6 +5663,8 @@ async fn enable_encrypted_fast_wallet_alerts_inner(
         return Err(error);
     }
 
+    secure_store::retry_missing_fast_wallet_assignment_reads(&record.id)?;
+
     if let Err(error) = desktop_notifications::request_installation(
         &app,
         desktop_notifications::RequestNotificationInstallationInput {
@@ -5802,6 +5870,7 @@ async fn check_fast_wallet_hosting(
     let _single_flight = HostingCheckGuard::acquire(&input.identity_id)?;
     let attempted_at = now();
     let started = Instant::now();
+    secure_store::retry_missing_fast_wallet_assignment_reads(&input.identity_id)?;
     let record = fast_wallet::get(&app, &input.identity_id)?;
     let operation = async {
         if fast_wallet::require_independent_software(&record).is_err() {
@@ -5857,6 +5926,7 @@ async fn check_fast_wallet_hosting(
                 &record.network,
                 assignment,
                 attempted_at,
+                &record.id,
             )
             .await
             {
@@ -5907,6 +5977,7 @@ async fn check_fast_wallet_hosting(
             &record.network,
             &assignment,
             attempted_at,
+            &record.id,
         )
         .await
         {
@@ -7420,6 +7491,25 @@ fn list_mfw_names(
 }
 
 #[tauri::command]
+fn load_mfw_resolver_preference(
+    app: AppHandle,
+    protection: State<'_, AppProtectionState>,
+) -> Result<mfw_name_resolver::ResolverPreference, String> {
+    require_app_unlocked(&protection)?;
+    mfw_name_resolver::load_preference(&app)
+}
+
+#[tauri::command]
+fn save_mfw_resolver_preference(
+    app: AppHandle,
+    protection: State<'_, AppProtectionState>,
+    preference: mfw_name_resolver::ResolverPreference,
+) -> Result<mfw_name_resolver::ResolverPreference, String> {
+    require_app_unlocked(&protection)?;
+    mfw_name_resolver::save_preference(&app, preference)
+}
+
+#[tauri::command]
 async fn resolve_mfw_name_for_payment(
     app: AppHandle,
     protection: State<'_, AppProtectionState>,
@@ -7431,7 +7521,8 @@ async fn resolve_mfw_name_for_payment(
     tauri::async_runtime::spawn_blocking(move || {
         let protection = background_app.state::<AppProtectionState>();
         require_app_unlocked(&protection)?;
-        let address = mfw_name_resolver::resolve_payment(&input.name, &input.network)?;
+        let address =
+            mfw_name_resolver::resolve_payment(&background_app, &input.name, &input.network)?;
         let state = background_app.state::<NativeWalletState>();
         let validated = lock_native_wallet(&background_app, &state, "resolve-mfw-payment")?
             .validate_recipient_address(&address, network_code);
@@ -7453,7 +7544,7 @@ async fn check_mfw_name_availability(
     tauri::async_runtime::spawn_blocking(move || {
         let protection = background_app.state::<AppProtectionState>();
         require_app_unlocked(&protection)?;
-        mfw_name_resolver::availability(&input.name, &input.network)
+        mfw_name_resolver::availability(&background_app, &input.name, &input.network)
     })
     .await
     .map_err(|_| "The MFW availability check stopped unexpectedly.".to_owned())?
@@ -7470,7 +7561,7 @@ async fn suggest_mfw_names(
     tauri::async_runtime::spawn_blocking(move || {
         let protection = background_app.state::<AppProtectionState>();
         require_app_unlocked(&protection)?;
-        mfw_name_resolver::suggest(&input.prefix)
+        mfw_name_resolver::suggest(&background_app, &input.prefix)
     })
     .await
     .map_err(|_| "The MFW suggestion check stopped unexpectedly.".to_owned())?
@@ -7499,7 +7590,8 @@ async fn discover_mfw_names_for_wallet(
             account_index,
             address_index,
         )?;
-        let discovered = mfw_name_resolver::reverse_for_wallet(&address, &input.network)?;
+        let discovered =
+            mfw_name_resolver::reverse_for_wallet(&background_app, &address, &input.network)?;
         for candidate in discovered {
             let resolution = candidate.resolution;
             let name_id =
@@ -7596,6 +7688,7 @@ async fn prepare_mfw_name_registration(
             "MFW name registration is not enabled in this release.",
         )?;
         require_wallet_session(&sessions, &input.wallet_registration_id, &input.wallet_id)?;
+        ensure_no_send_plan_lease(&app, &input.wallet_id, Some(&input.wallet_registration_id))?;
         let genesis = release_features::mfw_name_genesis(&input.network).ok_or_else(|| {
             "MFW genesis parameters are not configured for this network.".to_owned()
         })?;
@@ -7617,7 +7710,7 @@ async fn prepare_mfw_name_registration(
         {
             return Err("Synchronize the owner wallet before registering an MFW name.".to_owned());
         }
-        let availability = mfw_name_resolver::availability(&canonical_name, &input.network)?;
+        let availability = mfw_name_resolver::availability(&app, &canonical_name, &input.network)?;
         if !matches!(
             availability.status.as_str(),
             "available" | "available-again"
@@ -7746,6 +7839,7 @@ async fn prepare_mfw_name_claim(
             "MFW name registration is not enabled in this release.",
         )?;
         require_wallet_session(&sessions, &input.wallet_registration_id, &input.wallet_id)?;
+        ensure_no_send_plan_lease(&app, &input.wallet_id, Some(&input.wallet_registration_id))?;
         let record = mfw_names::get(&app, &input.name_id)?;
         if record.wallet_registration_id != input.wallet_registration_id
             || record.stage != "reveal-ready"
@@ -7820,6 +7914,7 @@ async fn prepare_mfw_name_transition(
             "MFW name registration is not enabled in this release.",
         )?;
         require_wallet_session(&sessions, &input.wallet_registration_id, &input.wallet_id)?;
+        ensure_no_send_plan_lease(&app, &input.wallet_id, Some(&input.wallet_registration_id))?;
         if !matches!(input.operation.as_str(), "update" | "renew" | "revoke") {
             return Err("Unsupported MFW transition.".to_owned());
         }
@@ -7840,6 +7935,7 @@ async fn prepare_mfw_name_transition(
         }
         let mut owner = load_mfw_owner_state(&record)?;
         let predecessor = mfw_name_resolver::resolve_predecessor(
+            &app,
             &record.canonical_name,
             &record.network,
             &owner.owner_public_key_hex,
@@ -8000,7 +8096,7 @@ async fn import_mfw_name_recovery(
     .await?;
     let canonical_name = mfw_names::canonical_name(&input.name)?;
     let (resolution, address) =
-        mfw_name_resolver::resolve_for_import(&canonical_name, &input.network)?;
+        mfw_name_resolver::resolve_for_import(&app, &canonical_name, &input.network)?;
     state
         .0
         .lock()
@@ -8108,7 +8204,7 @@ fn refresh_mfw_name(
         }
         return mfw_names::upsert(&app, record);
     }
-    let resolution = mfw_name_resolver::resolve(&record.canonical_name)?;
+    let resolution = mfw_name_resolver::resolve(&app, &record.canonical_name)?;
     if matches!(
         record.stage.as_str(),
         "claim-pending" | "update-pending" | "renew-pending" | "revoke-pending"
@@ -8265,6 +8361,7 @@ fn register_mfw_approval(
             address: destination.to_owned(),
             amount_atomic: amount_atomic.to_owned(),
             fee_atomic: fee_atomic.to_owned(),
+            prepared: prepared.clone(),
             expires_at: current_time.saturating_add(120),
             mfw: Some(mfw),
         },
@@ -8450,36 +8547,66 @@ async fn present_recovery_seed(
     }
     Ok(confirmed)
 }
-fn snapshot_for_account(
-    wallet: &native_wallet::NativeWallet,
-    wallet_id: &str,
+fn serialized_snapshot_for_account(
+    raw: &str,
     account_index: u32,
+    primary_address: String,
+    balance_atomic: String,
+    unlocked_balance_atomic: String,
 ) -> Result<String, String> {
-    let raw = wallet.snapshot(wallet_id)?;
     // A saved registration represents one Monero account.  The Core snapshot
     // deliberately aggregates every account in a wallet, which is useful for
     // an aggregate view but wrong for a standard Ledger registration when its
     // separate Fast Wallet lives in account 1.  Always replace the aggregate
     // amount/address with the selected account, including account 0.
-    let mut snapshot: serde_json::Value = serde_json::from_str(&raw)
+    let mut snapshot: serde_json::Value = serde_json::from_str(raw)
         .map_err(|_| "The native wallet snapshot was invalid.".to_owned())?;
     let object = snapshot
         .as_object_mut()
         .ok_or_else(|| "The native wallet snapshot was invalid.".to_owned())?;
+    // Retain the container totals so clients can explain why a single-account
+    // send has a different available amount from the wallet's Home screen.
+    // These are display metadata; transaction selection remains account-bound.
+    for (source, target) in [
+        ("balanceAtomic", "walletBalanceAtomic"),
+        ("unlockedBalanceAtomic", "walletUnlockedBalanceAtomic"),
+    ] {
+        let amount = object
+            .get(source)
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| value.parse::<u64>().is_ok())
+            .ok_or_else(|| "The native wallet balance was invalid.".to_owned())?
+            .to_owned();
+        object.insert(target.to_owned(), serde_json::Value::String(amount));
+    }
+    object.insert("accountIndex".to_owned(), account_index.into());
     object.insert(
         "primaryAddress".to_owned(),
-        serde_json::Value::String(wallet.address(wallet_id, account_index, 0)?),
+        serde_json::Value::String(primary_address),
     );
     object.insert(
         "balanceAtomic".to_owned(),
-        serde_json::Value::String(wallet.balance(wallet_id, account_index, false)?),
+        serde_json::Value::String(balance_atomic),
     );
     object.insert(
         "unlockedBalanceAtomic".to_owned(),
-        serde_json::Value::String(wallet.balance(wallet_id, account_index, true)?),
+        serde_json::Value::String(unlocked_balance_atomic),
     );
     serde_json::to_string(&snapshot)
         .map_err(|_| "The native wallet snapshot could not be encoded.".to_owned())
+}
+fn snapshot_for_account(
+    wallet: &native_wallet::NativeWallet,
+    wallet_id: &str,
+    account_index: u32,
+) -> Result<String, String> {
+    serialized_snapshot_for_account(
+        &wallet.snapshot(wallet_id)?,
+        account_index,
+        wallet.address(wallet_id, account_index, 0)?,
+        wallet.balance(wallet_id, account_index, false)?,
+        wallet.balance(wallet_id, account_index, true)?,
+    )
 }
 #[tauri::command]
 async fn wallet_snapshot(
@@ -8638,6 +8765,31 @@ fn list_subaddresses(
         .list_subaddresses(&input.wallet_id, account_index)
 }
 #[tauri::command]
+async fn wallet_address_catalog(
+    app: AppHandle,
+    protection: State<'_, AppProtectionState>,
+    input: WalletIdInput,
+) -> Result<String, String> {
+    require_app_unlocked(&protection)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        require_app_unlocked(&app.state::<AppProtectionState>())?;
+        let state = app.state::<NativeWalletState>();
+        let native = lock_native_wallet(&app, &state, "wallet-address-catalog")?;
+        let accounts: Vec<send_plan::Account> =
+            serde_json::from_str(&native.accounts(&input.wallet_id)?)
+                .map_err(|_| "The native wallet account list is invalid.".to_owned())?;
+        let catalog = address_catalog::collect(accounts, |account_index| {
+            serde_json::from_str(&native.list_subaddresses(&input.wallet_id, account_index)?)
+                .map_err(|_| "The native wallet address list is invalid.".to_owned())
+        })?;
+        serde_json::to_string(&catalog)
+            .map_err(|_| "The receiving address catalog could not be encoded.".to_owned())
+    })
+    .await
+    .map_err(|_| "The receiving address worker stopped unexpectedly.".to_owned())?
+}
+
+#[tauri::command]
 async fn wallet_transactions(
     app: AppHandle,
     state: State<'_, NativeWalletState>,
@@ -8713,6 +8865,766 @@ async fn registered_wallet_transactions(
         }
     }
 }
+struct SendPlanState(Mutex<send_plan::Store>);
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct ListSendSourcesInput {
+    network: String,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct PrepareSendPlanInput {
+    sources: Vec<send_plan::Source>,
+    address: String,
+    amount_atomic: String,
+    priority: Option<String>,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct SendPlanIdInput {
+    plan_id: String,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct CommitSendPlanInput {
+    plan_id: String,
+    app_password: String,
+}
+
+struct SendPlanNative<'a> {
+    app: &'a AppHandle,
+    state: &'a NativeWalletState,
+}
+impl send_plan::Native for SendPlanNative<'_> {
+    fn accounts(&mut self, id: &str) -> Result<Vec<send_plan::Account>, String> {
+        serde_json::from_str(
+            &lock_native_wallet(self.app, self.state, "send-plan-accounts")?.accounts(id)?,
+        )
+        .map_err(|_| "The native account list is invalid.".to_owned())
+    }
+    fn prepare(
+        &mut self,
+        id: &str,
+        address: &str,
+        amount: &str,
+        priority: &str,
+        account: u32,
+    ) -> Result<send_plan::Prepared, String> {
+        ledger_operation::report(self.app, "preparing-transaction", 0, 0, Duration::ZERO, Duration::ZERO);
+        serde_json::from_str(
+            &lock_native_wallet(self.app, self.state, "send-plan-prepare-member")?
+                .prepare_transaction(id, address, amount, "", priority, account)?,
+        )
+        .map_err(|_| "The native payment review is invalid.".to_owned())
+    }
+    fn discard(&mut self, id: &str, pending: &str) -> Result<(), String> {
+        match lock_native_wallet(self.app, self.state, "send-plan-discard-member")?
+            .discard_transaction(id, pending)
+        {
+            Err(error) if native_wallet::is_session_stale(&error) => Ok(()),
+            other => other,
+        }
+    }
+    fn commit(&mut self, id: &str, pending: &str) -> Result<send_plan::CommitReport, String> {
+        let started = Instant::now();
+        diagnostics::record(
+            self.app,
+            "wallet.send-plan-member-started",
+            &[("phase", "broadcasting".to_owned())],
+        );
+        let result: Result<send_plan::CommitReport, String> =
+            lock_native_wallet(self.app, self.state, "send-plan-broadcast-member")
+                .and_then(|native| native.commit_transaction_report(id, pending))
+                .and_then(|raw| {
+                    serde_json::from_str(&raw)
+                        .map_err(|_| "The native payment receipt is invalid.".to_owned())
+                });
+        let (status, known, uncertain) = result
+            .as_ref()
+            .map(|r| {
+                (
+                    r.status.as_str(),
+                    r.broadcasted_tx_ids.len(),
+                    r.uncertain_tx_ids.len(),
+                )
+            })
+            .unwrap_or(("error", 0, 0));
+        diagnostics::record(
+            self.app,
+            "wallet.send-plan-member-result",
+            &[
+                ("phase", "broadcasting".to_owned()),
+                ("outcome", status.to_owned()),
+                ("broadcastedCount", known.to_string()),
+                ("uncertainCount", uncertain.to_string()),
+                ("elapsedMs", started.elapsed().as_millis().to_string()),
+                ("error", result.as_ref().err().cloned().unwrap_or_default()),
+            ],
+        );
+        result
+    }
+}
+fn send_plan_store(app: &AppHandle) -> State<'_, SendPlanState> {
+    app.state::<SendPlanState>()
+}
+fn send_physical_identity(
+    app: &AppHandle,
+    wallet_id: &str,
+    expected_network: Option<&str>,
+) -> Result<String, String> {
+    let state = app.state::<NativeWalletState>();
+    let native = lock_native_wallet(app, &state, "send-source-public-identity")?;
+    let address = native.address(wallet_id, 0, 0)?;
+    let network_name = if let Some(name) = expected_network {
+        native.validate_recipient_address(&address, network(name)?)?;
+        name.to_owned()
+    } else {
+        let mut found = None;
+        for name in ["mainnet", "testnet", "stagenet"] {
+            if native
+                .validate_recipient_address(&address, network(name)?)
+                .is_ok()
+            {
+                found = Some(name.to_owned());
+                break;
+            }
+        }
+        found.ok_or_else(|| "The payment source network could not be verified.".to_owned())?
+    };
+    Ok(format!(
+        "wallet:{}:{}",
+        network_name,
+        hex::encode(Sha256::digest(address.as_bytes()))
+    ))
+}
+fn resolve_send_binding(
+    app: &AppHandle,
+    request: &send_plan::Source,
+) -> Result<send_plan::Binding, String> {
+    match request.kind.as_str() {
+        "registered" => {
+            let registry = wallet_registry::list(app)?;
+            let requested = registry
+                .wallets
+                .iter()
+                .find(|r| r.id == request.id)
+                .ok_or_else(|| "Saved payment source was not found.".to_owned())?;
+            let source = if requested.kind == "view-only"
+                || (requested.kind == "hardware" && requested.role.as_deref() == Some("fast"))
+            {
+                let parent = requested
+                    .source_wallet_id
+                    .as_deref()
+                    .ok_or_else(|| "View-only wallets cannot send.".to_owned())?;
+                registry
+                    .wallets
+                    .iter()
+                    .find(|r| {
+                        r.id == parent
+                            && r.kind == "hardware"
+                            && r.role.as_deref().unwrap_or("standard") == "standard"
+                    })
+                    .ok_or_else(|| "The linked Ledger payment source is missing.".to_owned())?
+            } else {
+                requested
+            };
+            if !matches!(source.kind.as_str(), "software" | "hardware")
+                || source.role.as_deref() == Some("fast")
+            {
+                return Err("Choose an independent spending wallet.".to_owned());
+            }
+            if source.kind == "software" && source.seed_backup_status == "pending" {
+                return Err("Back up this wallet before using it as a payment source.".to_owned());
+            }
+            let sessions = app.state::<WalletSessionState>();
+            let read = wallet_session_id(&sessions, &source.id)?.ok_or_else(|| {
+                "Open this wallet before using it as a payment source.".to_owned()
+            })?;
+            let signing = if source.kind == "hardware" {
+                wallet_session_id(&sessions, &ledger_hardware_session_key(&source.id))?
+                    .unwrap_or_default()
+            } else {
+                read.clone()
+            };
+            Ok(send_plan::Binding {
+                source: send_plan::Source {
+                    kind: "registered".to_owned(),
+                    id: source.id.clone(),
+                },
+                label: source
+                    .display_name
+                    .clone()
+                    .unwrap_or_else(|| source.wallet_name.clone()),
+                network: source.network.clone(),
+                physical_id: send_physical_identity(app, &read, Some(&source.network))?,
+                read_wallet_id: read,
+                signing_wallet_id: signing,
+                owner_registration_id: Some(source.id.clone()),
+            })
+        }
+        "fast" => {
+            let record = fast_wallet::get(app, &request.id)?;
+            fast_wallet::require_independent_software(&record)?;
+            if record.seed_backup_status != "verified" || record.seed_backed_up_at.is_none() {
+                return Err("Verify the independent Fast Wallet backup before sending.".to_owned());
+            }
+            let sessions = app.state::<FastWalletSessionState>();
+            let read = sessions
+                .0
+                .lock()
+                .map_err(|_| "Fast Wallet session state is busy.".to_owned())?
+                .get(&record.id)
+                .cloned()
+                .ok_or_else(|| {
+                    "Open this Fast Wallet before using it as a payment source.".to_owned()
+                })?;
+            Ok(send_plan::Binding {
+                source: request.clone(),
+                label: record.label,
+                network: record.network.clone(),
+                physical_id: send_physical_identity(app, &read, Some(&record.network))?,
+                read_wallet_id: read.clone(),
+                signing_wallet_id: read,
+                owner_registration_id: None,
+            })
+        }
+        _ => Err("Unknown payment source type.".to_owned()),
+    }
+}
+fn validate_send_plan_bindings(app: &AppHandle, plan: &send_plan::Plan) -> Result<(), String> {
+    require_app_unlocked(&app.state::<AppProtectionState>())?;
+    for expected in &plan.bindings {
+        let current = resolve_send_binding(app, &expected.source)?;
+        if current != *expected {
+            return Err(
+                "A payment source or its native session changed. Nothing further was sent."
+                    .to_owned(),
+            );
+        }
+    }
+    Ok(())
+}
+fn ensure_no_send_plan_lease(
+    app: &AppHandle,
+    wallet_id: &str,
+    registration_id: Option<&str>,
+) -> Result<(), String> {
+    let physical = if let Some(id) = registration_id {
+        resolve_send_binding(
+            app,
+            &send_plan::Source {
+                kind: "registered".to_owned(),
+                id: id.to_owned(),
+            },
+        )?
+        .physical_id
+    } else {
+        send_physical_identity(app, wallet_id, None)?
+    };
+    {
+        let plans = send_plan_store(app);
+        let store = plans
+            .0
+            .lock()
+            .map_err(|_| "Payment plan state is busy.".to_owned())?;
+        if store.leases_wallet(wallet_id) || store.active_for(&physical).is_some() {
+            return Err(
+                "This wallet is reserved by a payment plan. Finish or discard its review first."
+                    .to_owned(),
+            );
+        }
+    }
+    use send_plan::Journal;
+    if send_plan::VaultJournal
+        .load()?
+        .iter()
+        .any(|p| p.lease_held && p.bindings.iter().any(|b| b.physical_id == physical))
+    {
+        return Err("This wallet has an unresolved saved payment receipt. Check its transaction status before sending.".to_owned());
+    }
+    Ok(())
+}
+
+fn prepare_send_binding(app: &AppHandle, binding: &mut send_plan::Binding) -> Result<(), String> {
+    let state = app.state::<NativeWalletState>();
+    let sessions = app.state::<WalletSessionState>();
+    let protection = app.state::<AppProtectionState>();
+    require_app_unlocked(&protection)?;
+    let read_snapshot = lock_native_wallet(app, &state, "send-plan-source-readiness")?
+        .snapshot(&binding.read_wallet_id)?;
+    synchronized_wallet_height(&read_snapshot)?;
+    if binding.source.kind == "registered" {
+        let registry = wallet_registry::list(app)?;
+        let mut source = registry
+            .wallets
+            .iter()
+            .find(|r| r.id == binding.source.id)
+            .cloned()
+            .ok_or_else(|| "The payment source disappeared.".to_owned())?;
+        if source.kind == "hardware" {
+            let hardware = ensure_ledger_hardware_session(
+                app,
+                &state,
+                &sessions,
+                &source,
+                "wallet-send-plan",
+            )?;
+            // The frozen full adoption below performs key-image derivation
+            // and the node spend-status check once. Opening the device above
+            // authenticates only its view capability; it never repeats the
+            // expensive complete scan-state adoption.
+            let verified_height = synchronize_and_verify_ledger_signing_session(
+                app,
+                &state,
+                &sessions,
+                &source,
+                &hardware,
+                0,
+                "wallet-send-plan",
+            )?;
+            source.ledger_key_images_verified_at = Some(now());
+            source.ledger_key_images_verified_height = Some(verified_height);
+            wallet_registry::upsert_inactive(app, source.clone())?;
+            if let Some(mut companion) = registry.wallets.iter().find(|r| {
+                r.kind == "view-only" && r.source_wallet_id.as_deref() == Some(source.id.as_str())
+            }).cloned() {
+                companion.ledger_key_images_verified_at = source.ledger_key_images_verified_at;
+                companion.ledger_key_images_verified_height = Some(verified_height);
+                wallet_registry::upsert_inactive(app, companion)?;
+            }
+            binding.signing_wallet_id = hardware;
+        }
+    }
+    Ok(())
+}
+#[tauri::command]
+async fn list_send_sources(
+    app: AppHandle,
+    protection: State<'_, AppProtectionState>,
+    input: ListSendSourcesInput,
+) -> Result<String, String> {
+    require_app_unlocked(&protection)?;
+    network(&input.network)?;
+    tauri::async_runtime::spawn_blocking(move ||{
+        let state=app.state::<NativeWalletState>();
+        let mut native=SendPlanNative{app:&app,state:&state};use send_plan::{Journal,Native};
+        let mut journal=send_plan::VaultJournal;let saved=journal.load()?;
+        let mut requests=Vec::new();
+        let source_registry=wallet_registry::list(&app)?;let active_source=source_registry.active_wallet_id.clone();
+        for row in source_registry.wallets {if row.network==input.network && matches!(row.kind.as_str(),"software"|"hardware") && row.role.as_deref().unwrap_or("standard")=="standard"{requests.push((send_plan::Source{kind:"registered".to_owned(),id:row.id},row.display_name.unwrap_or(row.wallet_name)));}}
+        for row in fast_wallet::list(&app)? {if row.network==input.network && fast_wallet::is_independent_software_id(&row.id){requests.push((send_plan::Source{kind:"fast".to_owned(),id:row.id},row.label));}}
+        requests.sort_by_key(|(source,_)|if source.kind=="registered"&&active_source.as_deref()==Some(source.id.as_str()){0}else{1});
+        let mut rows=Vec::new();let mut seen=HashSet::new();
+        for (request,label) in requests {
+            let mut row=serde_json::json!({"source":request,"label":label,"network":input.network,"balanceAtomic":"0","unlockedBalanceAtomic":"0","ready":false});
+            match resolve_send_binding(&app,&request) {
+                Err(reason)=>{row["reason"]=reason.into();},
+                Ok(binding)=>{
+                    if !seen.insert(binding.physical_id.clone()){continue;}
+                    let active=send_plan_store(&app).0.lock().map_err(|_|"Payment plan state is busy.".to_owned())?.active_for(&binding.physical_id)
+                        .or_else(||saved.iter().find(|p|p.lease_held && p.bindings.iter().any(|b|b.physical_id==binding.physical_id)).cloned());
+                    if let Some(plan)=active {if plan.phase!="preparing"{row["activePlanId"]=plan.id.into();row["activePlanPhase"]=plan.phase.into();}row["reason"]="A payment already reserves this wallet.".into();}
+                    let balances=(||->Result<(u64,u64),String>{
+                        synchronized_wallet_height(&lock_native_wallet(&app,&state,"send-sources-readiness")?.snapshot(&binding.read_wallet_id)?)?;
+                        let mut total=0u64;let mut available=0u64;
+                        for account in native.accounts(&binding.read_wallet_id)? {total=total.checked_add(send_plan::atomic(&account.balance_atomic)?).ok_or_else(||"Wallet balance overflow.".to_owned())?;available=available.checked_add(send_plan::atomic(&account.unlocked_balance_atomic)?).ok_or_else(||"Wallet balance overflow.".to_owned())?;}
+                        Ok((total,available))
+                    })();
+                    match balances {Ok((total,available))=>{row["balanceAtomic"]=total.to_string().into();row["unlockedBalanceAtomic"]=available.to_string().into();row["ready"]=row.get("reason").is_none().into();},Err(reason)=>{row["reason"]=reason.into();}}
+                }
+            }
+            rows.push(row);
+        }
+        serde_json::to_string(&rows).map_err(|_|"Payment sources could not be encoded.".to_owned())
+    }).await.map_err(|_|"Payment source worker stopped unexpectedly.".to_owned())?
+}
+#[tauri::command]
+async fn prepare_send_plan(
+    app: AppHandle,
+    protection: State<'_, AppProtectionState>,
+    input: PrepareSendPlanInput,
+) -> Result<String, String> {
+    require_app_unlocked(&protection)?;
+    if input.sources.is_empty() || input.sources.len() > 16 {
+        return Err("Select between one and sixteen wallet sources.".to_owned());
+    }
+    let started = Instant::now();
+    let trace_app = app.clone();
+    let owner_count = input.sources.len();
+    diagnostics::record(
+        &trace_app,
+        "wallet.send-plan-prepare-started",
+        &[
+            ("ownerCount", owner_count.to_string()),
+            ("phase", "preparing".to_owned()),
+        ],
+    );
+    let result=tauri::async_runtime::spawn_blocking(move ||{
+        let _operation=ledger_operation::acquire()?;
+        require_app_unlocked(&app.state::<AppProtectionState>())?;
+        let state=app.state::<NativeWalletState>();let plans=send_plan_store(&app);
+        let mut native=SendPlanNative{app:&app,state:&state};let mut journal=send_plan::VaultJournal;
+        let expired=plans.0.lock().map_err(|_|"Payment plan state is busy.".to_owned())?.expired(now());
+        for mut old in expired {send_plan::discard(&mut native,&mut old)?;plans.0.lock().map_err(|_|"Payment plan state is busy.".to_owned())?.replace(old);}
+        let mut bindings=Vec::new();let mut seen=HashSet::new();
+        for source in &input.sources {let binding=resolve_send_binding(&app,source)?;if seen.insert(binding.physical_id.clone()){bindings.push(binding);}}
+        if bindings.is_empty(){return Err("Select at least one payment source.".to_owned());}
+        let priority=input.priority.as_deref().unwrap_or("low");if priority!="low"{return Err("Unsupported payment priority.".to_owned());}
+        {
+            let approvals=app.state::<PendingTransactionApprovalState>();
+            let candidates=approvals.0.lock().map_err(|_|"Transaction approval state is busy.".to_owned())?.iter().map(|(id,a)|(id.clone(),a.clone())).collect::<Vec<_>>();
+            for (pending_id,approval) in candidates {
+                let physical=match send_physical_identity(&app,&approval.wallet_id,None){
+                    Ok(value)=>value,
+                    Err(error) if native_wallet::is_session_stale(&error)=>{approvals.0.lock().map_err(|_|"Transaction approval state is busy.".to_owned())?.remove(&pending_id);continue;},
+                    Err(error)=>return Err(error),
+                };
+                if bindings.iter().any(|b|b.physical_id==physical) {
+                    if approval.expires_at>now(){return Err("Finish or cancel the existing transaction review before preparing a wallet-wide payment.".to_owned());}
+                    use send_plan::Native;native.discard(&approval.wallet_id,&pending_id)?;
+                    approvals.0.lock().map_err(|_|"Transaction approval state is busy.".to_owned())?.remove(&pending_id);
+                }
+            }
+        }
+        let id=send_plan::new_id()?;
+        plans.0.lock().map_err(|_|"Payment plan state is busy.".to_owned())?.reserve(id.clone(),bindings.clone(),&mut journal)?;
+        let prepared=(||->Result<send_plan::Plan,(String,send_plan::Plan)>{
+            let mut initial=plans.0.lock().map_err(|_|("Payment plan state is busy.".to_owned(),empty_send_plan(&id,&bindings)))?.get(&id).ok_or_else(||("The app session changed.".to_owned(),empty_send_plan(&id,&bindings)))?;
+            for binding in &mut bindings {if let Err(error)=prepare_send_binding(&app,binding){return Err((error,initial));}}
+            initial.bindings=bindings.clone();
+            let recipient=match lock_native_wallet(&app,&state,"send-plan-recipient").and_then(|native|native.validate_recipient_address(&input.address,network(&bindings[0].network)?)) {Ok(v)=>v,Err(e)=>return Err((e,initial))};
+            send_plan::prepare(&mut native,initial,recipient,&input.amount_atomic,priority)
+        })();
+        match prepared {
+            Ok(mut plan)=>{
+                if let Err(error)=validate_send_plan_bindings(&app,&plan) {if send_plan::discard(&mut native,&mut plan).is_err(){plan.phase="cleanup_failed".to_owned();plan.error=Some(error.clone());}plans.0.lock().map_err(|_|"Payment plan state is busy.".to_owned())?.replace(plan);return Err(error);}
+                let published=plans.0.lock().map_err(|_|"Payment plan state is busy.".to_owned())?.publish(plan.clone(),now());
+                match published {
+                    Ok(mut plan)=>{
+                        use send_plan::Journal;
+                        if let Err(error)=journal.save(&plan){
+                            if send_plan::discard(&mut native,&mut plan).is_ok(){plans.0.lock().map_err(|_|"Payment plan state is busy.".to_owned())?.replace(plan);}else{plan.phase="cleanup_failed".to_owned();plan.error=Some(error.clone());plans.0.lock().map_err(|_|"Payment plan state is busy.".to_owned())?.replace(plan);}
+                            return Err(error);
+                        }
+                        serde_json::to_string(&plan.public()).map_err(|_|"Payment plan encoding failed.".to_owned())
+                    },Err(error)=>{if send_plan::discard(&mut native,&mut plan).is_ok(){plans.0.lock().map_err(|_|"Payment plan state is busy.".to_owned())?.abandon(&id);}else{plan.phase="cleanup_failed".to_owned();plan.error=Some(error.clone());plans.0.lock().map_err(|_|"Payment plan state is busy.".to_owned())?.replace(plan);}Err(error)}
+                }
+            },
+            Err((error,mut plan))=>{
+                match send_plan::discard(&mut native,&mut plan) {Ok(())=>plans.0.lock().map_err(|_|"Payment plan state is busy.".to_owned())?.abandon(&id),Err(cleanup)=>{plan.phase="cleanup_failed".to_owned();plan.error=Some(format!("{error} {cleanup}"));plans.0.lock().map_err(|_|"Payment plan state is busy.".to_owned())?.replace(plan);}}
+                Err(error)
+            }
+        }
+    }).await.map_err(|_|"Payment preparation worker stopped unexpectedly.".to_owned()).and_then(|value|value);
+    diagnostics::record(
+        &trace_app,
+        if result.is_ok() {
+            "wallet.send-plan-prepared"
+        } else {
+            "wallet.send-plan-prepare-failed"
+        },
+        &[
+            ("elapsedMs", started.elapsed().as_millis().to_string()),
+            ("ownerCount", owner_count.to_string()),
+            (
+                "phase",
+                if result.is_ok() { "prepared" } else { "failed" }.to_owned(),
+            ),
+            ("error", result.as_ref().err().cloned().unwrap_or_default()),
+        ],
+    );
+    result
+}
+fn empty_send_plan(id: &str, bindings: &[send_plan::Binding]) -> send_plan::Plan {
+    send_plan::Plan {
+        id: id.to_owned(),
+        address: String::new(),
+        network: bindings
+            .first()
+            .map(|b| b.network.clone())
+            .unwrap_or_default(),
+        bindings: bindings.to_vec(),
+        members: Vec::new(),
+        phase: "preparing".to_owned(),
+        error: None,
+        expires_at: 0,
+        claim: 0,
+        broadcast_attempted: false,
+        live_pending: true,
+        lease_held: true,
+        broadcasted_tx_ids: Vec::new(),
+        uncertain_tx_ids: Vec::new(),
+    }
+}
+fn send_plan_receipt(app: &AppHandle, id: &str) -> Result<send_plan::Plan, String> {
+    let memory = send_plan_store(app)
+        .0
+        .lock()
+        .map_err(|_| "Payment plan state is busy.".to_owned())?
+        .get(id);
+    use send_plan::Journal;
+    if let Some(plan) = memory {
+        if plan.phase == "broadcasting" {
+            if let Ok(saved) = send_plan::VaultJournal.load() {
+                if let Some(receipt) = saved.into_iter().find(|p| p.id == id) {
+                    if receipt.broadcasted_tx_ids.len() > plan.broadcasted_tx_ids.len()
+                        || (receipt.broadcasted_tx_ids.len() == plan.broadcasted_tx_ids.len()
+                            && plan.error.is_none()
+                            && receipt.uncertain_tx_ids.len() > plan.uncertain_tx_ids.len())
+                    {
+                        return Ok(receipt);
+                    }
+                }
+            }
+        }
+        return Ok(plan);
+    }
+    send_plan::VaultJournal
+        .load()?
+        .into_iter()
+        .find(|p| p.id == id)
+        .map(send_plan::recovered)
+        .ok_or_else(|| "This payment plan or receipt was not found.".to_owned())
+}
+
+fn current_send_binding_for_receipt(
+    app: &AppHandle,
+    expected: &send_plan::Binding,
+) -> Option<send_plan::Binding> {
+    if let Ok(current) = resolve_send_binding(app, &expected.source) {
+        if current.physical_id == expected.physical_id && current.network == expected.network {
+            return Some(current);
+        }
+    }
+    // A restored copy can have a different registration ID but must prove the
+    // same public master identity and network before it supplies evidence.
+    let mut candidates = Vec::new();
+    if let Ok(registry) = wallet_registry::list(app) {
+        for row in registry.wallets {
+            if row.network == expected.network
+                && matches!(row.kind.as_str(), "software" | "hardware")
+                && row.role.as_deref().unwrap_or("standard") == "standard"
+            {
+                candidates.push(send_plan::Source {
+                    kind: "registered".to_owned(),
+                    id: row.id,
+                });
+            }
+        }
+    }
+    if let Ok(records) = fast_wallet::list(app) {
+        for row in records {
+            if row.network == expected.network && fast_wallet::is_independent_software_id(&row.id) {
+                candidates.push(send_plan::Source {
+                    kind: "fast".to_owned(),
+                    id: row.id,
+                });
+            }
+        }
+    }
+    candidates
+        .into_iter()
+        .filter_map(|source| resolve_send_binding(app, &source).ok())
+        .find(|current| {
+            current.physical_id == expected.physical_id && current.network == expected.network
+        })
+}
+#[tauri::command]
+async fn send_plan_status(
+    app: AppHandle,
+    protection: State<'_, AppProtectionState>,
+    input: SendPlanIdInput,
+) -> Result<String, String> {
+    require_app_unlocked(&protection)?;
+    tauri::async_runtime::spawn_blocking(move||{
+        require_app_unlocked(&app.state::<AppProtectionState>())?;
+        let mut plan=send_plan_receipt(&app,&input.plan_id)?;
+        if !matches!(plan.phase.as_str(),"complete"|"interrupted")||(!plan.lease_held&&plan.uncertain_tx_ids.is_empty()){
+            return serde_json::to_string(&plan.public()).map_err(|_|"Payment receipt encoding failed.".to_owned());
+        }
+        let _operation=match ledger_operation::acquire(){Ok(guard)=>guard,Err(_)=>return serde_json::to_string(&plan.public()).map_err(|_|"Payment receipt encoding failed.".to_owned())};
+        let state=app.state::<NativeWalletState>();let mut evidence=Vec::new();
+        for binding in &plan.bindings{
+            let Some(current)=current_send_binding_for_receipt(&app,binding)else{continue;};
+            let raw=match try_lock_native_wallet(&app,&state,"send-plan-positive-history").and_then(|native|native.transactions(&current.read_wallet_id)){Ok(raw)=>raw,Err(_)=>continue};
+            if let Ok(transactions)=serde_json::from_str::<Vec<send_plan::HistoryTransaction>>(&raw){evidence.push(send_plan::HistoryEvidence{physical_id:current.physical_id,network:current.network,transactions});}
+        }
+        let changed=match send_plan::reconcile_positive(&mut plan,&evidence){Ok(changed)=>changed,Err(error)=>{plan.error=Some(error);false}};
+        let can_complete=plan.uncertain_tx_ids.is_empty()&&plan.public()["broadcastedTotalsKnown"].as_bool()==Some(true);
+        let mut cleanup_ok=true;
+        if can_complete&&plan.live_pending{
+            let mut native=SendPlanNative{app:&app,state:&state};use send_plan::Native;
+            for member in &plan.members{
+                if member.prepared.tx_ids.iter().all(|id|plan.broadcasted_tx_ids.contains(id)){continue;}
+                let expected=&plan.bindings[member.binding_index];
+                // Handles from a restarted process or a replaced native
+                // session are never passed back into the current Core.
+                if let Some(current)=current_send_binding_for_receipt(&app,expected){
+                    if current.read_wallet_id==expected.read_wallet_id&&current.signing_wallet_id==expected.signing_wallet_id{
+                        if native.discard(&expected.signing_wallet_id,&member.prepared.id).is_err(){cleanup_ok=false;}
+                    }
+                }
+            }
+            if cleanup_ok{plan.live_pending=false;}
+        }
+        if changed||can_complete{
+            if can_complete&&cleanup_ok{plan.phase="complete".to_owned();plan.lease_held=false;}
+            use send_plan::Journal;
+            if let Err(error)=send_plan::VaultJournal.save(&plan){plan.phase="interrupted".to_owned();plan.lease_held=true;plan.error=Some(format!("The verified receipt could not be saved. No transaction was sent by this status check. {error}"));}
+            for member in &plan.members{
+                let binding=&plan.bindings[member.binding_index];let key=binding.owner_registration_id.as_deref().unwrap_or(&binding.source.id);
+                if let Err(error)=pending_outgoing::record_details(key,&member.broadcasted,&plan.address,now()){diagnostics::record(&app,"wallet.send-plan-pending-history-failed",&[("error",error)]);}
+            }
+            send_plan_store(&app).0.lock().map_err(|_|"Payment plan state is busy.".to_owned())?.replace(plan.clone());
+        }
+        diagnostics::record(&app,"wallet.send-plan-status-checked",&[("phase",plan.phase.clone()),("outcome",if changed{"positive-history"}else{"unchanged"}.to_owned()),("broadcastedCount",plan.broadcasted_tx_ids.len().to_string()),("uncertainCount",plan.uncertain_tx_ids.len().to_string())]);
+        serde_json::to_string(&plan.public()).map_err(|_|"Payment receipt encoding failed.".to_owned())
+    }).await.map_err(|_|"Payment status worker stopped unexpectedly; the saved receipt remains authoritative.".to_owned())?
+}
+
+#[tauri::command]
+async fn discard_send_plan(
+    app: AppHandle,
+    protection: State<'_, AppProtectionState>,
+    input: SendPlanIdInput,
+) -> Result<String, String> {
+    require_app_unlocked(&protection)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _operation = ledger_operation::acquire()?;
+        let state = app.state::<NativeWalletState>();
+        let mut native = SendPlanNative {
+            app: &app,
+            state: &state,
+        };
+        let mut plan = send_plan_receipt(&app, &input.plan_id)?;
+        if plan.phase != "discarded" {
+            send_plan::discard(&mut native, &mut plan)?;
+            send_plan_store(&app)
+                .0
+                .lock()
+                .map_err(|_| "Payment plan state is busy.".to_owned())?
+                .replace(plan.clone());
+        }
+        serde_json::to_string(&plan.public())
+            .map_err(|_| "Payment receipt encoding failed.".to_owned())
+    })
+    .await
+    .map_err(|_| "Payment cleanup worker stopped unexpectedly.".to_owned())?
+}
+fn xmr_for_native_review(value: &str) -> Result<String, String> {
+    let n = send_plan::atomic(value)?;
+    Ok(format!(
+        "{}.{:012}",
+        n / 1_000_000_000_000,
+        n % 1_000_000_000_000
+    ))
+}
+#[tauri::command]
+async fn commit_send_plan(
+    app: AppHandle,
+    protection: State<'_, AppProtectionState>,
+    mut input: CommitSendPlanInput,
+) -> Result<String, String> {
+    require_app_unlocked(&protection)?;
+    let started = Instant::now();
+    let trace_app = app.clone();
+    diagnostics::record(
+        &trace_app,
+        "wallet.send-plan-authorizing",
+        &[("phase", "authorizing".to_owned())],
+    );
+    let plans = send_plan_store(&app);
+    let current = send_plan_receipt(&app, &input.plan_id)?;
+    if current.terminal() {
+        return serde_json::to_string(&current.public())
+            .map_err(|_| "Payment receipt encoding failed.".to_owned());
+    }
+    let (plan, claim) = plans
+        .0
+        .lock()
+        .map_err(|_| "Payment plan state is busy.".to_owned())?
+        .claim(&input.plan_id, now())?;
+    {
+        use send_plan::Journal;
+        if let Err(error) = send_plan::VaultJournal.save(&plan) {
+            plans
+                .0
+                .lock()
+                .map_err(|_| "Payment plan state is busy.".to_owned())?
+                .release_claim(&input.plan_id, claim);
+            return Err(error);
+        }
+    }
+    if let Err(error) = require_fresh_app_authorization(
+        app.clone(),
+        &mut input.app_password,
+        "Approve this complete Monero payment",
+    )
+    .await
+    {
+        plans
+            .0
+            .lock()
+            .map_err(|_| "Payment plan state is busy.".to_owned())?
+            .release_claim(&input.plan_id, claim);
+        diagnostics::record(
+            &trace_app,
+            "wallet.send-plan-authorization-cancelled",
+            &[
+                ("phase", "authorizing".to_owned()),
+                ("elapsedMs", started.elapsed().as_millis().to_string()),
+                ("error", error.clone()),
+            ],
+        );
+        return Err(error);
+    }
+    let result=tauri::async_runtime::spawn_blocking(move ||{
+        let result=(||->Result<String,String>{
+            let _operation=ledger_operation::acquire()?;
+            validate_send_plan_bindings(&app,&plan)?;
+            send_plan_store(&app).0.lock().map_err(|_|"Payment plan state is busy.".to_owned())?.validate_claim(&plan.id,claim,now())?;
+            plan.financials()?;
+            let review=plan.public();
+            let labels=plan.bindings.iter().map(|b|b.label.chars().filter(|c|!c.is_control()).take(120).collect::<String>()).collect::<Vec<_>>().join(", ");
+            let description=format!("Recipient:\n{}\n\nPayment: {} XMR\nNetwork fees: {} XMR\nTotal: {} XMR\nTransactions: {}\nSources: {}\n\nApprove this complete payment?",plan.address,xmr_for_native_review(review["amountAtomic"].as_str().unwrap_or(""))?,xmr_for_native_review(review["feeAtomic"].as_str().unwrap_or(""))?,xmr_for_native_review(review["totalAtomic"].as_str().unwrap_or(""))?,review["txCount"],labels);
+            if MessageDialog::new().set_level(MessageLevel::Warning).set_title("Final payment approval").set_description(description).set_buttons(MessageButtons::YesNo).show()!=MessageDialogResult::Yes {return Err("Payment cancelled in the trusted native confirmation. Nothing was sent.".to_owned());}
+            validate_send_plan_bindings(&app,&plan)?;
+            let mut executing=send_plan_store(&app).0.lock().map_err(|_|"Payment plan state is busy.".to_owned())?.start(&plan.id,claim,now())?;
+            let state=app.state::<NativeWalletState>();let mut native=SendPlanNative{app:&app,state:&state};let mut journal=send_plan::VaultJournal;
+            send_plan::commit(&mut native,&mut journal,&mut executing,|current|{
+                validate_send_plan_bindings(&app,current)?;
+                let store=send_plan_store(&app);let stored=store.0.lock().map_err(|_|"Payment plan state is busy.".to_owned())?.get(&current.id).ok_or_else(||"The app session changed; no further transaction was sent.".to_owned())?;
+                if stored.phase!="broadcasting" || stored.claim!=claim{return Err("This payment execution is no longer current.".to_owned());}
+                store.0.lock().map_err(|_|"Payment plan state is busy.".to_owned())?.replace(current.clone());Ok(())
+            });
+            for member in &executing.members {
+                let binding=&executing.bindings[member.binding_index];
+                let key=binding.owner_registration_id.as_deref().unwrap_or(&binding.source.id);
+                if let Err(error)=pending_outgoing::record_details(key,&member.broadcasted,&executing.address,now()) {diagnostics::record(&app,"wallet.send-plan-pending-history-failed",&[("error",error)]);}
+            }
+            diagnostics::record(&app,"wallet.send-plan-complete",&[("outcome",executing.public()["status"].as_str().unwrap_or("error").to_owned())]);
+            send_plan_store(&app).0.lock().map_err(|_|"Payment plan state is busy.".to_owned())?.replace(executing.clone());
+            serde_json::to_string(&executing.public()).map_err(|_|"Payment receipt encoding failed.".to_owned())
+        })();
+        if result.is_err(){if let Ok(mut store)=send_plan_store(&app).0.lock(){store.release_claim(&plan.id,claim);}}
+        result
+    }).await.map_err(|_|"Payment worker stopped unexpectedly. Inspect this exact payment receipt before continuing.".to_owned()).and_then(|value|value);
+    diagnostics::record(
+        &trace_app,
+        if result.is_ok() {
+            "wallet.send-plan-broadcast-result"
+        } else {
+            "wallet.send-plan-commit-failed"
+        },
+        &[
+            ("phase", "commit".to_owned()),
+            ("elapsedMs", started.elapsed().as_millis().to_string()),
+            ("error", result.as_ref().err().cloned().unwrap_or_default()),
+        ],
+    );
+    result
+}
+
 #[tauri::command]
 async fn prepare_transaction(
     app: AppHandle,
@@ -8746,6 +9658,7 @@ async fn prepare_transaction(
             )],
         );
         let result = (|| {
+            ensure_no_send_plan_lease(&background_app, &input.wallet_id, input.registration_id.as_deref())?;
             let account_index = checked_account_index(input.account_index)?;
             let transaction_wallet_id = if let Some(registration_id) =
                 input.registration_id.as_deref()
@@ -8867,6 +9780,7 @@ async fn prepare_transaction(
                     address: input.address,
                     amount_atomic: amount_atomic.to_owned(),
                     fee_atomic: fee_atomic.to_owned(),
+                    prepared: prepared.clone(),
                     expires_at: current_time.saturating_add(120),
                     mfw: None,
                 },
@@ -8906,6 +9820,8 @@ async fn commit_transaction(
         "Approve this Monero transaction",
     )
     .await?;
+    let _ledger_operation = ledger_operation::acquire()?;
+    ensure_no_send_plan_lease(&app, &input.wallet_id, input.registration_id.as_deref())?;
     let approval = {
         let mut pending = approvals
             .0
@@ -8988,40 +9904,11 @@ async fn commit_transaction(
     if decision != MessageDialogResult::Yes {
         return Err("Transaction cancelled in the trusted native confirmation.".to_owned());
     }
-    let raw = state
-        .0
-        .lock()
-        .map_err(|_| "Native wallet is busy.".to_owned())?
-        .commit_transaction(&transaction_wallet_id, &input.pending_id)?;
+    let raw = legacy_send_plan::commit(&app,&state,&approval,&input.wallet_id,
+        &transaction_wallet_id,input.registration_id.as_deref())?;
     let committed: serde_json::Value = serde_json::from_str(&raw)
         .map_err(|_| "The native broadcast result was invalid.".to_owned())?;
     let committed_ok = committed.get("status").and_then(serde_json::Value::as_str) == Some("ok");
-    if committed_ok && approval.mfw.is_none() {
-        if let Some(registration_id) = input.registration_id.as_deref() {
-            match pending_outgoing::record(
-                registration_id,
-                &committed,
-                &approval.address,
-                &approval.amount_atomic,
-                &approval.fee_atomic,
-                now(),
-            ) {
-                Ok(stored) => diagnostics::record(
-                    &app,
-                    "wallet.pending-outgoing-recorded",
-                    &[(
-                        "outcome",
-                        if stored { "stored" } else { "skipped" }.to_owned(),
-                    )],
-                ),
-                Err(error) => diagnostics::record(
-                    &app,
-                    "wallet.pending-outgoing-store-failed",
-                    &[("error", error)],
-                ),
-            }
-        }
-    }
     if let Some(mfw) = approval.mfw {
         if !committed_ok {
             return Err(committed
@@ -9075,20 +9962,77 @@ fn reconnect_hardware_wallet(
         .reconnect_hardware(&input.wallet_id)
 }
 #[tauri::command]
-fn show_hardware_wallet_address(
-    state: State<'_, NativeWalletState>,
+async fn show_hardware_wallet_address(
+    app: AppHandle,
     protection: State<'_, AppProtectionState>,
     input: HardwareAddressInput,
 ) -> Result<String, String> {
     require_app_unlocked(&protection)?;
-    let account_index = checked_account_index(input.account_index)?;
-    let address_index = checked_account_index(input.address_index)?;
-    state
-        .0
-        .lock()
-        .map_err(|_| "Native wallet is busy.".to_owned())?
-        .show_hardware_address(&input.wallet_id, account_index, address_index)
+    tauri::async_runtime::spawn_blocking(move || {
+        let _operation = ledger_operation::acquire()?;
+        require_app_unlocked(&app.state::<AppProtectionState>())?;
+        let account_index = checked_account_index(input.account_index)?;
+        let address_index = checked_account_index(input.address_index)?;
+        let state = app.state::<NativeWalletState>();
+        let signing_wallet_id = if let Some(registration_id) = input.registration_id.as_deref() {
+            let registry = wallet_registry::list(&app)?;
+            let registration = registry
+                .wallets
+                .iter()
+                .find(|wallet| wallet.id == registration_id)
+                .ok_or_else(|| "The selected Ledger wallet was not found.".to_owned())?;
+            if registration.kind != "hardware" {
+                return Err("Choose a Ledger wallet to verify an address on the device.".to_owned());
+            }
+            let sessions = app.state::<WalletSessionState>();
+            let current = wallet_session_id(&sessions, &registration.id)?
+                .ok_or_else(|| "The Ledger viewing session is not open.".to_owned())?;
+            if current != input.wallet_id {
+                return Err("The selected wallet changed before address verification.".to_owned());
+            }
+            {
+                let native = lock_native_wallet(&app, &state, "ledger-selected-address-check")?;
+                let addresses: Vec<address_catalog::Address> =
+                    serde_json::from_str(&native.list_subaddresses(&current, account_index)?)
+                        .map_err(|_| "The native receiving address list is invalid.".to_owned())?;
+                let selected = addresses
+                    .iter()
+                    .find(|address| {
+                        address.address_index == address_index
+                            && address.account_index == account_index
+                    })
+                    .ok_or_else(|| {
+                        "The selected receiving address is not in this wallet.".to_owned()
+                    })?;
+                if input.expected_address.as_deref() != Some(selected.address.as_str()) {
+                    return Err(
+                        "The selected receiving address changed. Choose it again before verifying."
+                            .to_owned(),
+                    );
+                }
+            }
+            // Reopening/priming a Ledger session must not invalidate a pending review.
+            ensure_no_send_plan_lease(&app, &input.wallet_id, Some(registration_id))?;
+            let source = ledger_signing_source_registration(&registry, registration)?;
+            ensure_ledger_hardware_session(
+                &app,
+                &state,
+                &sessions,
+                &source,
+                "receiving-address-verification",
+            )?
+        } else {
+            input.wallet_id
+        };
+        require_app_unlocked(&app.state::<AppProtectionState>())?;
+        let result = lock_native_wallet(&app, &state, "ledger-show-receiving-address")?
+            .show_hardware_address(&signing_wallet_id, account_index, address_index);
+        result
+    })
+    .await
+    .map_err(|_| "The Ledger address verification worker stopped unexpectedly.".to_owned())?
 }
+
 #[tauri::command]
 async fn community_load_profile(
     state: State<'_, community::CommunityState>,
@@ -10375,6 +11319,7 @@ pub fn run() {
         .manage(FastWalletMaintenanceState(Mutex::new(false)))
         .manage(LedgerViewKeyExportState(Mutex::new(HashSet::new())))
         .manage(PendingTransactionApprovalState(Mutex::new(HashMap::new())))
+        .manage(SendPlanState(Mutex::new(send_plan::Store::default())))
         // Always enter fail-closed. The renderer's single explicit protection
         // status request performs the first credential-store read only after
         // the single-instance plugin has rejected any duplicate process.
@@ -10482,11 +11427,13 @@ pub fn run() {
                 let fast_sessions = security_app.state::<FastWalletSessionState>();
                 let approvals = security_app.state::<PendingTransactionApprovalState>();
                 let community_v1 = security_app.state::<enthusiast_v1::CommunityV1State>();
+                let send_plans = security_app.state::<SendPlanState>();
                 if let Err(error) = lock_app_native(
                     &state,
                     &sessions,
                     &fast_sessions,
                     &approvals,
+                    &send_plans,
                     &protection,
                     &community_v1,
                 ) {
@@ -10669,6 +11616,8 @@ pub fn run() {
             validate_recipient_address,
             verify_mfw_name_record_address,
             list_mfw_names,
+            load_mfw_resolver_preference,
+            save_mfw_resolver_preference,
             resolve_mfw_name_for_payment,
             check_mfw_name_availability,
             suggest_mfw_names,
@@ -10687,8 +11636,14 @@ pub fn run() {
             wallet_unlocked_balance,
             create_subaddress,
             list_subaddresses,
+            wallet_address_catalog,
             wallet_transactions,
             registered_wallet_transactions,
+            list_send_sources,
+            prepare_send_plan,
+            commit_send_plan,
+            send_plan_status,
+            discard_send_plan,
             prepare_transaction,
             commit_transaction,
             wallet_hardware_status,
@@ -10754,6 +11709,7 @@ mod tests {
         bind_ledger_session_ids, compare_ledger_signing_account_state, ledger_hardware_session_key,
         ledger_signing_source_registration, ledger_view_only_companion_session_id,
         mark_connectivity_checking, remove_wallet_files_completely, require_app_unlocked,
+        serialized_snapshot_for_account,
         serialized_transactions_for_account, shared_native_session_for_physical_registration,
         verified_registration_account_index, wallet_file_path_is_available, wallet_session_id,
         AppProtectionState, ConnectivityRouteState, LedgerSigningAccountComparison,
@@ -10766,6 +11722,56 @@ mod tests {
         sync::{Arc, Mutex},
         time::{SystemTime, UNIX_EPOCH},
     };
+
+    #[test]
+    fn account_snapshot_keeps_wallet_totals_separate_from_spendable_balance() {
+        let raw = serde_json::json!({
+            "id": "session",
+            "primaryAddress": "container-address",
+            "balanceAtomic": "2000000000000",
+            "unlockedBalanceAtomic": "1700000000000",
+            "synchronized": true,
+            "snapshotRevision": "19"
+        });
+        let scoped = serialized_snapshot_for_account(
+            &raw.to_string(),
+            2,
+            "account-address".to_owned(),
+            "900000000000".to_owned(),
+            "700000000000".to_owned(),
+        )
+        .unwrap();
+        let snapshot: serde_json::Value = serde_json::from_str(&scoped).unwrap();
+        assert_eq!(snapshot["balanceAtomic"], "900000000000");
+        assert_eq!(snapshot["unlockedBalanceAtomic"], "700000000000");
+        assert_eq!(snapshot["walletBalanceAtomic"], "2000000000000");
+        assert_eq!(snapshot["walletUnlockedBalanceAtomic"], "1700000000000");
+        assert_eq!(snapshot["accountIndex"], 2);
+        assert_eq!(snapshot["primaryAddress"], "account-address");
+        assert_eq!(snapshot["snapshotRevision"], "19");
+        assert_eq!(snapshot["synchronized"], true);
+    }
+
+    #[test]
+    fn account_snapshot_preserves_atomic_precision_and_rejects_unknown_wallet_total() {
+        let raw = r#"{"balanceAtomic":"18446744073709551615","unlockedBalanceAtomic":"0"}"#;
+        let scoped = serialized_snapshot_for_account(
+            raw, 0, "address".to_owned(), "0".to_owned(), "0".to_owned(),
+        )
+        .unwrap();
+        let snapshot: serde_json::Value = serde_json::from_str(&scoped).unwrap();
+        assert_eq!(snapshot["walletBalanceAtomic"], "18446744073709551615");
+        for invalid in [
+            r#"{"balanceAtomic":2,"unlockedBalanceAtomic":"0"}"#,
+            r#"{"balanceAtomic":"invalid","unlockedBalanceAtomic":"0"}"#,
+            r#"{"balanceAtomic":"0"}"#,
+        ] {
+            assert!(serialized_snapshot_for_account(
+                invalid, 0, "address".to_owned(), "0".to_owned(), "0".to_owned(),
+            )
+            .is_err());
+        }
+    }
 
     #[test]
     fn connectivity_recheck_preserves_last_confirmed_route() {

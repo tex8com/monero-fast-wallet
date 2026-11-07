@@ -26,9 +26,11 @@ pub struct TrustedWorker {
     pub descriptor: WorkerDescriptor,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AssignmentState {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub installation_id: Option<String>,
     pub assignment_handle: String,
     pub assignment_epoch: u64,
     pub expires_at: u64,
@@ -319,6 +321,18 @@ pub fn paired_private_worker_roots() -> Result<Vec<String>, String> {
     Ok(roots)
 }
 
+/// A readiness read checks the already selected trust root locally; it never
+/// enrolls a wallet, fetches a descriptor, or changes the observer.
+pub fn assignment_worker_root_trusted(network: &str, assignment: &AssignmentState, now: u64) -> bool {
+    if crate::release_features::enabled("officialWorker")
+        && compiled_official_root().is_ok_and(|root| constant_hex_eq(&root, &assignment.worker_root_id)) {
+        return true;
+    }
+    crate::release_features::enabled("privateWorkerPairing")
+        && load_private_worker(network, now).is_ok_and(|worker|
+            constant_hex_eq(&hex::encode(worker.descriptor.worker_root_id()), &assignment.worker_root_id))
+}
+
 /// Resolves the already-pinned Worker for an assignment renewal. The stored
 /// assignment root is authoritative, so a renewal can never silently move a
 /// wallet between the official service and a paired private service.
@@ -372,6 +386,7 @@ pub async fn check_hosting(
     network: &str,
     assignment: &AssignmentState,
     attempted_at: u64,
+    identity_id: &str,
 ) -> Result<crate::fast_wallet_hosting::HostingStatus, &'static str> {
     use crate::fast_wallet_hosting::HostingStatus;
     let worker = worker_for_assignment(network, assignment, unix_seconds())
@@ -380,6 +395,9 @@ pub async fn check_hosting(
     let installation = crate::desktop_notifications::status(app)
         .map_err(|_| "gateway_credentials_missing")?
         .installation;
+    if assignment.installation_id.as_deref().is_some_and(|id| id != installation.installation_id) {
+        return Err("assignment_owner_mismatch");
+    }
     let auth =
         crate::secure_store::load_notification_installation_auth(&installation.installation_id)
             .map_err(|_| "gateway_credentials_missing")?
@@ -512,6 +530,21 @@ pub async fn check_hosting(
                 unix_seconds(),
             )
             .map_err(|_| "proof_invalid")?;
+            // An older protected entry can acquire an installation binding
+            // only after the current installation authenticated this request
+            // and the original pinned Worker signed its fresh proof.
+            if assignment.installation_id.is_none() && response.status == "hosted" {
+                let current_installation = crate::desktop_notifications::status(app)
+                    .map_err(|_| "gateway_credentials_missing")?.installation;
+                let current = load_assignment(identity_id).map_err(|_| "assignment_invalid")?;
+                if current.as_ref() != Some(assignment)
+                    || current_installation.installation_id != installation.installation_id {
+                    return Err("assignment_owner_mismatch");
+                }
+                let mut bound = assignment.clone();
+                bound.installation_id = Some(installation.installation_id.clone());
+                store_assignment(identity_id, &bound).map_err(|_| "assignment_invalid")?;
+            }
             return Ok(HostingStatus {
                 status: response.status,
                 attempted_at,
@@ -538,6 +571,7 @@ pub async fn sponsor_assignment(
 ) -> Result<AssignmentState, String> {
     crate::fast_wallet::validate_id(identity_id)?;
     let root = hex::encode(worker.descriptor.worker_root_id());
+    let installation_id = crate::desktop_notifications::status(app)?.installation.installation_id;
     let existing = load_assignment(identity_id)?;
     if existing
         .as_ref()
@@ -551,6 +585,7 @@ pub async fn sponsor_assignment(
     let descriptor_hash = hex::encode(Sha256::digest(worker.descriptor_hex.as_bytes()));
     let reusable = load_pending_assignment(identity_id)?.filter(|candidate| {
         candidate.expires_at > now
+            && candidate.installation_id.as_deref() == Some(installation_id.as_str())
             && constant_hex_eq(&candidate.worker_root_id, &root)
             && constant_hex_eq(&candidate.descriptor_hash, &descriptor_hash)
     });
@@ -570,6 +605,7 @@ pub async fn sponsor_assignment(
         // the previous active handle alive until the Worker has acknowledged the
         // candidate, so a timeout never destroys a working assignment epoch.
         AssignmentState {
+            installation_id: Some(installation_id),
             assignment_handle: random_hex_32()?,
             assignment_epoch: epoch,
             expires_at: requested_expiry,
@@ -581,6 +617,10 @@ pub async fn sponsor_assignment(
     store_pending_assignment(identity_id, &pending)?;
 
     let (installation_id, mut installation_auth) = installation_credentials(app)?;
+    if pending.installation_id.as_deref() != Some(installation_id.as_str()) {
+        installation_auth.zeroize();
+        return Err("The notification installation changed during setup.".to_owned());
+    }
     let origin = gateway_origin()?;
     let response = client()?
         .post(route(&origin, "/api/v1/installations/assignments"))
@@ -647,7 +687,8 @@ pub async fn activate_assignment(
     crate::fast_wallet::validate_id(identity_id)?;
     let pending = load_pending_assignment(identity_id)?
         .ok_or_else(|| "The pending Fast Wallet assignment is missing.".to_owned())?;
-    if pending.assignment_handle != candidate.assignment_handle
+    if pending.installation_id != candidate.installation_id
+        || pending.assignment_handle != candidate.assignment_handle
         || pending.assignment_epoch != candidate.assignment_epoch
         || pending.expires_at != candidate.expires_at
         || pending.descriptor_hash != candidate.descriptor_hash
@@ -655,6 +696,10 @@ pub async fn activate_assignment(
         || pending.status != "pending"
     {
         return Err("The acknowledged Fast Wallet assignment is no longer current.".to_owned());
+    }
+    let installation = crate::desktop_notifications::status(app)?.installation;
+    if candidate.installation_id.as_deref() != Some(installation.installation_id.as_str()) {
+        return Err("The notification installation changed before activation.".to_owned());
     }
     let previous = load_assignment(identity_id)?;
     let active = AssignmentState {
@@ -889,6 +934,8 @@ fn store_pending_assignment(identity_id: &str, state: &AssignmentState) -> Resul
 fn validate_assignment(state: &AssignmentState) -> Result<(), String> {
     if canonical_hex(&state.assignment_handle, 32)
         && state.assignment_epoch > 0
+        && state.installation_id.as_deref().is_none_or(|id| !id.is_empty() && id.len() <= 80
+            && id.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_')))
         && state.expires_at > 0
         && canonical_hex(&state.descriptor_hash, 32)
         && canonical_hex(&state.worker_root_id, 32)

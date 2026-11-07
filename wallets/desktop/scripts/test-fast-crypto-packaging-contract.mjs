@@ -200,15 +200,24 @@ test('the Monero patch series carries the CPU batch through Rust and wallet2', (
   assert.match(moneroCpuPatch, /crate-type = \["staticlib", "cdylib"\]/);
   assert.match(moneroNamePatch, /createTransactionWithExtraNonce/);
   assert.match(moneroNamePatch, /canonical varint/);
+  const previousPatchCount = Number(moneroLock.match(/^previous_patch_count=(\d+)$/m)?.[1]);
+  assert.equal(previousPatchCount, 105);
   assert.match(
     moneroLock,
-    /^patched_tree=37d6a1a4a39c2fd128fdf9befd82381339951c58$/m,
+    /^previous_patched_tree=501b20bc7997954ad08cc24fad57eebfa4a559f2$/m,
   );
   assert.match(
     moneroLock,
-    /^previous_patched_tree=a8908a19fb5bed793049e3b167ddc61fb8e13b46$/m,
+    /^patched_tree=bb95b273f017713e4487054b7dcb64ab0183d5ef$/m,
   );
-  assert.match(moneroLock, /^previous_patch_count=98$/m);
+  assert.equal(patches[previousPatchCount - 1],
+    '0105-wallet-retry-freed-spool-quota-without-ram-drain.patch');
+  assert.deepEqual(patches.slice(previousPatchCount), [
+    '0106-wallet-repair-stalled-grpc-stripes.patch',
+  ]);
+  for (const patch of patches) {
+    assert.equal(existsSync(resolve(moneroPatchPackage, patch)), true, `missing ${patch}`);
+  }
   assert.match(prepareMac, /-DMFW_MONERO_PATCH_COUNT="\$\{monero_patch_count\}"/);
   assert.match(prepareMac, /-DMFW_PRODUCT_COMMIT="\$\{product_commit\}"/);
   assert.match(prepareMac, /-DMFW_PRODUCT_DIRTY="\$\{product_dirty\}"/);

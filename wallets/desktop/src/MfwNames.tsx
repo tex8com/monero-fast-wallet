@@ -80,6 +80,10 @@ type Availability = {
 type NativeAvailability = Omit<Availability, "checkedAtMs" | "expiryHeight"> & {
   expiryHeight: number | null;
 };
+type AvailabilityCheck = {
+  scope: string;
+  result: Availability | null;
+};
 type NativeSubaddress = {
   accountIndex: number;
   addressIndex: number;
@@ -188,8 +192,9 @@ export default function MfwNames({
   const [nameActionMode, setNameActionMode] = useState<
     "renew" | "update" | "recovery" | null
   >(null);
-  const [availability, setAvailability] = useState<Availability | null>(null);
-  const [availabilityLoading, setAvailabilityLoading] = useState(false);
+  const [availabilityCheck, setAvailabilityCheck] =
+    useState<AvailabilityCheck | null>(null);
+  const [availabilityRetry, setAvailabilityRetry] = useState(0);
   const [prepared, setPrepared] = useState<PreparedMfw | null>(null);
   const [recoveryPassword, setRecoveryPassword] = useState("");
   const [authorizationPassword, setAuthorizationPassword] = useState("");
@@ -327,36 +332,48 @@ export default function MfwNames({
     [],
   );
 
+  const availabilityCandidate = name.trim();
+  const availabilityNetwork = wallet?.network ?? "mainnet";
+  const availabilityScope = JSON.stringify([
+    availabilityCandidate,
+    availabilityNetwork,
+    availabilityRetry,
+  ]);
+  const currentAvailabilityCheck =
+    availabilityCheck?.scope === availabilityScope ? availabilityCheck : null;
+  const availability = currentAvailabilityCheck?.result ?? null;
+  const availabilityLoading = Boolean(
+    availabilityCandidate && !currentAvailabilityCheck,
+  );
+  const availabilityFailed = currentAvailabilityCheck?.result === null;
   const availabilityExpiryTimestampMs = availability
     ? estimatedExpiryTimestampMs(availability)
     : undefined;
 
   useEffect(() => {
-    const candidate = name.trim();
-    if (!candidate) {
-      setAvailability(null);
-      setAvailabilityLoading(false);
-      return;
-    }
+    setAvailabilityCheck(null);
+    if (!availabilityCandidate) return;
     let active = true;
     const timer = window.setTimeout(() => {
-      setAvailabilityLoading(true);
-      void fetchAvailability(candidate, wallet?.network ?? "mainnet")
+      void fetchAvailability(availabilityCandidate, availabilityNetwork)
         .then((result) => {
-          if (active) setAvailability(result);
+          if (active) setAvailabilityCheck({ scope: availabilityScope, result });
         })
         .catch(() => {
-          if (active) setAvailability(null);
-        })
-        .finally(() => {
-          if (active) setAvailabilityLoading(false);
+          if (active)
+            setAvailabilityCheck({ scope: availabilityScope, result: null });
         });
     }, 450);
     return () => {
       active = false;
       window.clearTimeout(timer);
     };
-  }, [fetchAvailability, name, wallet?.network]);
+  }, [
+    availabilityCandidate,
+    availabilityNetwork,
+    availabilityScope,
+    fetchAvailability,
+  ]);
 
   const run = async (operation: () => Promise<void>, fallback: string) => {
     setBusy(true);
@@ -415,14 +432,15 @@ export default function MfwNames({
 
   const advanceRegistration = () => {
     setMessage(null);
+    if (
+      !availability ||
+      !["available", "available-again"].includes(availability.status)
+    ) {
+      setRegistrationStep(1);
+      setMessage("Wait for an available name before continuing.");
+      return;
+    }
     if (registrationStep === 1) {
-      if (
-        !availability ||
-        !["available", "available-again"].includes(availability.status)
-      ) {
-        setMessage("Wait for an available name before continuing.");
-        return;
-      }
       setRegistrationStep(2);
       return;
     }
@@ -578,7 +596,7 @@ export default function MfwNames({
         input: { nameId: record.id, walletId },
       });
       await load();
-      setMessage("MFW state refreshed from the wallet and resolver quorum.");
+      setMessage("MFW state refreshed from the wallet and selected resolvers.");
     }, "MFW state could not be refreshed.");
 
   const importRecovery = () =>
@@ -785,7 +803,7 @@ export default function MfwNames({
                       setYears(selectedName.termYears);
                       setRegistrationStep(1);
                       setSelectedNameId(null);
-                      setAvailability(null);
+                      setAvailabilityRetry((current) => current + 1);
                       setMessage(null);
                     }}
                     type="button"
@@ -976,10 +994,9 @@ export default function MfwNames({
                     <input
                       autoFocus
                       value={name}
-                      onChange={(event) => {
-                        setName(event.target.value.replace(/\.mfw$/i, ""));
-                        setAvailability(null);
-                      }}
+                      onChange={(event) =>
+                        setName(event.target.value.replace(/\.mfw$/i, ""))
+                      }
                       placeholder="alice"
                       maxLength={63}
                       spellCheck="false"
@@ -999,10 +1016,23 @@ export default function MfwNames({
                   </>
                 ) : availability ? (
                   `${availability.canonicalName} is ${availability.status}.`
+                ) : availabilityFailed ? (
+                  "Availability could not be verified. Please try again."
                 ) : (
                   "Enter a name. Availability is checked automatically."
                 )}
               </p>
+              {availabilityFailed && (
+                <div className="mfw-name-actions">
+                  <button
+                    className="quiet-button"
+                    onClick={() => setAvailabilityRetry((current) => current + 1)}
+                    type="button"
+                  >
+                    Check again
+                  </button>
+                </div>
+              )}
               {availability && (
                 <div className="mfw-availability-details">
                   {availability.expiryHeight !== undefined && (
@@ -1310,7 +1340,7 @@ export default function MfwNames({
               <h3>Restore owner recovery</h3>
               <p>
                 The desktop host opens the file picker and checks the decrypted
-                owner key against the finalized resolver quorum before saving
+                owner key against the finalized .mfw record before saving
                 it.
               </p>
             </div>

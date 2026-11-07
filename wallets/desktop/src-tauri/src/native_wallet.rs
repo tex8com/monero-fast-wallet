@@ -136,6 +136,7 @@ unsafe extern "C" {
         seed_offset: *const c_char,
     ) -> RawResult;
     fn tex8_desktop_wallet_snapshot(core: *mut RawCore, wallet_id: *const c_char) -> RawResult;
+    fn tex8_desktop_wallet_accounts(core: *mut RawCore, wallet_id: *const c_char) -> RawResult;
     fn tex8_desktop_wallet_sync_ledger_key_images(
         core: *mut RawCore,
         hardware_wallet_id: *const c_char,
@@ -204,6 +205,16 @@ unsafe extern "C" {
         wallet_id: *const c_char,
         pending_id: *const c_char,
     ) -> RawResult;
+    fn tex8_desktop_discard_transaction(
+        core: *mut RawCore,
+        wallet_id: *const c_char,
+        pending_id: *const c_char,
+    ) -> RawResult;
+    fn tex8_desktop_commit_transaction_report(
+        core: *mut RawCore,
+        wallet_id: *const c_char,
+        pending_id: *const c_char,
+    ) -> RawResult;
     fn tex8_desktop_wallet_hardware_status(
         core: *mut RawCore,
         wallet_id: *const c_char,
@@ -213,6 +224,11 @@ unsafe extern "C" {
         wallet_id: *const c_char,
     ) -> RawResult;
     fn tex8_desktop_wallet_prime_hardware_from_view_only(
+        core: *mut RawCore,
+        hardware_wallet_id: *const c_char,
+        view_only_wallet_id: *const c_char,
+    ) -> RawResult;
+    fn tex8_desktop_wallet_prime_hardware_view_capability_from_view_only(
         core: *mut RawCore,
         hardware_wallet_id: *const c_char,
         view_only_wallet_id: *const c_char,
@@ -573,6 +589,10 @@ impl NativeWallet {
         let wallet_id = c(wallet_id)?;
         self.result(unsafe { tex8_desktop_wallet_snapshot(self.core.as_ptr(), wallet_id.as_ptr()) })
     }
+    pub fn accounts(&self, wallet_id: &str) -> Result<String, String> {
+        let wallet_id = c(wallet_id)?;
+        self.result(unsafe { tex8_desktop_wallet_accounts(self.core.as_ptr(), wallet_id.as_ptr()) })
+    }
     pub fn sync_ledger_key_images(
         &self,
         hardware_wallet_id: &str,
@@ -869,6 +889,33 @@ impl NativeWallet {
             )
         })
     }
+    pub fn discard_transaction(&self, wallet_id: &str, pending_id: &str) -> Result<(), String> {
+        let wallet_id = c(wallet_id)?;
+        let pending_id = c(pending_id)?;
+        self.result(unsafe {
+            tex8_desktop_discard_transaction(
+                self.core.as_ptr(),
+                wallet_id.as_ptr(),
+                pending_id.as_ptr(),
+            )
+        })
+        .map(|_| ())
+    }
+    pub fn commit_transaction_report(
+        &self,
+        wallet_id: &str,
+        pending_id: &str,
+    ) -> Result<String, String> {
+        let wallet_id = c(wallet_id)?;
+        let pending_id = c(pending_id)?;
+        self.result(unsafe {
+            tex8_desktop_commit_transaction_report(
+                self.core.as_ptr(),
+                wallet_id.as_ptr(),
+                pending_id.as_ptr(),
+            )
+        })
+    }
     pub fn hardware_status(&self, wallet_id: &str) -> Result<String, String> {
         let wallet_id = c(wallet_id)?;
         self.result(unsafe {
@@ -890,6 +937,22 @@ impl NativeWallet {
         let view_only_wallet_id = c(view_only_wallet_id)?;
         self.result(unsafe {
             tex8_desktop_wallet_prime_hardware_from_view_only(
+                self.core.as_ptr(),
+                hardware_wallet_id.as_ptr(),
+                view_only_wallet_id.as_ptr(),
+            )
+        })
+        .map(|_| ())
+    }
+    pub fn prime_hardware_view_capability_from_view_only(
+        &self,
+        hardware_wallet_id: &str,
+        view_only_wallet_id: &str,
+    ) -> Result<(), String> {
+        let hardware_wallet_id = c(hardware_wallet_id)?;
+        let view_only_wallet_id = c(view_only_wallet_id)?;
+        self.result(unsafe {
+            tex8_desktop_wallet_prime_hardware_view_capability_from_view_only(
                 self.core.as_ptr(),
                 hardware_wallet_id.as_ptr(),
                 view_only_wallet_id.as_ptr(),
@@ -1136,6 +1199,56 @@ mod tests {
                     > 0
             );
         }
+    }
+
+    #[test]
+    fn send_plan_native_apis_read_empty_accounts_and_cleanup_without_relay() {
+        if option_env!("TEX8_DESKTOP_MONERO_LINKED") != Some("1") {
+            return;
+        }
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("tex8-send-plan-native-{nonce}"));
+        fs::create_dir_all(&root).expect("isolated fixture directory");
+        let result = (|| -> Result<(), String> {
+            // Construct only the standalone Core. The product constructor
+            // configures/cleans the real user's public-block spool, which an
+            // isolated wallet fixture must never inspect or mutate.
+            let core = std::ptr::NonNull::new(unsafe { super::tex8_desktop_wallet_core_new() })
+                .ok_or_else(|| "Isolated native Core initialization failed.".to_owned())?;
+            let wallet = NativeWallet { core };
+            let path = root.join("empty-stagenet").to_string_lossy().into_owned();
+            let wallet_id = wallet.create(&path, "synthetic-fixture-only", "English", 2)?;
+            let accounts: serde_json::Value = serde_json::from_str(&wallet.accounts(&wallet_id)?)
+                .map_err(|error| error.to_string())?;
+            assert_eq!(accounts.as_array().unwrap().len(), 1);
+            assert_eq!(accounts[0]["accountIndex"], 0);
+            assert_eq!(accounts[0]["balanceAtomic"], "0");
+            assert_eq!(accounts[0]["unlockedBalanceAtomic"], "0");
+            let snapshot: serde_json::Value = serde_json::from_str(&wallet.snapshot(&wallet_id)?)
+                .map_err(|error| error.to_string())?;
+            assert_eq!(snapshot["lockedBalanceAtomic"], "0");
+            assert_eq!(snapshot["unlockBlocksRemaining"], 0);
+            assert_eq!(snapshot["unlockTimeRemainingSeconds"], 0);
+            assert_eq!(snapshot["unlockState"], "unlocked");
+            // Neither operation has any transaction to relay. Repeated
+            // cleanup succeeds, while relay-report lookup fails closed.
+            wallet.discard_transaction(&wallet_id, "never-prepared")?;
+            wallet.discard_transaction(&wallet_id, "never-prepared")?;
+            assert!(wallet
+                .commit_transaction_report(&wallet_id, "never-prepared")
+                .is_err());
+            wallet.close(&wallet_id, false)?;
+            assert!(wallet.accounts(&wallet_id).is_err());
+            assert!(wallet
+                .discard_transaction(&wallet_id, "never-prepared")
+                .is_err());
+            Ok(())
+        })();
+        fs::remove_dir_all(&root).expect("remove only isolated empty wallet fixture");
+        result.expect("read-only account and pending cleanup native ABI");
     }
 
     #[test]

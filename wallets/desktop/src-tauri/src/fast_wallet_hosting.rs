@@ -76,6 +76,7 @@ impl HostingStatus {
             | "assignment_state_missing"
             | "backup_required"
             | "notification_permission_required"
+            | "authorization_required"
             | "authorization_cancelled"
             | "credential_missing" => "blocked",
             _ => "unknown",
@@ -99,7 +100,8 @@ pub fn enrollment_error_code(error: &str) -> &'static str {
         || error.contains("allow notifications")
     {
         "notification_permission_required"
-    } else if error.contains("authorization-error")
+    } else if error.contains("notification-agent-")
+        || error.contains("authorization-error")
         || error.contains("request notification authorization")
         || error.contains("registration-error")
         || error.contains("registration-failed")
@@ -113,6 +115,8 @@ pub fn enrollment_error_code(error: &str) -> &'static str {
         "notification_service_error"
     } else if error.contains("back up") || error.contains("backup") {
         "backup_required"
+    } else if error.contains("authorization-required") {
+        "authorization_required"
     } else if error.contains("cancel") || error.contains("authorization was denied") {
         "authorization_cancelled"
     } else if error.contains("credential") || error.contains("password") {
@@ -149,6 +153,16 @@ impl Drop for HostingCheckGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn helper_registration_failure_does_not_request_wallet_credentials() {
+        let code = enrollment_error_code("notification-agent-registration-failed: Windows could not register startup. No administrator password is required.");
+        assert_eq!(code, "notification_service_error");
+        assert_eq!(HostingStatus::failure(100, code, false).status, "unknown");
+        let missing = enrollment_error_code("authorization-required: Enter the app password to authorize this action.");
+        assert_eq!(missing, "authorization_required");
+        assert_eq!(HostingStatus::failure(100, missing, true).status, "blocked");
+    }
 
     #[test]
     fn system_authorization_error_is_not_persisted_as_user_denial() {

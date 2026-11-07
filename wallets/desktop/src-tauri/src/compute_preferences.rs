@@ -19,18 +19,26 @@ struct ComputePreferences {
 pub fn load(app: &AppHandle) -> Result<String, String> {
     let path = path(app)?;
     match fs::read_to_string(path) {
-        Ok(value) => {
-            let preferences: ComputePreferences = serde_json::from_str(&value)
-                .map_err(|_| "Compute preferences are invalid.".to_owned())?;
-            validate(&preferences.backend)?;
-            if preferences.version != VERSION {
-                return Err("Compute preferences use an unsupported version.".to_owned());
-            }
-            Ok(preferences.backend)
-        }
+        Ok(value) => decode(&value),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok("auto".to_owned()),
         Err(_) => Err("Compute preferences could not be read.".to_owned()),
     }
+}
+
+fn decode(value: &str) -> Result<String, String> {
+    let preferences: ComputePreferences =
+        serde_json::from_str(value).map_err(|_| "Compute preferences are invalid.".to_owned())?;
+    if preferences.version != VERSION {
+        return Err("Compute preferences use an unsupported version.".to_owned());
+    }
+    // Older macOS builds saved the backend name for the explicit Metal
+    // choice. Preserve that choice under the current GPU policy.
+    let backend = match preferences.backend.as_str() {
+        "metal" => "gpu".to_owned(),
+        _ => preferences.backend,
+    };
+    validate(&backend)?;
+    Ok(backend)
 }
 
 pub fn save(app: &AppHandle, backend: &str) -> Result<(), String> {
@@ -106,14 +114,23 @@ fn reject_symlink(path: &Path) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::validate;
+    use super::{decode, validate};
 
     #[test]
     fn accepts_only_the_three_product_policies() {
         assert!(validate("auto").is_ok());
         assert!(validate("cpu").is_ok());
         assert!(validate("gpu").is_ok());
+        assert!(validate("metal").is_err());
         assert!(validate("cuda").is_err());
         assert!(validate("").is_err());
+    }
+
+    #[test]
+    fn maps_the_saved_metal_choice_to_the_current_gpu_policy() {
+        assert_eq!(decode(r#"{"version":1,"backend":"metal"}"#).unwrap(), "gpu");
+        assert_eq!(decode(r#"{"version":1,"backend":"cpu"}"#).unwrap(), "cpu");
+        assert!(decode(r#"{"version":2,"backend":"metal"}"#).is_err());
+        assert!(decode(r#"{"version":1,"backend":"unknown"}"#).is_err());
     }
 }

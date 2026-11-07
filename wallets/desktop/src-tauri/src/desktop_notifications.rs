@@ -1229,16 +1229,78 @@ fn read_test_push_state(app: &AppHandle) -> Result<TestPushState, String> {
     };
     serde_json::from_slice(&bytes).map_err(|_| "Push test state is invalid.".to_owned())
 }
+fn assignment_readiness(
+    wallet: &crate::fast_wallet::FastWalletRecord,
+    assignment: &crate::fast_wallet_enrollment::AssignmentState,
+    installation_id: &str, current_time: u64,
+) -> crate::notification_test::AssignmentReadiness {
+    crate::notification_test::assignment_readiness(
+        crate::notification_test::AlertRecordBinding {
+            handle: wallet.assignment_handle.as_deref(), epoch: wallet.assignment_epoch,
+            expires_at: wallet.assignment_expires_at,
+        }, crate::notification_test::ProtectedAssignmentBinding {
+            handle: &assignment.assignment_handle, epoch: assignment.assignment_epoch,
+            expires_at: assignment.expires_at, worker_root: &assignment.worker_root_id,
+            descriptor_hash: &assignment.descriptor_hash, status: &assignment.status,
+            installation_id: assignment.installation_id.as_deref(),
+        }, installation_id,
+        crate::fast_wallet_enrollment::assignment_worker_root_trusted(&wallet.network, assignment, current_time), current_time,
+    )
+}
+
+/// Upgrade only an intact protected legacy entry, using an authenticated,
+/// signed hosting proof. This path never enrolls or uploads a view key.
+async fn verify_legacy_assignment_bindings(app: &AppHandle) -> Result<(), String> {
+    let installation_id = status(app)?.installation.installation_id;
+    let current_time = now();
+    let mut last_error = "push-test-fast-wallet-required";
+    for wallet in crate::fast_wallet::list(app)? {
+        if !crate::notification_test::alerts_ready(wallet.notifications_enabled, &wallet.alert_status,
+            wallet.worker_receipt_verified, wallet.assignment_handle.is_some(), wallet.assignment_expires_at, current_time) { continue; }
+        let Ok(_guard) = crate::fast_wallet_hosting::HostingCheckGuard::acquire(&wallet.id) else { continue; };
+        let wallet = crate::fast_wallet::get(app, &wallet.id)?;
+        let Ok(Some(assignment)) = crate::fast_wallet_enrollment::load_assignment(&wallet.id) else { continue; };
+        if assignment_readiness(&wallet, &assignment, &installation_id, current_time)
+            != crate::notification_test::AssignmentReadiness::NeedsHostingCheck { continue; }
+        let proof = match crate::fast_wallet_enrollment::check_hosting(app, &wallet.network, &assignment, now(), &wallet.id).await {
+            Ok(proof) => proof,
+            Err(_) => { last_error = "push-test-hosting-check-required"; continue; }
+        };
+        let hosted = proof.verified && proof.status == "hosted";
+        let mut latest = crate::fast_wallet::get(app, &wallet.id)?;
+        latest.hosting_status = Some(proof);
+        crate::fast_wallet::update(app, latest)?;
+        if !hosted { last_error = "push-test-fast-wallet-required"; continue; }
+        return Ok(());
+    }
+    Err(last_error.to_owned())
+}
+
 fn test_setup_gate(app: &AppHandle) -> Result<String, String> {
     let wallets = crate::fast_wallet::list(app)?;
     let has_fast = !wallets.is_empty();
-    let has_alerts = wallets.iter().any(|wallet| crate::notification_test::alerts_ready(
-        wallet.notifications_enabled, &wallet.alert_status, wallet.worker_receipt_verified,
-        wallet.assignment_handle.is_some(), wallet.assignment_expires_at, now()));
     let status = status(app)?;
     let background_agent_ready = status.background_agent_status.as_deref()
         .is_none_or(|status| status == "connected");
     let installation = status.installation;
+    let current_time = now();
+    let mut has_alerts = false;
+    let mut protected_ready = false;
+    let mut legacy_checkable = false;
+    for wallet in &wallets {
+        if !crate::notification_test::alerts_ready(wallet.notifications_enabled, &wallet.alert_status,
+            wallet.worker_receipt_verified, wallet.assignment_handle.is_some(), wallet.assignment_expires_at, current_time) {
+            continue;
+        }
+        has_alerts = true;
+        let Ok(Some(assignment)) = crate::fast_wallet_enrollment::load_assignment(&wallet.id) else { continue; };
+        match assignment_readiness(wallet, &assignment, &installation.installation_id, current_time) {
+            crate::notification_test::AssignmentReadiness::Ready => { protected_ready = true; break; }
+            crate::notification_test::AssignmentReadiness::NeedsHostingCheck => legacy_checkable = true,
+            crate::notification_test::AssignmentReadiness::SetupRequired => (),
+        }
+
+    }
     let provider_ready = installation.provider_status == "ready" && match installation.provider.as_str() {
         "apns" => is_apns_device_token(&installation.endpoint),
         "windows-agent" | "linux-agent" => installation.background_mode_enabled,
@@ -1246,9 +1308,13 @@ fn test_setup_gate(app: &AppHandle) -> Result<String, String> {
     };
     let gate = crate::notification_test::setup_gate(has_fast, has_alerts,
         installation.enabled && installation.permission_status == "authorized", provider_ready,
-        installation.gateway_status == "active" && installation.gateway_lease_expires_at.is_some_and(|expires| expires > now()));
-    Ok(if gate == "ready" && !background_agent_ready { "agent-required" } else { gate }.to_owned())
+        installation.gateway_status == "active" && installation.gateway_lease_expires_at.is_some_and(|expires| expires > current_time));
+    Ok(if gate == "ready" && has_alerts && !protected_ready {
+            if legacy_checkable { "assignment-check-required" } else { "assignment-required" }
+        }
+        else if gate == "ready" && !background_agent_ready { "agent-required" } else { gate }.to_owned())
 }
+
 #[cfg(target_os = "macos")]
 async fn macos_permission_settings_available(app: &AppHandle) -> bool {
     let query = unsafe { tex8_desktop_apns_refresh_authorization() };
@@ -1333,6 +1399,10 @@ pub async fn request_test_push(app: &AppHandle) -> Result<TestPushStatus, String
         }
         gate = test_setup_gate(app)?;
     }
+    if gate == "assignment-check-required" {
+        verify_legacy_assignment_bindings(app).await?;
+        gate = test_setup_gate(app)?;
+    }
     #[cfg(any(target_os = "windows", target_os = "linux"))]
     if gate == "agent-required" {
         let expected = load_or_create(app)?;
@@ -1382,16 +1452,13 @@ pub async fn request_test_push(app: &AppHandle) -> Result<TestPushStatus, String
         bytes.extend_from_slice(&chunk);
     }
     if response_status != reqwest::StatusCode::ACCEPTED {
-        crate::diagnostics::record(app, "notifications.test-push-rejected", &[("phase", "rejected".to_owned())]);
         let code = serde_json::from_slice::<serde_json::Value>(&bytes).ok()
             .and_then(|value| value.get("error").and_then(serde_json::Value::as_str).map(str::to_owned));
-        return Err(match code.as_deref() {
-            Some("self_test_worker_unsupported") => "push-test-worker-unsupported",
-            Some("self_test_requires_fast_wallet") => "push-test-fast-wallet-required",
-            Some("self_test_provider_required") => "push-test-provider-required",
-            Some("self_test_unavailable") => "push-test-unavailable",
-            _ => "The server did not accept the push test. Check Fast Wallet alerts and notification setup.",
-        }.to_owned());
+        let safe_code = crate::notification_test::test_rejection_code(code.as_deref());
+        crate::diagnostics::record(app, "notifications.test-push-rejected", &[
+            ("phase", "rejected".to_owned()), ("httpStatus", response_status.as_u16().to_string()),
+            ("safeErrorCode", safe_code.to_owned())]);
+        return Err(safe_code.to_owned());
     }
     let receipt: TestPushReceipt = serde_json::from_slice(&bytes).map_err(|_| "The server push test receipt is invalid.".to_owned())?;
     if !crate::notification_test::valid_schedule(receipt.accepted, &receipt.event_id, receipt.scheduled_at, receipt.deliver_after, now()) {

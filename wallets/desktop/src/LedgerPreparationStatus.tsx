@@ -10,6 +10,12 @@ export type LedgerPreparationProgress = {
 
 export default function LedgerPreparationStatus({ progress }: { progress: LedgerPreparationProgress }) {
   const { t } = useI18n();
+  if (progress.stage === 'verifying-ledger') {
+    return <><strong>{t('send.ledgerVerifying')}</strong><small>{t('send.ledgerVerifyingHint')}</small></>;
+  }
+  if (progress.stage === 'preparing-transaction') {
+    return <><strong>{t('send.transactionPreparing')}</strong><small>{t('send.transactionPreparingHint')}</small></>;
+  }
   if (progress.stage === 'signing-sync' || progress.stage === 'viewing-sync') {
     return <>
       <strong>{t('send.ledgerSync')}</strong>

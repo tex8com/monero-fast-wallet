@@ -17,6 +17,61 @@ pub fn alerts_ready(enabled: bool, alert_status: &str, verified: bool, assignmen
     enabled && alert_status == "on" && verified && assignment_present
         && expires_at.is_some_and(|expires| expires > now)
 }
+#[derive(Clone, Copy)]
+pub struct AlertRecordBinding<'a> {
+    pub handle: Option<&'a str>,
+    pub epoch: Option<u64>,
+    pub expires_at: Option<u64>,
+}
+#[derive(Clone, Copy)]
+pub struct ProtectedAssignmentBinding<'a> {
+    pub handle: &'a str,
+    pub epoch: u64,
+    pub expires_at: u64,
+    pub worker_root: &'a str,
+    pub descriptor_hash: &'a str,
+    pub status: &'a str,
+    pub installation_id: Option<&'a str>,
+}
+/// Public UI flags cannot establish that this installation still owns the
+/// protected, active assignment acknowledged by its selected Worker.
+#[derive(Debug, PartialEq, Eq)]
+pub enum AssignmentReadiness { Ready, NeedsHostingCheck, SetupRequired }
+pub fn assignment_readiness(
+    record: AlertRecordBinding<'_>, assignment: ProtectedAssignmentBinding<'_>,
+    installation_id: &str, trusted_worker_root: bool, now: u64,
+) -> AssignmentReadiness {
+    let hex32 = |value: &str| value.len() == 64 && value.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+    let metadata_matches = trusted_worker_root && hex32(assignment.handle) && hex32(assignment.worker_root)
+        && hex32(assignment.descriptor_hash) && assignment.epoch > 0
+        && assignment.status == "active" && assignment.expires_at > now
+        && record.handle == Some(assignment.handle) && record.epoch == Some(assignment.epoch)
+        && record.expires_at == Some(assignment.expires_at) && !installation_id.is_empty();
+    if !metadata_matches { return AssignmentReadiness::SetupRequired; }
+    match assignment.installation_id {
+        Some(id) if id == installation_id => AssignmentReadiness::Ready,
+        None => AssignmentReadiness::NeedsHostingCheck,
+        _ => AssignmentReadiness::SetupRequired,
+    }
+}
+#[cfg(test)]
+pub fn protected_assignment_ready(
+    record: AlertRecordBinding<'_>, assignment: ProtectedAssignmentBinding<'_>,
+    installation_id: &str, trusted_worker_root: bool, now: u64,
+) -> bool {
+    assignment_readiness(record, assignment, installation_id, trusted_worker_root, now) == AssignmentReadiness::Ready
+}
+/// Only fixed service codes may cross the diagnostics/UI boundary.
+pub fn test_rejection_code(code: Option<&str>) -> &'static str {
+    match code {
+        Some("self_test_worker_unsupported") => "push-test-worker-unsupported",
+        Some("self_test_requires_fast_wallet") => "push-test-fast-wallet-required",
+        Some("self_test_provider_required") => "push-test-provider-required",
+        Some("self_test_unavailable") => "push-test-unavailable",
+        Some("unauthorized") => "push-test-auth-required",
+        _ => "push-test-server-rejected",
+    }
+}
 pub fn setup_gate(has_fast_wallet: bool, has_alerts: bool, authorized: bool, provider_ready: bool, gateway_active: bool) -> &'static str {
     if !has_fast_wallet { "fast-wallet-required" }
     else if !has_alerts { "alerts-required" }
@@ -73,4 +128,50 @@ mod tests {
         assert!(!alerts_ready(true, "on", true, true, None, 1000));
         assert!(!alerts_ready(true, "on", true, true, Some(1000), 1000));
     }
+    fn binding<'a>(handle: &'a str, root: &'a str) -> ProtectedAssignmentBinding<'a> {
+        ProtectedAssignmentBinding { handle, epoch: 2, expires_at: 1100, worker_root: root,
+            descriptor_hash: root, status: "active", installation_id: Some("installation-a") }
+    }
+    #[test] fn protected_assignment_must_match_registry_and_current_installation() {
+        let handle = "a".repeat(64); let root = "b".repeat(64);
+        let record = || AlertRecordBinding { handle: Some(&handle), epoch: Some(2), expires_at: Some(1100) };
+        assert!(protected_assignment_ready(record(), binding(&handle, &root), "installation-a", true, 1000));
+        assert!(!protected_assignment_ready(record(), binding(&handle, &root), "installation-b", true, 1000));
+        let mut legacy = binding(&handle, &root); legacy.installation_id = None;
+        assert!(!protected_assignment_ready(record(), legacy, "installation-a", true, 1000));
+        let other = "c".repeat(64);
+        assert!(!protected_assignment_ready(record(), binding(&other, &root), "installation-a", true, 1000));
+        let mut wrong_epoch = binding(&handle, &root); wrong_epoch.epoch = 3;
+        assert!(!protected_assignment_ready(record(), wrong_epoch, "installation-a", true, 1000));
+        let mut wrong_expiry = binding(&handle, &root); wrong_expiry.expires_at = 1200;
+        assert!(!protected_assignment_ready(record(), wrong_expiry, "installation-a", true, 1000));
+    }
+    #[test] fn untrusted_pending_expired_or_malformed_assignments_never_become_ready() {
+        let handle = "a".repeat(64); let root = "b".repeat(64);
+        let record = || AlertRecordBinding { handle: Some(&handle), epoch: Some(2), expires_at: Some(1100) };
+        assert!(!protected_assignment_ready(record(), binding(&handle, &root), "installation-a", false, 1000));
+        assert!(!protected_assignment_ready(record(), binding(&handle, &root), "installation-a", true, 1100));
+        let mut pending = binding(&handle, &root); pending.status = "pending";
+        assert!(!protected_assignment_ready(record(), pending, "installation-a", true, 1000));
+        assert!(!protected_assignment_ready(record(), binding(&handle, "invalid"), "installation-a", true, 1000));
+        let mut malformed = binding(&handle, &root); malformed.descriptor_hash = "SECRET-ERROR-TEXT";
+        assert!(!protected_assignment_ready(record(), malformed, "installation-a", true, 1000));
+    }
+    #[test] fn rejected_test_diagnostics_use_only_fixed_allowlisted_codes() {
+        assert_eq!(test_rejection_code(Some("self_test_requires_fast_wallet")), "push-test-fast-wallet-required");
+        assert_eq!(test_rejection_code(Some("self_test_provider_required")), "push-test-provider-required");
+        for input in [None, Some("PRIVATE_TOKEN_VALUE"), Some("arbitrary server exception")]
+            { assert_eq!(test_rejection_code(input), "push-test-server-rejected"); }
+    }
+    #[test] fn intact_legacy_binding_needs_only_a_hosting_check_not_new_enrollment() {
+        let handle = "a".repeat(64); let root = "b".repeat(64);
+        let record = AlertRecordBinding { handle: Some(&handle), epoch: Some(2), expires_at: Some(1100) };
+        let mut legacy = binding(&handle, &root); legacy.installation_id = None;
+        assert_eq!(assignment_readiness(record, legacy, "installation-a", true, 1000), AssignmentReadiness::NeedsHostingCheck);
+        legacy.installation_id = Some("installation-a");
+        assert_eq!(assignment_readiness(record, legacy, "installation-a", true, 1000), AssignmentReadiness::Ready);
+        legacy.installation_id = Some("installation-b");
+        assert_eq!(assignment_readiness(record, legacy, "installation-a", true, 1000), AssignmentReadiness::SetupRequired);
+    }
+
 }

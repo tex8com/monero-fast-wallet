@@ -4,18 +4,22 @@ import test from 'node:test';
 import {
   displaySyncPercent,
   networkSyncMegabitsPerSecond,
+  updateNetworkSyncRateWindow,
   walletSyncDerivationsPerSecond,
 } from '../../../packages/wallet-shared/src/networkSync.ts';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   ledgerBalanceIsVerified,
+  ledgerBalanceSnapshotForDisplay,
   nextWalletPublication,
   nextWalletSyncStartHeight,
   presentWalletSync,
   syncStartHeightForWallet,
   updateWalletSyncEta,
   walletIsSpendReady,
+  walletScanBacklog,
+  walletSyncSampleIsFresh,
 } from '../../../packages/wallet-shared/src/walletSync.ts';
 
 test('rounded progress cannot display 100% before native completion', () => {
@@ -60,6 +64,19 @@ test('missing or invalid Ledger output counters never establish a verified balan
   }
 });
 
+test('Ledger balance display uses a confirmed publication or a completed viewing scan', () => {
+  const detected = {
+    walletHeight: '1000', daemonHeight: '1000', daemonTargetHeight: '1000',
+    synchronized: true, balanceAtomic: '2071000000000', pendingOutputKeyImageCount: '14',
+  };
+  const verified = { ...detected, balanceAtomic: '912423089810', pendingOutputKeyImageCount: '0' };
+  assert.equal(ledgerBalanceSnapshotForDisplay(verified, detected), verified);
+  assert.equal(ledgerBalanceSnapshotForDisplay(undefined, detected), detected);
+  assert.equal(ledgerBalanceSnapshotForDisplay(undefined, { ...detected, synchronized: false }), undefined);
+  assert.equal(ledgerBalanceSnapshotForDisplay(undefined, { ...detected, daemonTargetHeight: '1001' }), undefined);
+  assert.equal(ledgerBalanceSnapshotForDisplay(undefined, { ...detected, daemonHeight: '0', daemonTargetHeight: '0' }), undefined);
+});
+
 test('a Ledger working snapshot cannot publish an intermediate incoming-only balance', () => {
   const intermediate = {
     walletHeight: 1_000,
@@ -77,10 +94,21 @@ test('a Ledger working snapshot cannot publish an intermediate incoming-only bal
     ledgerVerified: false,
   });
 
-  assert.equal(blocked.phase, 'scanning-spend-outputs');
+  assert.equal(blocked.phase, 'waiting-ledger');
   assert.equal(blocked.ready, false);
   assert.equal(blocked.publishedSnapshot, undefined);
   assert.deepEqual(blocked.publishedTransactions, []);
+
+  const checking = nextWalletPublication(blocked, {
+    snapshot: intermediate,
+    transactions: [{ direction: 'in' }],
+    requiresLedgerVerification: true,
+    ledgerVerified: false,
+    ledgerPhase: 'scanning-spend-outputs',
+  });
+  assert.equal(checking.phase, 'scanning-spend-outputs');
+  assert.equal(checking.ready, false);
+  assert.equal(checking.publishedSnapshot, undefined);
 
   const finalSnapshot = {
     ...intermediate,
@@ -305,9 +333,11 @@ test('desktop presents blockchain and wallet progress with distinct native color
 test('desktop samples the live gRPC payload and expires stale transfer rates', () => {
   const desktopRoot = join(import.meta.dirname, '..');
   const app = readFileSync(join(desktopRoot, 'src/App.tsx'), 'utf8');
-  assert.match(app, /payloadBytes > 0 \|\| networkBytes <= 0 \? 0 : networkBytes/);
-  assert.match(app, /observedAt - lastTransferAtRef\.current > 3_000/);
-  assert.match(app, /setRate\(undefined\)/);
+  const hook = app.slice(app.indexOf('function useAggregateNetworkRate('), app.indexOf('function DesktopSyncProgress('));
+  assert.match(hook, /updateNetworkSyncRateWindow\(windowRef\.current, status, Date\.now\(\)\)/);
+  assert.match(hook, /lastTransferAt \+ NETWORK_SYNC_RATE_WINDOW_MS - Date\.now\(\)/);
+  assert.match(hook, /setTimeout\(\(\) => setRate\(undefined\)/);
+  assert.doesNotMatch(hook, /networkSyncMegabitsPerSecond/);
 });
 
 test('only the native core may confirm a wallet as synchronized', () => {
@@ -442,6 +472,66 @@ test('presentation baseline survives retries and resets only on Core completion 
   assert.equal(nextWalletSyncStartHeight(undefined, { ...snapshot, walletHeight: Number.NaN }), undefined);
 });
 
+test('bootstrap Ledger heights cannot create a genesis-sized progress jump', () => {
+  const bootstrap = {walletHeight: '1', daemonHeight: '1', daemonTargetHeight: '1',
+    refreshFromHeight: '1182748', synchronized: false};
+  const start = nextWalletSyncStartHeight(undefined, bootstrap);
+  assert.equal(start, 1_182_748);
+  const scanning = {...bootstrap, walletHeight: '1183004',
+    daemonHeight: '3798589', daemonTargetHeight: '3798589'};
+  const healed = nextWalletSyncStartHeight(1, scanning);
+  assert.equal(healed, start);
+  const result = presentWalletSync(scanning, {startHeight: healed});
+  assert.equal(result.progress, 0);
+  assert.equal(result.scannedBlocks, 256);
+  assert.equal(nextWalletSyncStartHeight(undefined, {...scanning, walletHeight: '3700000'}), 3_700_000);
+  assert.equal(nextWalletSyncStartHeight(1, {...scanning, refreshFromHeight: 0}), 1);
+});
+
+const rateStatus = (extra = {}) => ({
+  state: 'fetching-blocks', phase: 'fetching-blocks', chainHeight: 1,
+  targetHeight: 10_000, transportStarts: 1, joinedWallets: 1,
+  stalledWallets: 0, providerGeneration: 1, blockTransport: 'grpc',
+  payloadBytesReceived: 100_000_000, networkBytesReceived: 1_200,
+  lastNonEmptyBlockFetchMs: 1, lastNonEmptyPayloadBytes: 100_000_000,
+  ...extra,
+});
+
+test('live network rate never uses a prebuffered batch duration or stale RPC controls', () => {
+  let window = updateNetworkSyncRateWindow({samples: []}, rateStatus(), 0);
+  assert.equal(window.rate, undefined);
+  window = updateNetworkSyncRateWindow(window,
+    rateStatus({payloadBytesReceived: 145_000_000, networkBytesReceived: 2_400}), 750);
+  assert.equal(window.rate, 480);
+  window = updateNetworkSyncRateWindow(window,
+    rateStatus({payloadBytesReceived: 145_000_000, networkBytesReceived: 3_600}), 1_500);
+  assert.equal(window.rate, 240);
+  for (const at of [2_250, 3_000, 3_750]) {
+    window = updateNetworkSyncRateWindow(window,
+      rateStatus({payloadBytesReceived: 145_000_000}), at);
+  }
+  assert.equal(window.rate, undefined);
+});
+
+test('live rate restarts after a paused timer, provider change, source switch or counter rewind', () => {
+  const first = updateNetworkSyncRateWindow({samples: []}, rateStatus(), 0);
+  const measured = updateNetworkSyncRateWindow(first,
+    rateStatus({payloadBytesReceived: 145_000_000}), 750);
+  for (const [next, at] of [
+    [rateStatus({payloadBytesReceived: 146_000_000}), 30_000],
+    [rateStatus({payloadBytesReceived: 146_000_000, providerGeneration: 2}), 1_500],
+    [rateStatus({payloadBytesReceived: 146_000_000, network: 'stagenet'}), 1_500],
+    [rateStatus({blockTransport: 'rpc'}), 1_500],
+    [rateStatus({payloadBytesReceived: 1}), 1_500],
+    [rateStatus(), 500],
+  ]) {
+    const reset = updateNetworkSyncRateWindow(measured, next, at);
+    assert.equal(reset.rate, undefined);
+    assert.equal(reset.samples.length, 1);
+  }
+  assert.equal(updateNetworkSyncRateWindow(measured, null, 1_500).rate, undefined);
+});
+
 test('Tauri requires the same explicit Ledger restore point as the CLI', async () => {
   const [desktopApp, desktopHost] = await Promise.all([
     readFile(new URL('../src/App.tsx', import.meta.url), 'utf8'),
@@ -523,6 +613,29 @@ test('ETA discards throughput measured before a node provider change', () => {
   assert.equal(changed.state.providerGeneration, 8);
 });
 
+test('scan lag compares block heights even when the two progress ranges differ', () => {
+  assert.equal(walletScanBacklog(2_440_220, 2_445_084, 1_182_748), 4_864);
+  assert.equal(walletScanBacklog(1_182_700, 1_182_758, 1_182_748), 10);
+  assert.equal(walletScanBacklog(2_445_100, 2_445_084, 1_182_748), 0);
+  assert.equal(walletScanBacklog(1, 2_445_084, undefined), undefined);
+  assert.equal(walletScanBacklog(0, 2_445_084, 1_182_748), undefined);
+});
+
+test('ETA expires on stale or stalled samples and remeasures after a gap', () => {
+  let estimate = updateWalletSyncEta(undefined, 10_000, 0);
+  for (let n = 1; n <= 3; n++) {
+    estimate = updateWalletSyncEta(estimate.state, 10_000 - n * 500, n * 10_000);
+  }
+  assert.equal(estimate.etaSeconds, 170);
+  assert.equal(walletSyncSampleIsFresh(30_000, 49_999), true);
+  assert.equal(walletSyncSampleIsFresh(30_000, 50_000), false);
+  assert.equal(updateWalletSyncEta(estimate.state, 8_000, 60_000).etaSeconds, undefined);
+  const unchanged = updateWalletSyncEta(estimate.state, 8_500, 40_000);
+  const stalled = updateWalletSyncEta(unchanged.state, 8_500, 50_000);
+  assert.equal(stalled.etaSeconds, undefined);
+  assert.equal(stalled.state.progressSamples, 0);
+});
+
 test('Ledger reconciliation is automatic once, manual later, and globally single-flight', async () => {
   const desktopApp = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
   const verificationPredicate = desktopApp.slice(
@@ -582,6 +695,8 @@ test('Ledger reconciliation is automatic once, manual later, and globally single
   assert.doesNotMatch(desktopApp, /MONERO_DESKTOP_LEDGER_BACKGROUND_RECONCILIATION_START/);
   assert.match(desktopApp, /reconcile_ledger_balance/);
   assert.match(desktopApp, /settings\.recheckLedger/);
-  assert.match(desktopApp, /send\.checkingSpendOutputs/);
+  assert.match(desktopApp, /'prepare_send_plan'/);
+  assert.match(desktopApp, /'ledger-operation-progress'/);
+  assert.match(desktopApp, /send\.preparing/);
   assert.doesNotMatch(desktopApp, /title="Verify with your Ledger"/);
 });

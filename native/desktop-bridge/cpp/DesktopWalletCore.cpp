@@ -253,6 +253,7 @@ std::string preparedTransactionJson(
   output << "{\"id\":" << jsonString(transaction.id)
          << ",\"status\":" << jsonString(transaction.status)
          << ",\"error\":" << jsonString(transaction.error)
+         << ",\"errorCode\":" << jsonString(transaction.errorCode)
          << ",\"amountAtomic\":" << jsonString(std::to_string(transaction.amountAtomic))
          << ",\"dustAtomic\":" << jsonString(std::to_string(transaction.dustAtomic))
          << ",\"feeAtomic\":" << jsonString(std::to_string(transaction.feeAtomic))
@@ -261,6 +262,39 @@ std::string preparedTransactionJson(
          << ",\"subaddressAccounts\":" << jsonUnsignedList(transaction.subaddrAccounts)
          << ",\"subaddressIndices\":" << jsonUnsignedList(transaction.subaddrIndices)
          << '}';
+  return output.str();
+}
+
+std::string preparedTransactionReportJson(
+    const tex8::wallet::PreparedTransaction& transaction) {
+  auto base = preparedTransactionJson(transaction);
+  base.pop_back();
+  std::ostringstream output;
+  output << base
+         << ",\"broadcastedTxIds\":" << jsonStringList(transaction.broadcastedTxIds)
+         << ",\"uncertainTxIds\":" << jsonStringList(transaction.uncertainTxIds)
+         << ",\"remainingTxIds\":" << jsonStringList(transaction.remainingTxIds)
+         << ",\"broadcastedTotalsKnown\":"
+         << (transaction.broadcastedTotalsKnown ? "true" : "false")
+         << ",\"broadcastedAmountAtomic\":"
+         << (transaction.broadcastedTotalsKnown
+                 ? jsonString(std::to_string(transaction.broadcastedAmountAtomic)) : "null")
+         << ",\"broadcastedFeeAtomic\":"
+         << (transaction.broadcastedTotalsKnown
+                 ? jsonString(std::to_string(transaction.broadcastedFeeAtomic)) : "null")
+         << ",\"broadcastedTransactions\":[";
+  bool first = true;
+  for (const auto& receipt : transaction.broadcastedTransactions) {
+    if (!first) output << ',';
+    first = false;
+    output << "{\"hash\":" << jsonString(receipt.hash)
+           << ",\"amountAtomic\":" << jsonString(std::to_string(receipt.amountAtomic))
+           << ",\"feeAtomic\":" << jsonString(std::to_string(receipt.feeAtomic))
+           << ",\"subaddressAccount\":" << receipt.subaddressAccount
+           << ",\"subaddressIndices\":" << jsonUnsignedList(receipt.subaddressIndices)
+           << '}';
+  }
+  output << "]}";
   return output.str();
 }
 
@@ -313,7 +347,13 @@ std::string walletSnapshotJson(const tex8::wallet::WalletSnapshot& snapshot) {
          << ",\"balanceAtomic\":" << jsonString(std::to_string(snapshot.balanceAtomic))
          << ",\"unlockedBalanceAtomic\":"
          << jsonString(std::to_string(snapshot.unlockedBalanceAtomic))
+         << ",\"lockedBalanceAtomic\":"
+         << jsonString(std::to_string(snapshot.lockedBalanceAtomic))
+         << ",\"unlockBlocksRemaining\":" << snapshot.unlockBlocksRemaining
+         << ",\"unlockTimeRemainingSeconds\":" << snapshot.unlockTimeRemainingSeconds
+         << ",\"unlockState\":" << jsonString(snapshot.unlockState)
          << ",\"walletHeight\":" << jsonString(std::to_string(snapshot.walletHeight))
+         << ",\"refreshFromHeight\":" << jsonString(std::to_string(snapshot.refreshFromHeight))
          << ",\"daemonHeight\":" << jsonString(std::to_string(snapshot.daemonHeight))
          << ",\"daemonTargetHeight\":"
          << jsonString(std::to_string(snapshot.daemonTargetHeight))
@@ -332,6 +372,8 @@ std::string networkSyncStatusJson(
   output << "{\"network\":" << jsonString(networkName(status.network))
          << ",\"state\":" << jsonString(status.state)
          << ",\"phase\":" << jsonString(status.phase)
+         << ",\"blockTransport\":" << jsonString(status.blockTransport)
+         << ",\"blockTransportReason\":" << jsonString(status.blockTransportReason)
          << ",\"lastError\":" << jsonString(status.lastError)
          << ",\"consecutiveFailures\":" << status.consecutiveFailures
          << ",\"phaseSequence\":" << status.phaseSequence
@@ -787,6 +829,26 @@ extern "C" Tex8DesktopResult tex8_desktop_wallet_snapshot(
   });
 }
 
+extern "C" Tex8DesktopResult tex8_desktop_wallet_accounts(
+    Tex8DesktopWalletCore* core, const char* wallet_id) noexcept {
+  return invoke(core, [&] {
+    const auto accounts = core->engine.accounts(input(wallet_id));
+    std::ostringstream output;
+    output << '[';
+    bool first = true;
+    for (const auto& account : accounts) {
+      if (!first) output << ',';
+      first = false;
+      output << "{\"accountIndex\":" << account.accountIndex
+             << ",\"balanceAtomic\":" << jsonString(std::to_string(account.balanceAtomic))
+             << ",\"unlockedBalanceAtomic\":"
+             << jsonString(std::to_string(account.unlockedBalanceAtomic)) << '}';
+    }
+    output << ']';
+    return output.str();
+  });
+}
+
 extern "C" Tex8DesktopResult tex8_desktop_wallet_sync_ledger_key_images(
     Tex8DesktopWalletCore* core, const char* hardware_wallet_id,
     const char* view_only_wallet_id) noexcept {
@@ -1058,6 +1120,23 @@ extern "C" Tex8DesktopResult tex8_desktop_wallet_commit_transaction(
   });
 }
 
+extern "C" Tex8DesktopResult tex8_desktop_discard_transaction(
+    Tex8DesktopWalletCore* core, const char* wallet_id, const char* pending_id) noexcept {
+  return invoke(core, [&] {
+    return core->engine.discardTransaction(input(wallet_id), input(pending_id))
+        ? std::string("{\"discarded\":true}")
+        : std::string("{\"discarded\":false}");
+  });
+}
+
+extern "C" Tex8DesktopResult tex8_desktop_commit_transaction_report(
+    Tex8DesktopWalletCore* core, const char* wallet_id, const char* pending_id) noexcept {
+  return invoke(core, [&] {
+    return preparedTransactionReportJson(
+        core->engine.commitTransactionReport(input(wallet_id), input(pending_id)));
+  });
+}
+
 extern "C" Tex8DesktopResult tex8_desktop_wallet_hardware_status(
     Tex8DesktopWalletCore* core, const char* wallet_id) noexcept {
   return invoke(core, [&] {
@@ -1080,6 +1159,16 @@ extern "C" Tex8DesktopResult tex8_desktop_wallet_prime_hardware_from_view_only(
     const char* view_only_wallet_id) noexcept {
   return invoke(core, [&] {
     core->engine.primeHardwareWalletFromViewOnly(
+        input(hardware_wallet_id), input(view_only_wallet_id));
+    return std::string{};
+  });
+}
+
+extern "C" Tex8DesktopResult tex8_desktop_wallet_prime_hardware_view_capability_from_view_only(
+    Tex8DesktopWalletCore* core, const char* hardware_wallet_id,
+    const char* view_only_wallet_id) noexcept {
+  return invoke(core, [&] {
+    core->engine.primeHardwareWalletViewKeyFromViewOnly(
         input(hardware_wallet_id), input(view_only_wallet_id));
     return std::string{};
   });

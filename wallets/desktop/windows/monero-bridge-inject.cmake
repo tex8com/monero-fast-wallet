@@ -107,6 +107,9 @@ function(tex8_add_windows_wallet_bridge)
     TEX8_WALLET_BRIDGE_WITH_MONERO=1
     TEX8_WALLET_BRIDGE_WITH_GRPC_STREAM=1
     TEX8_WALLET_BRIDGE_WITH_TEX8_EXTENSIONS=1
+    # Retain the bounded, allowlisted phase ring in packaged Windows builds.
+    # The desktop drains it independently while wallet operations are busy.
+    TEX8_WALLET_DIAGNOSTICS=1
   )
   target_include_directories(tex8_wallet_core PRIVATE
     "${TEX8_DESKTOP_BRIDGE_ROOT}/../monero-bridge/cpp"
