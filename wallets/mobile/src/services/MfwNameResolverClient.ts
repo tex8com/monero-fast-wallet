@@ -196,7 +196,7 @@ export class MfwNameResolverQuorum
   }
 
   /**
-   * Consumes the short-lived, byte-identical multi-resolver answer without
+   * Consumes the short-lived answer from the configured resolver set without
    * claiming that the record is payment-safe. Registration availability adds
    * its own canonical tip/freshness rules on top.
    */

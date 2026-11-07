@@ -293,6 +293,50 @@ target_include_directories(monero_wallet_network_scan_metrics
 )
 target_compile_features(monero_wallet_network_scan_metrics PRIVATE cxx_std_17)
 
+find_package(Threads REQUIRED)
+add_executable(monero_wallet_close_barrier proof/wallet_close_barrier.cpp)
+target_include_directories(monero_wallet_close_barrier
+  PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/cpp
+)
+target_compile_features(monero_wallet_close_barrier PRIVATE cxx_std_17)
+target_link_libraries(monero_wallet_close_barrier PRIVATE Threads::Threads)
+
+add_executable(monero_wallet_ledger_companion_preparation
+  proof/ledger_companion_preparation.cpp
+)
+target_include_directories(monero_wallet_ledger_companion_preparation
+  PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/cpp
+)
+target_compile_features(monero_wallet_ledger_companion_preparation PRIVATE cxx_std_17)
+
+add_executable(monero_wallet_block_transport_status
+  proof/block_transport_status.cpp
+)
+target_include_directories(monero_wallet_block_transport_status
+  PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/cpp
+)
+target_compile_features(monero_wallet_block_transport_status PRIVATE cxx_std_17)
+
+add_executable(monero_wallet_grpc_recovery proof/grpc_recovery.cpp)
+target_include_directories(monero_wallet_grpc_recovery
+  PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/cpp
+)
+target_compile_features(monero_wallet_grpc_recovery PRIVATE cxx_std_17)
+
+add_executable(monero_wallet_unlock_summary proof/wallet_unlock_summary.cpp)
+target_include_directories(monero_wallet_unlock_summary
+  PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/cpp
+)
+target_compile_features(monero_wallet_unlock_summary PRIVATE cxx_std_17)
+
+add_executable(monero_wallet_ledger_refresh_ownership
+  proof/ledger_refresh_ownership.cpp
+)
+target_include_directories(monero_wallet_ledger_refresh_ownership
+  PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/cpp
+)
+target_compile_features(monero_wallet_ledger_refresh_ownership PRIVATE cxx_std_17)
+
 if(MONERO_WALLET_BRIDGE_WITH_MONERO)
   add_executable(monero_wallet_multiwallet_acceptance
     proof/multiwallet_acceptance.cpp
@@ -309,6 +353,12 @@ if(MONERO_WALLET_BRIDGE_ENABLE_SANITIZERS)
       monero_wallet_bridge_smoke
       monero_wallet_network_fanout
       monero_wallet_network_scan_metrics
+      monero_wallet_close_barrier
+      monero_wallet_ledger_companion_preparation
+      monero_wallet_block_transport_status
+      monero_wallet_grpc_recovery
+      monero_wallet_unlock_summary
+      monero_wallet_ledger_refresh_ownership
     )
     if(NOT MONERO_WALLET_BRIDGE_WITH_MONERO)
       list(APPEND sanitizer_targets monero_wallet_bridge_security_boundary)
@@ -340,4 +390,13 @@ add_test(NAME monero_wallet_network_fanout COMMAND monero_wallet_network_fanout)
 add_test(
   NAME monero_wallet_network_scan_metrics
   COMMAND monero_wallet_network_scan_metrics
+)
+add_test(NAME monero_wallet_close_barrier COMMAND monero_wallet_close_barrier)
+add_test(NAME monero_wallet_block_transport_status COMMAND monero_wallet_block_transport_status)
+add_test(NAME monero_wallet_grpc_recovery COMMAND monero_wallet_grpc_recovery)
+add_test(NAME monero_wallet_unlock_summary COMMAND monero_wallet_unlock_summary)
+add_test(NAME monero_wallet_ledger_refresh_ownership COMMAND monero_wallet_ledger_refresh_ownership)
+add_test(
+  NAME monero_wallet_ledger_companion_preparation
+  COMMAND monero_wallet_ledger_companion_preparation
 )

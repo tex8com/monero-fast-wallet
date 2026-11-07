@@ -2,6 +2,7 @@
 #import "../EmbeddedTorModule.h"
 
 #import "../../../../../native/monero-bridge/cpp/WalletEngine.h"
+#import "../../../../../native/monero-bridge/cpp/MobileSendPlanAdapter.h"
 #import "../../../../../native/monero-bridge/cpp/WalletEngineTypes.h"
 #import "../../../../../native/monero-bridge/cpp/FastWalletProtocolBridge.h"
 #import "../../../../../native/product-core/generated/c/mfw_product_core_contract.h"
@@ -60,6 +61,8 @@ static_assert(MFW_PRODUCT_CORE_ABI_VERSION == 1u,
 #include <cstdlib>
 #include <cstring>
 #include <limits>
+#include <fcntl.h>
+#include <unistd.h>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -1052,6 +1055,8 @@ using tex8::wallet::LedgerKeyImageSyncResult;
 using tex8::wallet::HardwareViewKeyExport;
 using tex8::wallet::LedgerBleTransportCallbacks;
 using tex8::wallet::NetworkSyncStatus;
+using tex8::wallet::MobileSendPlanAdapter;
+using tex8::wallet::MobileSendPlanCallbacks;
 using tex8::wallet::NetworkType;
 using tex8::wallet::OpenWalletRequest;
 using tex8::wallet::PreparedTransaction;
@@ -1059,6 +1064,7 @@ using tex8::wallet::PrepareTransactionRequest;
 using tex8::wallet::RestoreWalletRequest;
 using tex8::wallet::WalletEngine;
 using tex8::wallet::WalletEngineError;
+using tex8::wallet::WalletAccountBalance;
 using tex8::wallet::WalletSnapshot;
 using tex8::wallet::WalletSubaddress;
 using tex8::wallet::WalletTransaction;
@@ -1275,7 +1281,7 @@ NSString *checkedSecretKey(NSString *value) {
   return trimmed;
 }
 
-NSString *checkedWalletSecretKey(NSString *value) {
+NSString *checkedManagedWalletSecretKey(NSString *value) {
   NSString *checked = checkedSecretKey(value);
   if (![checked hasPrefix:@"monero.wallet."] ||
       [checked hasPrefix:@"monero.wallet.app."]) {
@@ -1285,9 +1291,25 @@ NSString *checkedWalletSecretKey(NSString *value) {
   return checked;
 }
 
+// Native receipts are executable safety state. Renderer secret/metadata APIs
+// must never read, overwrite or delete the journal holding uncertain spends.
+NSString *const kSendPlanJournalPrefix = @"monero.wallet.native-send-plan.";
+NSString *const kSendPlanJournalKey = @"monero.wallet.native-send-plan.journal.v1";
+
+NSString *checkedWalletSecretKey(NSString *value) {
+  NSString *checked = checkedManagedWalletSecretKey(value);
+  if ([checked hasPrefix:kSendPlanJournalPrefix]) {
+    throw WalletEngineError("Native payment receipts are reserved for the wallet engine");
+  }
+  return checked;
+}
+
 NSString *protectedMetadataSecretKey(NSString *value) {
   NSString *normalized = [value stringByTrimmingCharactersInSet:
       NSCharacterSet.whitespaceAndNewlineCharacterSet];
+  if ([normalized hasPrefix:kSendPlanJournalPrefix]) {
+    throw WalletEngineError("Native payment receipts are reserved for the wallet engine");
+  }
   if (normalized.length == 0 || normalized.length > 256 ||
       [normalized rangeOfCharacterFromSet:NSCharacterSet.controlCharacterSet]
               .location != NSNotFound) {
@@ -1986,7 +2008,7 @@ class IOSWalletAppVault {
 
   NSString *get(NSString *key) {
     VaultLockGuard guard(_lock);
-    NSString *checked = checkedWalletSecretKey(key);
+    NSString *checked = checkedManagedWalletSecretKey(key);
     requireSession();
     NSData *data = _sessionSecrets[checked];
     NSString *value = data == nil
@@ -1997,7 +2019,7 @@ class IOSWalletAppVault {
 
   void put(NSString *key, NSString *value) {
     VaultLockGuard guard(_lock);
-    NSString *checked = checkedWalletSecretKey(key);
+    NSString *checked = checkedManagedWalletSecretKey(key);
     requireSession();
     if (value.length == 0) {
       removeLocked(checked);
@@ -2012,7 +2034,49 @@ class IOSWalletAppVault {
 
   void remove(NSString *key) {
     VaultLockGuard guard(_lock);
-    removeLocked(checkedWalletSecretKey(key));
+    removeLocked(checkedManagedWalletSecretKey(key));
+  }
+
+  NSString *readCommittedSecret(NSString *key) {
+    VaultLockGuard guard(_lock);
+    requireSession();
+    NSString *checked = checkedManagedWalletSecretKey(key);
+    NSMutableDictionary *secrets = decryptPayload(readRecord(), _sessionAmk);
+    NSData *bytes = secrets[checked];
+    NSString *value = bytes == nil ? nil : [[NSString alloc] initWithData:bytes encoding:NSUTF8StringEncoding];
+    const BOOL invalid = bytes != nil && value == nil;
+    for (NSMutableData *secret in secrets.allValues) wipeMutableData(secret);
+    [secrets removeAllObjects];
+    if (invalid) throw WalletEngineError("The committed native payment journal is invalid");
+    return value;
+  }
+
+  // The planner must prove the persisted encrypted record matches its full
+  // journal, rather than reading only the in-memory secret map after a write.
+  void verifyCommittedSecret(NSString *key, NSString *expected) {
+    VaultLockGuard guard(_lock);
+    requireSession();
+    NSString *checked = checkedManagedWalletSecretKey(key);
+    NSMutableDictionary *record = readRecord();
+    NSMutableDictionary *secrets = decryptPayload(record, _sessionAmk);
+    NSData *expectedData = [expected dataUsingEncoding:NSUTF8StringEncoding];
+    const BOOL matches = expectedData != nil &&
+        [secrets[checked] isEqualToData:expectedData];
+    for (NSMutableData *value in secrets.allValues) wipeMutableData(value);
+    [secrets removeAllObjects];
+    if (!matches) throw WalletEngineError("The saved native payment journal could not be verified");
+    NSURL *url = vaultURL();
+    const int descriptor = open(url.fileSystemRepresentation, O_RDONLY | O_CLOEXEC);
+    if (descriptor < 0) throw WalletEngineError("The native payment journal could not be opened for durable storage");
+    const int fileResult = fsync(descriptor);
+    close(descriptor);
+    if (fileResult != 0) throw WalletEngineError("The native payment journal could not be flushed to storage");
+    NSURL *parent = url.URLByDeletingLastPathComponent;
+    const int directory = open(parent.fileSystemRepresentation, O_RDONLY | O_CLOEXEC);
+    if (directory < 0) throw WalletEngineError("The native payment journal directory could not be opened");
+    const int directoryResult = fsync(directory);
+    close(directory);
+    if (directoryResult != 0) throw WalletEngineError("The native payment journal directory could not be committed");
   }
 
   void lockVault() {
@@ -2447,6 +2511,9 @@ class IOSWalletAppVault {
 
 void deleteKeychainSecret(NSString *key) {
   NSString *checked = checkedSecretKey(key);
+  if ([checked hasPrefix:kSendPlanJournalPrefix]) {
+    throw WalletEngineError("Native payment receipts are reserved for the wallet engine");
+  }
   if (isManagedWalletSecretKey(checked) && IOSWalletAppVault::shared().exists()) {
     IOSWalletAppVault::shared().remove(checked);
   }
@@ -2455,6 +2522,9 @@ void deleteKeychainSecret(NSString *key) {
 
 void storeKeychainSecret(NSString *key, NSString *value) {
   NSString *checked = checkedSecretKey(key);
+  if ([checked hasPrefix:kSendPlanJournalPrefix]) {
+    throw WalletEngineError("Native payment receipts are reserved for the wallet engine");
+  }
   if (isManagedWalletSecretKey(checked) && IOSWalletAppVault::shared().exists()) {
     IOSWalletAppVault::shared().put(checked, value);
     return;
@@ -2464,6 +2534,9 @@ void storeKeychainSecret(NSString *key, NSString *value) {
 
 NSString *readKeychainSecret(NSString *key) {
   NSString *checked = checkedSecretKey(key);
+  if ([checked hasPrefix:kSendPlanJournalPrefix]) {
+    throw WalletEngineError("Native payment receipts are reserved for the wallet engine");
+  }
   if (isManagedWalletSecretKey(checked) && IOSWalletAppVault::shared().exists()) {
     return IOSWalletAppVault::shared().get(checked);
   }
@@ -2598,7 +2671,12 @@ NSDictionary *toDictionary(const WalletSnapshot &snapshot) {
     @"primaryAddress": toNSString(snapshot.primaryAddress),
     @"balanceAtomic": toNSString(std::to_string(snapshot.balanceAtomic)),
     @"unlockedBalanceAtomic": toNSString(std::to_string(snapshot.unlockedBalanceAtomic)),
+    @"lockedBalanceAtomic": toNSString(std::to_string(snapshot.lockedBalanceAtomic)),
+    @"unlockBlocksRemaining": toNSNumber(snapshot.unlockBlocksRemaining),
+    @"unlockTimeRemainingSeconds": toNSNumber(snapshot.unlockTimeRemainingSeconds),
+    @"unlockState": toNSString(snapshot.unlockState),
     @"walletHeight": toNSNumber(snapshot.walletHeight),
+    @"refreshFromHeight": toNSNumber(snapshot.refreshFromHeight),
     @"daemonHeight": toNSNumber(snapshot.daemonHeight),
     @"daemonTargetHeight": toNSNumber(snapshot.daemonTargetHeight),
     @"pendingOutputKeyImageCount": toNSNumber(snapshot.pendingOutputKeyImageCount),
@@ -2636,6 +2714,8 @@ NSDictionary *toDictionary(const NetworkSyncStatus &status) {
     @"network": networkName(status.network),
     @"state": toNSString(status.state),
     @"phase": toNSString(status.phase),
+    @"blockTransport": toNSString(status.blockTransport),
+    @"blockTransportReason": toNSString(status.blockTransportReason),
     @"lastError": toNSString(status.lastError),
     @"consecutiveFailures": toNSNumber(status.consecutiveFailures),
     @"phaseSequence": toNSNumber(status.phaseSequence),
@@ -2672,6 +2752,7 @@ NSDictionary *toDictionary(const NetworkSyncStatus &status) {
     @"downloadStartHeight": toNSNumber(status.downloadStartHeight),
     @"downloadedHeight": toNSNumber(status.downloadedHeight),
     @"chainHeight": toNSNumber(status.chainHeight),
+    @"priorityWalletId": toNSString(status.priorityWalletId),
     @"priorityWalletHeight": toNSNumber(status.priorityWalletHeight),
     @"targetHeight": toNSNumber(status.targetHeight),
     @"transportStarts": toNSNumber(status.transportStarts),
@@ -2754,6 +2835,18 @@ NSArray *toSubaddressArray(const std::vector<WalletSubaddress> &addresses) {
   NSMutableArray *result = [NSMutableArray arrayWithCapacity:addresses.size()];
   for (const auto &address : addresses) {
     [result addObject:toDictionary(address)];
+  }
+  return result;
+}
+
+NSArray *toAccountArray(const std::vector<WalletAccountBalance> &accounts) {
+  NSMutableArray *result = [NSMutableArray arrayWithCapacity:accounts.size()];
+  for (const auto &account : accounts) {
+    [result addObject:@{
+      @"accountIndex": toNSNumber(account.accountIndex),
+      @"balanceAtomic": toNSString(std::to_string(account.balanceAtomic)),
+      @"unlockedBalanceAtomic": toNSString(std::to_string(account.unlockedBalanceAtomic)),
+    }];
   }
   return result;
 }
@@ -5106,6 +5199,78 @@ NSArray *privatePhoneDeviceContacts() {
   return contacts;
 }
 
+void validateSendPlanJournal(NSString *encoded) {
+  NSData *data = [encoded dataUsingEncoding:NSUTF8StringEncoding];
+  if (data == nil || data.length > 8 * 1024 * 1024) {
+    throw WalletEngineError("The complete encrypted native payment journal is invalid");
+  }
+  NSError *error = nil;
+  id value = [NSJSONSerialization JSONObjectWithData:data options:0 error:&error];
+  if (error != nil || ![value isKindOfClass:NSArray.class]) {
+    throw WalletEngineError("The complete encrypted native payment journal is invalid");
+  }
+}
+
+NSDictionary *sendPlanDictionary(NSString *encoded) {
+  NSError *error = nil;
+  NSData *data = [encoded dataUsingEncoding:NSUTF8StringEncoding];
+  id value = data == nil ? nil : [NSJSONSerialization JSONObjectWithData:data options:0 error:&error];
+  if (error != nil || ![value isKindOfClass:NSDictionary.class]) {
+    throw WalletEngineError("The native payment receipt is invalid");
+  }
+  return value;
+}
+
+NSString *sendPlanEncode(NSDictionary *plan) {
+  NSError *error = nil;
+  NSData *data = [NSJSONSerialization dataWithJSONObject:plan options:0 error:&error];
+  NSString *encoded = data == nil ? nil : [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+  if (encoded == nil || error != nil) throw WalletEngineError("The native payment receipt cannot be encoded");
+  return encoded;
+}
+
+uint64_t sendPlanAtomic(id value) {
+  if (![value isKindOfClass:NSString.class] || [value length] == 0 || [value length] > 20) {
+    throw WalletEngineError("The native payment amount is invalid");
+  }
+  uint64_t result = 0;
+  for (NSUInteger index = 0; index < [value length]; ++index) {
+    const unichar digit = [value characterAtIndex:index];
+    if (digit < '0' || digit > '9' || result > (std::numeric_limits<uint64_t>::max() - (digit - '0')) / 10) {
+      throw WalletEngineError("The native payment amount is invalid");
+    }
+    result = result * 10 + (digit - '0');
+  }
+  return result;
+}
+
+NSString *sendPlanConfirmation(NSDictionary *plan) {
+  const uint64_t amount = sendPlanAtomic(plan[@"amountAtomic"]);
+  const uint64_t fee = sendPlanAtomic(plan[@"feeAtomic"]);
+  const uint64_t total = sendPlanAtomic(plan[@"totalAtomic"]);
+  NSNumber *count = plan[@"txCount"];
+  NSArray *labels = plan[@"sourceLabels"];
+  NSArray *transactions = plan[@"txIds"];
+  if (amount == 0 || fee == 0 || amount > std::numeric_limits<uint64_t>::max() - fee ||
+      total != amount + fee || ![count isKindOfClass:NSNumber.class] || count.doubleValue < 1 ||
+      floor(count.doubleValue) != count.doubleValue ||
+      ![transactions isKindOfClass:NSArray.class] || transactions.count != count.unsignedLongLongValue ||
+      ![plan[@"address"] isKindOfClass:NSString.class] || [plan[@"address"] length] == 0 ||
+      ![labels isKindOfClass:NSArray.class] || labels.count == 0 ||
+      ![plan[@"phase"] isKindOfClass:NSString.class] || ![plan[@"status"] isKindOfClass:NSString.class] ||
+      ![plan[@"phase"] isEqualToString:@"authorizing"] || ![plan[@"status"] isEqualToString:@"ok"]) {
+    throw WalletEngineError("The complete native payment approval is invalid");
+  }
+  for (id label in labels) if (![label isKindOfClass:NSString.class]) {
+    throw WalletEngineError("The native payment source is invalid");
+  }
+  return [NSString stringWithFormat:
+      @"Recipient\n%@\n\nWallets\n%@\n\nAmount\n%@\n\nTotal network fee\n%@\n\nTotal\n%@\n\nTransactions\n%@",
+      plan[@"address"], [labels componentsJoinedByString:@"\n"],
+      formatAtomicXmr(plan[@"amountAtomic"]), formatAtomicXmr(plan[@"feeAtomic"]),
+      formatAtomicXmr(plan[@"totalAtomic"]), count];
+}
+
 void rejectWithException(RCTPromiseRejectBlock reject, const std::exception &error) {
   NSString *message = toNSString(error.what());
   if ([message hasPrefix:@"unknown wallet id:"]) {
@@ -5131,15 +5296,28 @@ typedef void (^SensitiveAuthorizationCompletion)(BOOL success, NSString *message
 - (void)resetNativeAutoLockDeadline;
 - (void)enforceNativeAutoLock;
 - (void)lockNativeSessionForReason:(NSString *)reason;
+- (MobileSendPlanCallbacks)sendPlanCallbacksForGeneration:(uint64_t)generation;
+- (void)discardLegacyReview:(NSString *)walletId pendingId:(NSString *)pendingId;
+- (void)finishSendPlanApproval:(NSString *)token generation:(uint64_t)generation;
+- (void)cancelSendPlan:(NSString *)planId
+                 token:(NSString *)token
+            generation:(uint64_t)generation
+               resolve:(RCTPromiseResolveBlock)resolve
+                reject:(RCTPromiseRejectBlock)reject;
 @end
 
 @implementation RCTNativeMoneroWallet {
   std::unique_ptr<WalletEngine> _engine;
+  std::unique_ptr<MobileSendPlanAdapter> _sendPlans;
   std::string _engineInitError;
   dispatch_queue_t _walletQueue;
   dispatch_queue_t _privatePhoneNetworkQueue;
   dispatch_queue_t _fastWalletHostingQueue;
   std::atomic_bool _appAuthorized;
+  std::atomic_uint64_t _sendPlanAuthorizationGeneration;
+  std::atomic_uint64_t _sendPlanApprovalGeneration;
+  std::atomic_bool _sendPlanApprovalInProgress;
+  std::string _sendPlanApprovalToken; // Accessed only on _walletQueue.
   NSMutableDictionary<NSString *, NSDictionary *> *_pendingTransactionApprovals;
   NSMutableDictionary<NSString *, NSNumber *> *_systemUiInterruptionDeadlines;
   TEX8CommunityV1Controller *_communityV1;
@@ -5156,7 +5334,12 @@ typedef void (^SensitiveAuthorizationCompletion)(BOOL success, NSString *message
   self = [super init];
   if (self) {
     configurePublicBlockSpool();
+    _sendPlanAuthorizationGeneration.store(0);
+    _sendPlanApprovalGeneration.store(0);
+    _sendPlanApprovalInProgress.store(false);
     _appAuthorized.store(false);
+    _sendPlanAuthorizationGeneration.fetch_add(1);
+    _sendPlanApprovalInProgress.store(false);
     _autoLockSeconds = 30 * 60;
     _lastUserActivityUptime = NSProcessInfo.processInfo.systemUptime;
     _pendingTransactionApprovals = [NSMutableDictionary dictionary];
@@ -5176,6 +5359,7 @@ typedef void (^SensitiveAuthorizationCompletion)(BOOL success, NSString *message
       callbacks.exchange = iosLedgerBleExchange;
       WalletEngine::setLedgerBleTransportCallbacks(callbacks);
       _engine = std::make_unique<WalletEngine>();
+      _sendPlans = std::make_unique<MobileSendPlanAdapter>(*_engine);
     } catch (const std::exception &error) {
       _engineInitError = error.what();
     }
@@ -5262,6 +5446,13 @@ typedef void (^SensitiveAuthorizationCompletion)(BOOL success, NSString *message
   resolve(nil);
 }
 
+- (void)invalidate
+{
+  // A React bridge replacement must revoke a dialog still retained by the old
+  // module before a new module can open the same physical wallet.
+  [self lockNativeSessionForReason:@"module-invalidated"];
+}
+
 - (void)dealloc
 {
   if (_autoLockTimer != nil) {
@@ -5339,6 +5530,8 @@ typedef void (^SensitiveAuthorizationCompletion)(BOOL success, NSString *message
 - (void)lockNativeSessionForReason:(NSString *)reason
 {
   _appAuthorized.store(false);
+  _sendPlanAuthorizationGeneration.fetch_add(1);
+  _sendPlanApprovalInProgress.store(false);
   if (_autoLockTimer != nil) {
     dispatch_source_set_timer(
         _autoLockTimer, DISPATCH_TIME_FOREVER, DISPATCH_TIME_FOREVER, 0);
@@ -5354,6 +5547,9 @@ typedef void (^SensitiveAuthorizationCompletion)(BOOL success, NSString *message
       return;
     }
     try {
+      if (_sendPlans) {
+        _sendPlans->invalidate([self sendPlanCallbacksForGeneration:_sendPlanAuthorizationGeneration.load()]);
+      }
       _engine->closeAllWallets(true);
     } catch (const std::exception &) {
 #if DEBUG
@@ -5635,6 +5831,8 @@ typedef void (^SensitiveAuthorizationCompletion)(BOOL success, NSString *message
           resolvedMessage = toNSString(vaultError.what());
           IOSWalletAppVault::shared().lockVault();
           _appAuthorized.store(false);
+          _sendPlanAuthorizationGeneration.fetch_add(1);
+          _sendPlanApprovalInProgress.store(false);
         }
       }
       resolve(biometricAuthResultDictionary(
@@ -5661,6 +5859,7 @@ typedef void (^SensitiveAuthorizationCompletion)(BOOL success, NSString *message
 
   if ([mode isEqualToString:@"biometric"]) {
     LAContext *context = [[LAContext alloc] init];
+    context.touchIDAuthenticationAllowableReuseDuration = 0;
     NSError *error = nil;
     if (![context canEvaluatePolicy:LAPolicyDeviceOwnerAuthentication
                               error:&error]) {
@@ -5870,6 +6069,8 @@ typedef void (^SensitiveAuthorizationCompletion)(BOOL success, NSString *message
       // authentication prompt is what grants wallet access.
       _appAuthorized.store(
           [mode isEqualToString:@"password"] || [mode isEqualToString:@"none"]);
+      _sendPlanAuthorizationGeneration.fetch_add(1);
+      _sendPlanApprovalInProgress.store(false);
       if ([mode isEqualToString:@"biometric"]) {
         IOSWalletAppVault::shared().lockVault();
       } else {
@@ -5996,6 +6197,8 @@ typedef void (^SensitiveAuthorizationCompletion)(BOOL success, NSString *message
     return;
   }
   _appAuthorized.store(false);
+  _sendPlanAuthorizationGeneration.fetch_add(1);
+  _sendPlanApprovalInProgress.store(false);
   if (_autoLockTimer != nil) {
     dispatch_source_set_timer(
         _autoLockTimer, DISPATCH_TIME_FOREVER, DISPATCH_TIME_FOREVER, 0);
@@ -6008,6 +6211,9 @@ typedef void (^SensitiveAuthorizationCompletion)(BOOL success, NSString *message
       return;
     }
     try {
+      if (_sendPlans) {
+        _sendPlans->invalidate([self sendPlanCallbacksForGeneration:_sendPlanAuthorizationGeneration.load()]);
+      }
       _engine->closeAllWallets(true);
       resolve([NSNull null]);
     } catch (const std::exception &error) {
@@ -9737,6 +9943,19 @@ typedef void (^SensitiveAuthorizationCompletion)(BOOL success, NSString *message
   }];
 }
 
+- (void)getAccounts:(NSString *)walletId
+                 resolve:(RCTPromiseResolveBlock)resolve
+                  reject:(RCTPromiseRejectBlock)reject
+{
+  [self runOnWalletQueue:resolve
+                  reject:reject
+               operation:@"getAccounts"
+                  fields:@{ @"walletId": maskIdentifier(walletId) }
+                    work:^id(WalletEngine &engine) {
+    return toAccountArray(engine.accounts(toStdString(walletId)));
+  }];
+}
+
 - (void)presentRecoverySeed:(NSString *)walletId
                      reason:(NSString *)reason
                     resolve:(RCTPromiseResolveBlock)resolve
@@ -9953,6 +10172,235 @@ typedef void (^SensitiveAuthorizationCompletion)(BOOL success, NSString *message
   }];
 }
 
+- (MobileSendPlanCallbacks)sendPlanCallbacksForGeneration:(uint64_t)generation
+{
+  __weak RCTNativeMoneroWallet *weakSelf = self;
+  const auto authorized = [weakSelf, generation]() -> bool {
+    RCTNativeMoneroWallet *strongSelf = weakSelf;
+    return strongSelf != nil && strongSelf->_appAuthorized.load() &&
+        strongSelf->_sendPlanAuthorizationGeneration.load() == generation &&
+        IOSWalletAppVault::shared().unlocked();
+  };
+  MobileSendPlanCallbacks callbacks;
+  callbacks.isAuthorized = authorized;
+  callbacks.readJournal = [authorized]() -> std::string {
+    if (!authorized() || !IOSWalletAppVault::shared().exists()) {
+      throw WalletEngineError("The native payment journal requires an unlocked AppVault");
+    }
+    NSString *saved = IOSWalletAppVault::shared().readCommittedSecret(kSendPlanJournalKey);
+    if (saved == nil) return "[]";
+    validateSendPlanJournal(saved);
+    return toStdString(saved);
+  };
+  callbacks.writeJournal = [authorized](const std::string &json) {
+    if (!authorized() || !IOSWalletAppVault::shared().exists()) {
+      throw WalletEngineError("The native payment journal requires an unlocked AppVault");
+    }
+    NSString *encoded = toNSString(json);
+    validateSendPlanJournal(encoded);
+    IOSWalletAppVault::shared().put(kSendPlanJournalKey, encoded);
+    IOSWalletAppVault::shared().verifyCommittedSecret(kSendPlanJournalKey, encoded);
+    NSString *verified = IOSWalletAppVault::shared().readCommittedSecret(kSendPlanJournalKey);
+    if (![verified isEqualToString:encoded] || !authorized()) {
+      throw WalletEngineError("The durable native payment journal could not be verified");
+    }
+  };
+  return callbacks;
+}
+
+- (void)discardLegacyReview:(NSString *)walletId pendingId:(NSString *)pendingId
+{
+  // Enqueue before rejecting to RN: a following prepare cannot overtake this
+  // cleanup on the serial wallet queue. The adapter only owns legacy handles.
+  dispatch_async(_walletQueue, ^{
+    if (!_sendPlans) return;
+    try {
+      _sendPlans->discardLegacyReview(toStdString(walletId), toStdString(pendingId));
+      logNativeEvent(@"sendPlan.legacyReviewCancelled", @{});
+    } catch (const std::exception &) {
+      // A failed local cleanup stays reserved; never discard another plan or
+      // reinterpret a commit/export error as proof that nothing was sent.
+      logNativeEvent(@"sendPlan.legacyReviewCleanupFailed", @{});
+    }
+  });
+}
+
+- (void)prepareSendPlan:(NSString *)inputJson
+                 resolve:(RCTPromiseResolveBlock)resolve
+                  reject:(RCTPromiseRejectBlock)reject
+{
+  [self runOnWalletQueue:resolve reject:reject operation:@"sendPlan.prepare" fields:@{}
+                   work:^id(__unused WalletEngine &engine) {
+    if (!_sendPlans) throw WalletEngineError("Native payment planning is unavailable");
+    const auto callbacks = [self sendPlanCallbacksForGeneration:_sendPlanAuthorizationGeneration.load()];
+    return toNSString(_sendPlans->prepare(toStdString(inputJson), callbacks));
+  }];
+}
+
+- (void)listSendPlans:(RCTPromiseResolveBlock)resolve
+                reject:(RCTPromiseRejectBlock)reject
+{
+  [self runOnWalletQueue:resolve reject:reject operation:@"sendPlan.list" fields:@{}
+                   work:^id(__unused WalletEngine &engine) {
+    if (!_sendPlans) throw WalletEngineError("Native payment planning is unavailable");
+    const auto callbacks = [self sendPlanCallbacksForGeneration:_sendPlanAuthorizationGeneration.load()];
+    return toNSString(_sendPlans->list(callbacks));
+  }];
+}
+
+- (void)sendPlanStatus:(NSString *)planId
+                resolve:(RCTPromiseResolveBlock)resolve
+                 reject:(RCTPromiseRejectBlock)reject
+{
+  [self runOnWalletQueue:resolve reject:reject operation:@"sendPlan.status" fields:@{}
+                   work:^id(__unused WalletEngine &engine) {
+    if (!_sendPlans) throw WalletEngineError("Native payment planning is unavailable");
+    const auto callbacks = [self sendPlanCallbacksForGeneration:_sendPlanAuthorizationGeneration.load()];
+    return toNSString(_sendPlans->status(toStdString(planId), callbacks));
+  }];
+}
+
+- (void)discardSendPlan:(NSString *)planId
+                 resolve:(RCTPromiseResolveBlock)resolve
+                  reject:(RCTPromiseRejectBlock)reject
+{
+  [self runOnWalletQueue:resolve reject:reject operation:@"sendPlan.discard" fields:@{}
+                   work:^id(__unused WalletEngine &engine) {
+    if (!_sendPlans) throw WalletEngineError("Native payment planning is unavailable");
+    const auto callbacks = [self sendPlanCallbacksForGeneration:_sendPlanAuthorizationGeneration.load()];
+    _sendPlans->discard(toStdString(planId), callbacks);
+    return nil;
+  }];
+}
+
+- (void)finishSendPlanApproval:(NSString *)token generation:(uint64_t)generation
+{
+  // An older cancellation or a rejected double click must not clear the UI
+  // guard belonging to a different still-active native claim.
+  if ([token isKindOfClass:NSString.class] && token.length > 0 &&
+      _sendPlanApprovalGeneration.load() == generation &&
+      _sendPlanApprovalToken == toStdString(token)) {
+    std::fill(_sendPlanApprovalToken.begin(), _sendPlanApprovalToken.end(), 0);
+    _sendPlanApprovalToken.clear();
+    _sendPlanApprovalInProgress.store(false);
+  }
+}
+
+- (void)cancelSendPlan:(NSString *)planId
+                 token:(NSString *)token
+            generation:(uint64_t)generation
+               resolve:(RCTPromiseResolveBlock)resolve
+                reject:(RCTPromiseRejectBlock)reject
+{
+  dispatch_async(_walletQueue, ^{
+    try {
+      if (!_sendPlans) throw WalletEngineError("Native payment planning is unavailable");
+      const auto callbacks = [self sendPlanCallbacksForGeneration:generation];
+      _sendPlans->release(toStdString(planId), toStdString(token), callbacks);
+      NSString *receipt = toNSString(_sendPlans->status(toStdString(planId), callbacks));
+      [self finishSendPlanApproval:token generation:generation];
+      logNativeEvent(@"sendPlan.authorizationCancelled", @{});
+      resolve(receipt);
+    } catch (const std::exception &error) {
+      [self finishSendPlanApproval:token generation:generation];
+      // A lock invalidates the context and preserves the encrypted journal.
+      // The UI must query this same receipt after unlocking, never send again.
+      rejectWithException(reject, error);
+    }
+  });
+}
+
+- (void)commitSendPlan:(NSString *)planId
+                resolve:(RCTPromiseResolveBlock)resolve
+                 reject:(RCTPromiseRejectBlock)reject
+{
+  if (![self requireAppAuthorized:reject]) return;
+  dispatch_async(_walletQueue, ^{
+    const uint64_t generation = _sendPlanAuthorizationGeneration.load();
+    NSString *token = nil;
+    try {
+      if (!_sendPlans || !_appAuthorized.load()) throw WalletEngineError("The native app session is locked");
+      if (_sendPlanApprovalInProgress.load()) throw WalletEngineError("Another native payment confirmation is already open");
+      const auto callbacks = [self sendPlanCallbacksForGeneration:generation];
+      // Claims and their authorization token remain entirely inside native code.
+      NSDictionary *claimed = sendPlanDictionary(toNSString(_sendPlans->claim(toStdString(planId), callbacks)));
+      NSDictionary *plan = claimed[@"plan"];
+      token = claimed[@"claimToken"];
+      if (![plan isKindOfClass:NSDictionary.class] || ![token isKindOfClass:NSString.class] ||
+          ![plan[@"id"] isKindOfClass:NSString.class] || ![plan[@"id"] isEqualToString:planId]) {
+        throw WalletEngineError("The native payment approval is invalid");
+      }
+      if (token.length == 0) {
+        resolve(sendPlanEncode(plan));
+        return;
+      }
+      NSString *confirmation = sendPlanConfirmation(plan);
+      _sendPlanApprovalGeneration.store(generation);
+      std::fill(_sendPlanApprovalToken.begin(), _sendPlanApprovalToken.end(), 0);
+      _sendPlanApprovalToken = toStdString(token);
+      _sendPlanApprovalInProgress.store(true);
+      dispatch_async(dispatch_get_main_queue(), ^{
+        UIViewController *controller = activeViewController();
+        if (controller == nil || [controller isKindOfClass:UIAlertController.class] ||
+            !_appAuthorized.load() || _sendPlanAuthorizationGeneration.load() != generation) {
+          [self cancelSendPlan:planId token:token generation:generation resolve:resolve reject:reject];
+          return;
+        }
+        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Confirm payment"
+            message:confirmation preferredStyle:UIAlertControllerStyleAlert];
+        [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel
+            handler:^(__unused UIAlertAction *action) {
+          [self cancelSendPlan:planId token:token generation:generation resolve:resolve reject:reject];
+        }]];
+        [alert addAction:[UIAlertAction actionWithTitle:@"Authorize and send" style:UIAlertActionStyleDefault
+            handler:^(__unused UIAlertAction *action) {
+          // Preserve the configured biometric/password/none protection choice.
+          [self requestFreshAuthorization:@"Authorize the complete payment shown in the previous system dialog."
+              completion:^(BOOL authorized, __unused NSString *message) {
+            if (!authorized || !_appAuthorized.load() ||
+                _sendPlanAuthorizationGeneration.load() != generation) {
+              [self cancelSendPlan:planId token:token generation:generation resolve:resolve reject:reject];
+              return;
+            }
+            [self resetNativeAutoLockDeadline];
+            dispatch_async(_walletQueue, ^{
+              try {
+                if (!_sendPlans || !_appAuthorized.load() ||
+                    _sendPlanAuthorizationGeneration.load() != generation) {
+                  throw WalletEngineError("The native app session changed after payment authorization");
+                }
+                const auto callbacks = [self sendPlanCallbacksForGeneration:generation];
+                // Rust validates the one-use claim, exact approved sources and
+                // auth again before EVERY member; durable write precedes relay.
+                NSString *receipt = toNSString(_sendPlans->commit(toStdString(planId), toStdString(token), callbacks));
+                [self finishSendPlanApproval:token generation:generation];
+                logNativeEvent(@"sendPlan.broadcastResult", @{});
+                resolve(receipt);
+              } catch (const std::exception &error) {
+                [self finishSendPlanApproval:token generation:generation];
+                // No retry: a post-network exception must be inspected by the
+                // same opaque plan ID through sendPlanStatus/listSendPlans.
+                logNativeEvent(@"sendPlan.broadcastNeedsStatus", @{});
+                rejectWithException(reject, error);
+              }
+            });
+          }];
+        }]];
+        [controller presentViewController:alert animated:YES completion:nil];
+      });
+    } catch (const std::exception &error) {
+      if ([token isKindOfClass:NSString.class] && token.length > 0 && _sendPlans) {
+        try {
+          const auto callbacks = [self sendPlanCallbacksForGeneration:generation];
+          _sendPlans->release(toStdString(planId), toStdString(token), callbacks);
+        } catch (const std::exception &) { /* Saved receipt remains authoritative. */ }
+      }
+      [self finishSendPlanApproval:token generation:generation];
+      rejectWithException(reject, error);
+    }
+  });
+}
+
 - (void)prepareTransaction:(NSString *)walletId
                    address:(NSString *)address
               amountAtomic:(NSString *)amountAtomic
@@ -9981,7 +10429,10 @@ typedef void (^SensitiveAuthorizationCompletion)(BOOL success, NSString *message
     request.paymentId = toStdString(paymentId);
     request.priority = toStdString(priority);
     request.accountIndex = toIndex(accountIndex, "accountIndex");
-    const auto prepared = engine.prepareTransaction(request);
+    if (!_sendPlans) throw WalletEngineError("Native payment planning is unavailable");
+    const auto callbacks = [self sendPlanCallbacksForGeneration:_sendPlanAuthorizationGeneration.load()];
+    const auto prepared = _sendPlans->withLegacyPreparation(
+        callbacks, request, [&]() { return engine.prepareTransaction(request); });
     if (prepared.id.empty()) {
       throw WalletEngineError(
           prepared.error.empty()
@@ -10046,7 +10497,10 @@ typedef void (^SensitiveAuthorizationCompletion)(BOOL success, NSString *message
     request.priority = toStdString(priority);
     request.accountIndex = toIndex(accountIndex, "accountIndex");
     request.mfwNameExtraNonce = material.commitExtraNonce;
-    const auto prepared = engine.prepareTransaction(request);
+    if (!_sendPlans) throw WalletEngineError("Native payment planning is unavailable");
+    const auto callbacks = [self sendPlanCallbacksForGeneration:_sendPlanAuthorizationGeneration.load()];
+    const auto prepared = _sendPlans->withLegacyPreparation(
+        callbacks, request, [&]() { return engine.prepareTransaction(request); });
     std::fill(
         material.commitExtraNonce.begin(),
         material.commitExtraNonce.end(),
@@ -10152,7 +10606,10 @@ typedef void (^SensitiveAuthorizationCompletion)(BOOL success, NSString *message
     request.priority = toStdString(priority);
     request.accountIndex = toIndex(accountIndex, "accountIndex");
     request.mfwNameExtraNonce = record.extraNonce;
-    const auto prepared = engine.prepareTransaction(request);
+    if (!_sendPlans) throw WalletEngineError("Native payment planning is unavailable");
+    const auto callbacks = [self sendPlanCallbacksForGeneration:_sendPlanAuthorizationGeneration.load()];
+    const auto prepared = _sendPlans->withLegacyPreparation(
+        callbacks, request, [&]() { return engine.prepareTransaction(request); });
     std::fill(record.extraNonce.begin(), record.extraNonce.end(), 0);
     if (prepared.id.empty()) {
       throw WalletEngineError(
@@ -10261,7 +10718,10 @@ predecessorSigningOwnerPublicKeyHex:
     request.priority = toStdString(priority);
     request.accountIndex = toIndex(accountIndex, "accountIndex");
     request.mfwNameExtraNonce = record.extraNonce;
-    const auto prepared = engine.prepareTransaction(request);
+    if (!_sendPlans) throw WalletEngineError("Native payment planning is unavailable");
+    const auto callbacks = [self sendPlanCallbacksForGeneration:_sendPlanAuthorizationGeneration.load()];
+    const auto prepared = _sendPlans->withLegacyPreparation(
+        callbacks, request, [&]() { return engine.prepareTransaction(request); });
     std::fill(record.extraNonce.begin(), record.extraNonce.end(), 0);
     if (prepared.id.empty()) {
       throw WalletEngineError(
@@ -10640,11 +11100,14 @@ predecessorSigningOwnerPublicKeyHex:
     return;
   }
   dispatch_async(_walletQueue, ^{
+    const uint64_t generation = _sendPlanAuthorizationGeneration.load();
     NSDictionary *approval = _pendingTransactionApprovals[pendingId];
     [_pendingTransactionApprovals removeObjectForKey:pendingId];
     if (approval == nil ||
         ![approval[@"walletId"] isEqualToString:walletId] ||
         [approval[@"expiresAtMs"] unsignedLongLongValue] < diagnosticNowMs()) {
+      NSString *owner = [approval[@"walletId"] isKindOfClass:NSString.class] ? approval[@"walletId"] : walletId;
+      [self discardLegacyReview:owner pendingId:pendingId];
       reject(
           @"monero_wallet_ios_transaction_approval_missing",
           @"Transaction approval is missing, expired, or already used. Prepare it again.",
@@ -10653,7 +11116,9 @@ predecessorSigningOwnerPublicKeyHex:
     }
     dispatch_async(dispatch_get_main_queue(), ^{
       UIViewController *controller = activeViewController();
-      if (controller == nil || !_appAuthorized.load()) {
+      if (controller == nil || !_appAuthorized.load() ||
+          _sendPlanAuthorizationGeneration.load() != generation) {
+        [self discardLegacyReview:walletId pendingId:pendingId];
         reject(@"monero_wallet_ios_transaction_dialog_unavailable",
                @"Transaction confirmation requires an active, unlocked app screen",
                nil);
@@ -10677,6 +11142,7 @@ predecessorSigningOwnerPublicKeyHex:
           [UIAlertAction actionWithTitle:@"Cancel"
                                    style:UIAlertActionStyleCancel
                                  handler:^(__unused UIAlertAction *action) {
+        [self discardLegacyReview:walletId pendingId:pendingId];
         reject(@"monero_wallet_ios_transaction_cancelled",
                @"Transaction cancelled",
                nil);
@@ -10688,27 +11154,33 @@ predecessorSigningOwnerPublicKeyHex:
         [self requestFreshAuthorization:
                   @"Authorize the transaction shown in the previous system dialog."
                                  completion:^(BOOL authorized, NSString *message) {
-          if (!authorized) {
-            reject(@"monero_wallet_ios_transaction_auth_failed", message, nil);
+          if (!authorized || _sendPlanAuthorizationGeneration.load() != generation) {
+            [self discardLegacyReview:walletId pendingId:pendingId];
+            NSString *failure = _sendPlanAuthorizationGeneration.load() != generation
+                ? @"The native app session changed before authorization completed." : message;
+            reject(@"monero_wallet_ios_transaction_auth_failed", failure, nil);
             return;
           }
           dispatch_async(_walletQueue, ^{
-            if (!_appAuthorized.load()) {
+            if (!_appAuthorized.load() || _sendPlanAuthorizationGeneration.load() != generation) {
+              [self discardLegacyReview:walletId pendingId:pendingId];
               reject(@"monero_wallet_ios_app_locked",
                      @"The native app session was locked",
                      nil);
               return;
             }
             if (!_engine) {
+              [self discardLegacyReview:walletId pendingId:pendingId];
               reject(@"monero_wallet_init_failed",
                      @"WalletEngine failed to initialize",
                      nil);
               return;
             }
             try {
-              const auto committed = _engine->commitTransaction(
-                  toStdString(walletId),
-                  toStdString(pendingId));
+              if (!_sendPlans) throw WalletEngineError("Native payment planning is unavailable");
+              const auto callbacks = [self sendPlanCallbacksForGeneration:generation];
+              const auto committed = _sendPlans->commitLegacyReview(
+                  toStdString(walletId), toStdString(pendingId), callbacks);
               resolve(toDictionary(committed));
             } catch (const std::exception &error) {
               rejectWithException(reject, error);
@@ -10730,11 +11202,14 @@ predecessorSigningOwnerPublicKeyHex:
     return;
   }
   dispatch_async(_walletQueue, ^{
+    const uint64_t generation = _sendPlanAuthorizationGeneration.load();
     NSDictionary *approval = _pendingTransactionApprovals[pendingId];
     [_pendingTransactionApprovals removeObjectForKey:pendingId];
     if (approval == nil ||
         ![approval[@"walletId"] isEqualToString:walletId] ||
         [approval[@"expiresAtMs"] unsignedLongLongValue] < diagnosticNowMs()) {
+      NSString *owner = [approval[@"walletId"] isKindOfClass:NSString.class] ? approval[@"walletId"] : walletId;
+      [self discardLegacyReview:owner pendingId:pendingId];
       reject(
           @"monero_wallet_ios_transaction_approval_missing",
           @"Transaction approval is missing, expired, or already used. Prepare it again.",
@@ -10743,7 +11218,9 @@ predecessorSigningOwnerPublicKeyHex:
     }
     dispatch_async(dispatch_get_main_queue(), ^{
       UIViewController *controller = activeViewController();
-      if (controller == nil || !_appAuthorized.load()) {
+      if (controller == nil || !_appAuthorized.load() ||
+          _sendPlanAuthorizationGeneration.load() != generation) {
+        [self discardLegacyReview:walletId pendingId:pendingId];
         reject(@"monero_wallet_ios_transaction_dialog_unavailable",
                @"Transaction confirmation requires an active, unlocked app screen",
                nil);
@@ -10765,6 +11242,7 @@ predecessorSigningOwnerPublicKeyHex:
           [UIAlertAction actionWithTitle:@"Cancel"
                                    style:UIAlertActionStyleCancel
                                  handler:^(__unused UIAlertAction *action) {
+        [self discardLegacyReview:walletId pendingId:pendingId];
         reject(@"monero_wallet_ios_transaction_cancelled", @"Transaction cancelled", nil);
       }]];
       [alert addAction:
@@ -10774,12 +11252,17 @@ predecessorSigningOwnerPublicKeyHex:
         [self requestFreshAuthorization:
                   @"Authorize the delayed transaction shown in the previous system dialog."
                                  completion:^(BOOL authorized, NSString *message) {
-          if (!authorized) {
-            reject(@"monero_wallet_ios_transaction_auth_failed", message, nil);
+          if (!authorized || _sendPlanAuthorizationGeneration.load() != generation) {
+            [self discardLegacyReview:walletId pendingId:pendingId];
+            NSString *failure = _sendPlanAuthorizationGeneration.load() != generation
+                ? @"The native app session changed before authorization completed." : message;
+            reject(@"monero_wallet_ios_transaction_auth_failed", failure, nil);
             return;
           }
           dispatch_async(_walletQueue, ^{
-            if (!_engine || !_appAuthorized.load()) {
+            if (!_engine || !_appAuthorized.load() ||
+                _sendPlanAuthorizationGeneration.load() != generation) {
+              [self discardLegacyReview:walletId pendingId:pendingId];
               reject(@"monero_wallet_ios_app_locked", @"The native app session was locked", nil);
               return;
             }
@@ -10795,6 +11278,16 @@ predecessorSigningOwnerPublicKeyHex:
       [controller presentViewController:alert animated:YES completion:nil];
     });
   });
+}
+
+- (void)cancelLedgerOperation:(__unused RCTPromiseResolveBlock)resolve
+                         reject:(RCTPromiseRejectBlock)reject
+{
+  // The advertised selector must fail explicitly rather than crash through
+  // NSInvocation or pretend that iOS stopped an in-flight device operation.
+  reject(@"monero_wallet_ios_ledger_cancel_unsupported",
+         @"Ledger cancellation is not supported on iOS. The operation has not been cancelled.",
+         nil);
 }
 
 - (void)getHardwareWalletStatus:(NSString *)walletId

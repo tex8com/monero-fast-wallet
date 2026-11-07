@@ -98,7 +98,10 @@
   "overrides": {
     "brace-expansion": "$brace-expansion",
     "@grpc/grpc-js": "1.14.5",
-    "image-size": "2.0.4"
+    "image-size": "2.0.4",
+    "@typescript-eslint/typescript-estree": {
+      "minimatch": "11.0.5"
+    }
   },
   "allowScripts": {
     "@firebase/util@1.15.1": true,

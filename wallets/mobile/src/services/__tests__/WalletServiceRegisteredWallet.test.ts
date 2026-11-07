@@ -1,3 +1,4 @@
+import { Platform } from 'react-native';
 import type { WalletSnapshot } from '../../../specs/NativeMoneroWallet';
 
 jest.mock('@react-native-async-storage/async-storage', () => {
@@ -19,6 +20,12 @@ jest.mock('@react-native-async-storage/async-storage', () => {
 });
 
 const mockNativeWallet = {
+  cancelLedgerOperation: jest.fn(async () => undefined),
+  prepareSendPlan: jest.fn(async (_inputJson: string) => ''),
+  commitSendPlan: jest.fn(async (_id: string) => ''),
+  sendPlanStatus: jest.fn(async (_id: string) => ''),
+  listSendPlans: jest.fn(async () => '[]'),
+  discardSendPlan: jest.fn(async (_id: string) => undefined),
   defaultWalletPath: jest.fn(
     async (walletName: string, network: string) =>
       `/current-container/wallets/${network}/${walletName}`,
@@ -125,6 +132,10 @@ const mockNativeWallet = {
     address: '8'.repeat(95),
     label: 'Address 2',
   })),
+  getAccounts: jest.fn(async (_walletId: string) => [
+    { accountIndex: 0, balanceAtomic: '0', unlockedBalanceAtomic: '0' },
+    { accountIndex: 1, balanceAtomic: '0', unlockedBalanceAtomic: '0' },
+  ]),
   listSubaddresses: jest.fn(async (_walletId: string, accountIndex: number) => [
     {
       accountIndex,
@@ -245,6 +256,8 @@ import {
   saveRegisteredWallet,
 } from '../WalletRegistry';
 import { WalletService } from '../WalletService';
+import * as claimRelay from '../MfwClaimRelayService';
+import * as ownedNames from '../MfwNameRegistrationRegistry';
 
 describe('WalletService registered wallet opening', () => {
   beforeEach(async () => {
@@ -259,6 +272,10 @@ describe('WalletService registered wallet opening', () => {
     mockNativeWallet.getBalance.mockResolvedValue('0');
     mockNativeWallet.getUnlockedBalance.mockResolvedValue('0');
     mockNativeWallet.getTransactions.mockResolvedValue([]);
+    mockNativeWallet.getAccounts.mockResolvedValue([
+      { accountIndex: 0, balanceAtomic: '0', unlockedBalanceAtomic: '0' },
+      { accountIndex: 1, balanceAtomic: '0', unlockedBalanceAtomic: '0' },
+    ]);
     mockNativeWallet.snapshot.mockResolvedValue({
       id: 'wallet-fast',
       path: '/current-container/wallets/mainnet/fast-wallet',
@@ -906,6 +923,48 @@ describe('WalletService registered wallet opening', () => {
         label: 'Account 1',
       },
     ]);
+  });
+
+  it('lists unused native accounts and every subaddress without inferring accounts from history', async () => {
+    mockNativeWallet.getAccounts.mockResolvedValue([
+      { accountIndex: 0, balanceAtomic: '1000000000000', unlockedBalanceAtomic: '1000000000000' },
+      { accountIndex: 1, balanceAtomic: '0', unlockedBalanceAtomic: '0' },
+    ]);
+    mockNativeWallet.listSubaddresses.mockImplementation(async (_id, accountIndex) =>
+      accountIndex === 0 ? [
+        { accountIndex, addressIndex: 0, balanceAtomic: '1000000000000', address: '4'.repeat(95), label: 'Daily' },
+        { accountIndex, addressIndex: 1, balanceAtomic: '0', address: '8'.repeat(95), label: 'Invoice' },
+      ] : [
+        { accountIndex, addressIndex: 0, balanceAtomic: '0', address: '9'.repeat(95), label: 'Unused savings' },
+      ],
+    );
+    const addresses = await new WalletService().listSubaddresses({
+      walletId: 'native', registrationId: 'selected', network: 'mainnet', accountIndex: 0,
+    });
+    expect(mockNativeWallet.getAccounts).toHaveBeenCalledWith('native');
+    expect(mockNativeWallet.getTransactions).not.toHaveBeenCalled();
+    expect(addresses.map(item => [item.accountIndex, item.addressIndex, item.label])).toEqual([
+      [0, 0, 'Daily'], [0, 1, 'Invoice'], [1, 0, 'Unused savings'],
+    ]);
+  });
+
+  it('does not turn an empty or failed account read into a one-account address list', async () => {
+    const service = new WalletService();
+    const session = { walletId: 'native', registrationId: 'selected', network: 'mainnet' as const };
+    mockNativeWallet.getAccounts.mockResolvedValueOnce([]);
+    await expect(service.listSubaddresses(session)).rejects.toThrow('complete account list');
+    mockNativeWallet.getAccounts.mockRejectedValueOnce(new Error('native busy'));
+    await expect(service.listSubaddresses(session)).rejects.toThrow('native busy');
+    expect(mockNativeWallet.listSubaddresses).not.toHaveBeenCalled();
+  });
+
+  it('rejects an incomplete native address group instead of claiming all accounts are loaded', async () => {
+    mockNativeWallet.listSubaddresses.mockImplementation(async (_id, accountIndex) =>
+      accountIndex === 0 ? [{ accountIndex, addressIndex: 0, balanceAtomic: '0', address: '4'.repeat(95), label: 'Daily' }] : [],
+    );
+    await expect(new WalletService().listSubaddresses({
+      walletId: 'native', registrationId: 'selected', network: 'mainnet',
+    })).rejects.toThrow('missing its primary receiving address');
   });
 
   it('shows the iOS recovery-seed confirmation without waiting on unused native interruption bookkeeping', async () => {
@@ -1643,5 +1702,140 @@ describe('WalletService registered wallet opening', () => {
       'monero.wallet.hardware-view.mainnet.ledger-private.v1',
     );
     await expect(loadRegisteredWallets()).resolves.toEqual([]);
+  });
+});
+
+
+describe('whole-wallet payment plans', () => {
+  const source = { walletId: 'session-a', registrationId: 'registration-a', network: 'mainnet' as const, accountIndex: 0 };
+  const other = { walletId: 'session-b', registrationId: 'registration-b', network: 'mainnet' as const, accountIndex: 2 };
+  const preparedPlan = () => ({
+    id: 'saved-plan', status: 'ok', phase: 'prepared', address: '4'.repeat(95),
+    amountAtomic: '6000', feeAtomic: '40', totalAtomic: '6040', txCount: 2,
+    txIds: ['tx-a', 'tx-b'], broadcastAttempted: false, leaseHeld: true,
+    broadcastedTotalsKnown: true, broadcastedAmountAtomic: '0', broadcastedFeeAtomic: '0',
+    broadcastedTxIds: [], uncertainTxIds: [], remainingTxIds: ['tx-a', 'tx-b'],
+  });
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    await AsyncStorage.clear();
+    mockNativeWallet.getAddress.mockImplementation(async walletId =>
+      walletId === 'session-b' ? '8'.repeat(95) : '4'.repeat(95));
+    mockNativeWallet.prepareSendPlan.mockReset().mockResolvedValue(JSON.stringify(preparedPlan()));
+    mockNativeWallet.commitSendPlan.mockReset();
+    mockNativeWallet.sendPlanStatus.mockReset();
+    mockNativeWallet.discardSendPlan.mockReset().mockResolvedValue(undefined);
+    mockNativeWallet.listSendPlans.mockReset().mockResolvedValue('[]');
+  });
+  afterEach(() => jest.restoreAllMocks());
+
+  it('delegates MAX for exactly the explicit physical wallets without an account filter or history heuristic', async () => {
+    const result = await new WalletService().prepareSendPlan([source, other], { address: '4'.repeat(95), sweepAll: true, priority: 'low' });
+    expect(JSON.parse(mockNativeWallet.prepareSendPlan.mock.calls[0][0])).toEqual({
+      sources: [{ walletId: 'session-a' }, { walletId: 'session-b' }],
+      address: '4'.repeat(95), amountAtomic: '', priority: 'low',
+    });
+    expect(result.sendPlan?.txIds).toEqual(['tx-a', 'tx-b']);
+    expect(mockNativeWallet.getTransactions).not.toHaveBeenCalled();
+    expect(mockNativeWallet.getBalance).not.toHaveBeenCalled();
+  });
+
+  it('lets the shared core allocate a fixed amount across accounts', async () => {
+    await new WalletService().prepareSendPlan([source], { address: '4'.repeat(95), amountAtomic: '6000', priority: 'low' });
+    expect(JSON.parse(mockNativeWallet.prepareSendPlan.mock.calls[0][0])).toEqual(expect.objectContaining({
+      sources: [{ walletId: 'session-a' }], amountAtomic: '6000',
+    }));
+    expect(mockNativeWallet.getBalance).not.toHaveBeenCalled();
+  });
+
+  it('deduplicates a restored master under another registration and native handle, preserving the primary source', async () => {
+    const alias = { ...other, walletId: 'restored-alias', accountIndex: 7, addressIndex: 5 };
+    await new WalletService().prepareSendPlan([source, alias], { address: '4'.repeat(95), sweepAll: true });
+    expect(mockNativeWallet.getAddress.mock.calls).toEqual([
+      ['session-a', 0, 0], ['restored-alias', 0, 0],
+    ]);
+    expect(JSON.parse(mockNativeWallet.prepareSendPlan.mock.calls[0][0]).sources).toEqual([{ walletId: 'session-a' }]);
+  });
+
+  it('fails before preparation when a physical master cannot be verified', async () => {
+    mockNativeWallet.getAddress.mockRejectedValueOnce(new Error('Native identity unavailable'));
+    await expect(new WalletService().prepareSendPlan([source, other], { address: '4'.repeat(95), sweepAll: true }))
+      .rejects.toThrow('Native identity unavailable');
+    expect(mockNativeWallet.prepareSendPlan).not.toHaveBeenCalled();
+  });
+
+  it('rejects mixing networks instead of combining their balances', async () => {
+    await expect(new WalletService().prepareSendPlan([source, { ...other, network: 'testnet' }], { address: '4'.repeat(95), sweepAll: true }))
+      .rejects.toThrow('same Monero network');
+    expect(mockNativeWallet.prepareSendPlan).not.toHaveBeenCalled();
+    expect(mockNativeWallet.getAddress).not.toHaveBeenCalled();
+  });
+
+  it('checks held name claims on every selected source before native preparation', async () => {
+    const guard = jest.spyOn(claimRelay, 'assertNoHeldMfwClaim').mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error('Held claim'));
+    await expect(new WalletService().prepareSendPlan([source, other], { address: '4'.repeat(95), sweepAll: true })).rejects.toThrow('Held claim');
+    expect(guard.mock.calls).toEqual([['registration-a'], ['registration-b']]);
+    expect(mockNativeWallet.prepareSendPlan).not.toHaveBeenCalled();
+  });
+
+  it('blocks a scheduled owned-name transaction belonging to an additional wallet', async () => {
+    jest.spyOn(ownedNames, 'loadMfwOwnedNames').mockResolvedValue([{
+      walletRegistrationId: 'registration-b', stage: 'claim-pending', claimScheduledAt: 'synthetic-schedule',
+    }] as Awaited<ReturnType<typeof ownedNames.loadMfwOwnedNames>>);
+    await expect(new WalletService().prepareSendPlan([source, other], { address: '4'.repeat(95), sweepAll: true })).rejects.toThrow('scheduled');
+    expect(mockNativeWallet.prepareSendPlan).not.toHaveBeenCalled();
+  });
+
+  it('recovers a failed commit from the same durable plan without preparing or sending again', async () => {
+    const receipt = { ...preparedPlan(), status: 'uncertain', phase: 'interrupted',
+      broadcastAttempted: true, broadcastedTotalsKnown: false,
+      broadcastedAmountAtomic: null, broadcastedFeeAtomic: null, uncertainTxIds: ['tx-a'] };
+    mockNativeWallet.commitSendPlan.mockRejectedValue(new Error('Bridge disconnected'));
+    mockNativeWallet.sendPlanStatus.mockResolvedValue(JSON.stringify(receipt));
+    await expect(new WalletService().commitSendPlan('saved-plan')).resolves.toEqual(receipt);
+    expect(mockNativeWallet.commitSendPlan).toHaveBeenCalledTimes(1);
+    expect(mockNativeWallet.sendPlanStatus).toHaveBeenCalledWith('saved-plan');
+    expect(mockNativeWallet.prepareSendPlan).not.toHaveBeenCalled();
+  });
+
+  it('blocks replacement preparation while an earlier preview cannot be released', async () => {
+    const service = new WalletService();
+    mockNativeWallet.discardSendPlan.mockRejectedValue(new Error('Durable cleanup failed'));
+    await expect(service.discardSendPlan('saved-plan')).rejects.toThrow('cleanup failed');
+    await expect(service.prepareSendPlan([source], { address: '4'.repeat(95), sweepAll: true })).rejects.toThrow('cleanup failed');
+    expect(mockNativeWallet.prepareSendPlan).not.toHaveBeenCalled();
+  });
+
+  it('finds held receipts without a JavaScript identifier cache and preserves unknown totals', async () => {
+    const receipt = { ...preparedPlan(), status: 'uncertain', broadcastedTotalsKnown: false,
+      broadcastedAmountAtomic: null, broadcastedFeeAtomic: null };
+    mockNativeWallet.listSendPlans.mockResolvedValue(JSON.stringify([receipt]));
+    await expect(new WalletService().listSendPlans()).resolves.toEqual([receipt]);
+    mockNativeWallet.listSendPlans.mockResolvedValue('{}');
+    await expect(new WalletService().listSendPlans()).rejects.toThrow('could not be read');
+  });
+
+  it('reads the entire native balance even when a former session has an account scope', async () => {
+    const native = { id: 'session-a', balanceAtomic: '9000', unlockedBalanceAtomic: '8000', synchronized: true } as WalletSnapshot;
+    mockNativeWallet.snapshot.mockResolvedValue(native);
+    await expect(new WalletService().snapshotForAllAccounts(source)).resolves.toEqual(native);
+    expect(mockNativeWallet.getBalance).not.toHaveBeenCalled();
+    expect(mockNativeWallet.getTransactions).not.toHaveBeenCalled();
+  });
+
+  it('rejects unsupported iOS interruption before crossing the native bridge', async () => {
+    const platform = jest.replaceProperty(Platform, 'OS', 'ios');
+    try {
+      await expect(new WalletService().cancelLedgerOperation()).rejects.toMatchObject({ code: 'ledger_cancellation_unsupported' });
+      expect(mockNativeWallet.cancelLedgerOperation).not.toHaveBeenCalled();
+    } finally { platform.restore(); }
+  });
+
+  it('delegates actual Android transport interruption without replacing it with a noop', async () => {
+    const platform = jest.replaceProperty(Platform, 'OS', 'android');
+    try {
+      await expect(new WalletService().cancelLedgerOperation()).resolves.toBeUndefined();
+      expect(mockNativeWallet.cancelLedgerOperation).toHaveBeenCalledTimes(1);
+    } finally { platform.restore(); }
   });
 });

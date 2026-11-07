@@ -55,6 +55,23 @@ import {
 } from '../services/FastWalletWorkerSettings';
 import { v1ReleaseFeatures } from '../../../../packages/wallet-shared/src/v1ReleaseFeatures';
 import { PROJECT_PAGE_ADDRESSES } from '../../../../packages/wallet-shared/src/projectServices';
+import {
+  mfwResolverPreferences,
+  type MfwResolverPreference,
+} from '../../../../packages/wallet-shared/src/mfwResolverPreference';
+import {
+  loadMfwResolverPreference,
+  saveMfwResolverPreference,
+} from '../services/MfwResolverSettings';
+
+const mfwResolverLabels = {
+  both: 'settings.mfwResolverBoth',
+  tex8: 'settings.mfwResolverTex8',
+  community: 'settings.mfwResolverCommunity',
+} as const;
+
+const mfwResolverSettingsEnabled =
+  v1ReleaseFeatures.mfwNameResolution || v1ReleaseFeatures.mfwNameRegistration;
 
 export default function SettingsScreen({ navigation }: any) {
   const insets = useSafeAreaInsets();
@@ -99,6 +116,28 @@ export default function SettingsScreen({ navigation }: any) {
   const [workerDirectoryError, setWorkerDirectoryError] = useState(false);
   const [showPrivateWorker, setShowPrivateWorker] = useState(false);
   const [privateWorkerDescriptor, setPrivateWorkerDescriptor] = useState('');
+  const [mfwResolverPreference, setMfwResolverPreference] =
+    useState<MfwResolverPreference>();
+  const [mfwResolverBusy, setMfwResolverBusy] = useState(true);
+  const [mfwResolverError, setMfwResolverError] = useState(false);
+
+  useEffect(() => {
+    if (!mfwResolverSettingsEnabled) return;
+    let mounted = true;
+    loadMfwResolverPreference()
+      .then(preference => {
+        if (mounted) setMfwResolverPreference(preference);
+      })
+      .catch(() => {
+        if (mounted) setMfwResolverError(true);
+      })
+      .finally(() => {
+        if (mounted) setMfwResolverBusy(false);
+      });
+    return () => {
+      mounted = false;
+    };
+  }, []);
 
   useEffect(() => {
     setProtectionMode(
@@ -209,6 +248,20 @@ export default function SettingsScreen({ navigation }: any) {
         t('communityV1.shareSearches'),
         t('communityV1.shareSearchesSaveFailed'),
       );
+    }
+  }
+
+  async function chooseMfwResolver(preference: MfwResolverPreference) {
+    if (mfwResolverBusy || preference === mfwResolverPreference) return;
+    setMfwResolverBusy(true);
+    setMfwResolverError(false);
+    try {
+      await saveMfwResolverPreference(preference);
+      setMfwResolverPreference(preference);
+    } catch {
+      setMfwResolverError(true);
+    } finally {
+      setMfwResolverBusy(false);
     }
   }
 
@@ -626,30 +679,65 @@ export default function SettingsScreen({ navigation }: any) {
           </TouchableOpacity>
         </View>
 
-        {v1ReleaseFeatures.mfwNameRegistration ? (
+        {mfwResolverSettingsEnabled ? (
           <View style={s.section}>
             <Text style={s.sectionTitle}>{t('settings.mfwRegistry')}</Text>
-            <TouchableOpacity
-              accessibilityRole="button"
-              activeOpacity={0.75}
-              onPress={() => navigation.navigate('MfwNames')}
-              style={s.sectionCard}
-            >
-              <View style={s.row}>
-                <View style={s.rowIconWrap}>
-                  <Icon name="key" size={20} color={colors.orange} />
+            {v1ReleaseFeatures.mfwNameRegistration ? (
+              <TouchableOpacity
+                accessibilityRole="button"
+                activeOpacity={0.75}
+                onPress={() => navigation.navigate('MfwNames')}
+                style={s.sectionCard}
+              >
+                <View style={s.row}>
+                  <View style={s.rowIconWrap}>
+                    <Icon name="key" size={20} color={colors.orange} />
+                  </View>
+                  <View style={s.rowCopy}>
+                    <Text style={s.rowLabel}>{t('mfwNames.title')}</Text>
+                    <Text style={s.rowHint}>{t('settings.mfwRegistryHint')}</Text>
+                  </View>
+                  <Icon
+                    name="chevron-right"
+                    size={18}
+                    color={colors.textMuted}
+                  />
                 </View>
-                <View style={s.rowCopy}>
-                  <Text style={s.rowLabel}>{t('mfwNames.title')}</Text>
-                  <Text style={s.rowHint}>{t('settings.mfwRegistryHint')}</Text>
-                </View>
-                <Icon
-                  name="chevron-right"
-                  size={18}
-                  color={colors.textMuted}
-                />
-              </View>
-            </TouchableOpacity>
+              </TouchableOpacity>
+            ) : null}
+            <View style={[s.nodePanel, s.mfwResolverPanel]}>
+              <Text style={s.rowLabel}>{t('settings.mfwResolver')}</Text>
+              <Text style={s.languageHelp}>{t('settings.mfwResolverHint')}</Text>
+              {mfwResolverPreferences.map(preference => {
+                const selected = mfwResolverPreference === preference;
+                return (
+                  <TouchableOpacity
+                    key={preference}
+                    accessibilityRole="radio"
+                    accessibilityState={{ selected, disabled: mfwResolverBusy }}
+                    activeOpacity={0.75}
+                    disabled={mfwResolverBusy}
+                    onPress={() => chooseMfwResolver(preference)}
+                    style={[
+                      s.diagnosticRow,
+                      selected && s.nodePresetCardSelected,
+                    ]}
+                  >
+                    <Text style={s.rowLabel}>
+                      {t(mfwResolverLabels[preference])}
+                    </Text>
+                    {selected ? (
+                      <Icon name="check" size={18} color={colors.orange} />
+                    ) : null}
+                  </TouchableOpacity>
+                );
+              })}
+              {mfwResolverError ? (
+                <Text accessibilityRole="alert" style={s.warningText}>
+                  {t('settings.mfwResolverSaveFailed')}
+                </Text>
+              ) : null}
+            </View>
           </View>
         ) : null}
 
@@ -1087,6 +1175,7 @@ const s = StyleSheet.create({
     padding: spacing.md,
     gap: 12,
   },
+  mfwResolverPanel: { marginTop: 10 },
   nodePresetSection: { gap: 8 },
   nodePresetList: { gap: 8 },
   nodeRouteLabel: {

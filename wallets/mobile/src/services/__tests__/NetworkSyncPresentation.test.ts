@@ -119,6 +119,7 @@ describe('presentNetworkSync', () => {
       connected: true,
       busy: true,
       ready: false,
+      downloadComplete: false,
       failed: false,
       downloadStartHeight: 3_600_000,
       downloadedHeight: 3_700_000,
@@ -150,10 +151,25 @@ describe('presentNetworkSync', () => {
       chainHeight: 3_650_000,
     }))).toMatchObject({
       progress: 100,
+      downloadComplete: true,
       downloadedHeight: 3_733_700,
       chainHeight: 3_650_000,
       remainingBlocks: 83_700,
     });
+  });
+
+  it('keeps a completed download through mempool checks and exposes a real gap or failure', () => {
+    const caughtUp = status({
+      state: 'checking-mempool',
+      phase: 'checking-mempool',
+      downloadedHeight: 3_733_700,
+    });
+    expect(presentNetworkSync(caughtUp)).toMatchObject({
+      downloadComplete: true,
+      ready: false,
+    });
+    expect(presentNetworkSync({...caughtUp, targetHeight: 3_733_701}).downloadComplete).toBe(false);
+    expect(presentNetworkSync({...caughtUp, state: 'provider-backoff'}).downloadComplete).toBe(false);
   });
 
   it('does not call an equal-height pipeline ready without native synced state', () => {

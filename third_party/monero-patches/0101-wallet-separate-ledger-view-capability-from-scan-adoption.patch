@@ -1,0 +1,105 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: TEX8 Monero Patch Integrator <monero-patches@tex8.local>
+Date: Tue, 3 Nov 2026 12:00:00 -0500
+Subject: [PATCH] wallet: separate Ledger view capability from scan adoption
+
+Authenticate and install the encrypted companion view capability without
+copying its public scan state. This lets the shared native engine verify
+missing Key Images and spent status before one strict scan-state adoption,
+without deriving every existing hardware Key Image twice.
+
+The existing strict API delegates to the same capability checks and retains
+the exact atomic adoption, Key Image/output binding and spent-state checks.
+No private key leaves the native implementation.
+
+---
+diff --git a/src/wallet/api/wallet.cpp b/src/wallet/api/wallet.cpp
+--- a/src/wallet/api/wallet.cpp
++++ b/src/wallet/api/wallet.cpp
+@@ -1073,6 +1073,36 @@
+ bool WalletImpl::prepareHardwareWalletScanFromViewOnly(
+     const Wallet &viewOnlyWallet)
+ {
++    // Capability preparation deliberately performs no scan-state adoption.
++    // Every strict caller still passes through the same identity, protected
++    // view-key and Ledger device-mode checks before accepting public state.
++    if (!primeHardwareWalletViewKeyFromViewOnly(viewOnlyWallet))
++        return false;
++    const auto *view_only = dynamic_cast<const WalletImpl*>(&viewOnlyWallet);
++    if (view_only == nullptr) {
++        setStatusError(tr("Hardware scan source must be a local view-only wallet"));
++        return false;
++    }
++    try {
++        // The encrypted companion is the one canonical scanner. Atomically
++        // adopt its exact cursor and full public wallet cache, while the Core
++        // method re-derives and compares every Key Image on this Ledger before
++        // accepting any copied spent state. This replaces the old second
++        // historical signing-wallet scan without weakening device or output
++        // ownership checks.
++        m_wallet->adopt_view_only_scan_state(*view_only->m_wallet);
++        m_history->refresh();
++        m_synchronized = view_only->m_synchronized.load();
++        return true;
++    } catch (const std::exception &e) {
++        setStatusError(e.what());
++        return false;
++    }
++}
++
++bool WalletImpl::primeHardwareWalletViewKeyFromViewOnly(
++    const Wallet &viewOnlyWallet)
++{
+     clearStatus();
+ #ifdef WITH_DEVICE_LEDGER
+     if (m_wallet->get_device_type() != hw::device::LEDGER) {
+@@ -1137,15 +1167,6 @@
+             setStatusError(tr("Ledger could not enter device-token derivation mode"));
+             return false;
+         }
+-        // The encrypted companion is the one canonical scanner. Atomically
+-        // adopt its exact cursor and full public wallet cache, while the Core
+-        // method re-derives and compares every Key Image on this Ledger before
+-        // accepting any copied spent state. This replaces the old second
+-        // historical signing-wallet scan without weakening device or output
+-        // ownership checks.
+-        m_wallet->adopt_view_only_scan_state(*view_only->m_wallet);
+-        m_history->refresh();
+-        m_synchronized = view_only->m_synchronized.load();
+         return true;
+     } catch (const std::exception &e) {
+         setStatusError(e.what());
+diff --git a/src/wallet/api/wallet.h b/src/wallet/api/wallet.h
+--- a/src/wallet/api/wallet.h
++++ b/src/wallet/api/wallet.h
+@@ -101,6 +101,8 @@
+     std::string hardwarePrivateViewKey() const override;
+     bool prepareHardwareWalletScan() override;
+     bool prepareHardwareWalletScanFromViewOnly(
++        const Wallet &viewOnlyWallet) override;
++    bool primeHardwareWalletViewKeyFromViewOnly(
+         const Wallet &viewOnlyWallet) override;
+     std::string publicViewKey() const override;
+     std::string secretSpendKey() const override;
+diff --git a/src/wallet/api/wallet2_api.h b/src/wallet/api/wallet2_api.h
+--- a/src/wallet/api/wallet2_api.h
++++ b/src/wallet/api/wallet2_api.h
+@@ -566,6 +566,16 @@
+      */
+     virtual bool prepareHardwareWalletScanFromViewOnly(
+         const Wallet &viewOnlyWallet) = 0;
++    /*!
++     * \brief primeHardwareWalletViewKeyFromViewOnly - authenticates the same
++     * Ledger and encrypted companion, installs their protected view capability
++     * and establishes device-token derivation mode without copying scan state,
++     * balances, outputs, spent state or cursors. The private key remains inside
++     * the native implementation. Signing callers must still complete strict
++     * prepareHardwareWalletScanFromViewOnly before accepting companion state.
++     */
++    virtual bool primeHardwareWalletViewKeyFromViewOnly(
++        const Wallet &viewOnlyWallet) = 0;
+ 
+    /*!
+     * \brief publicViewKey     - returns public view key
+-- 
+2.47.0

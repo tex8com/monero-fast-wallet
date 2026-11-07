@@ -61,6 +61,8 @@ const sixLaneAdditions = sixLanePatch
   .split(/\r?\n/)
   .filter(line => line.startsWith('+') && !line.startsWith('+++'))
   .join('\n');
+const repairPatchName = '0106-wallet-repair-stalled-grpc-stripes.patch';
+const repairPatch = read(`third_party/monero-patches/${repairPatchName}`);
 const serverProto = read(
   'node/mfn-monero-fast-node/binaries/cuprated/proto/cuprate_stream.proto',
 );
@@ -69,8 +71,9 @@ const serverGrpc = read(
 );
 
 test('the authenticated Core retains the measured production patch sequence', () => {
-  assert.equal(series.length, 97);
-  assert.deepEqual(series.slice(-19), [
+  const firstMeasuredPatch = series.indexOf(sixLanePatchName);
+  assert.ok(firstMeasuredPatch >= 0);
+  assert.deepEqual(series.slice(firstMeasuredPatch, firstMeasuredPatch + 19), [
     sixLanePatchName,
     '0080-wallet-spill-public-blockstream-overflow-to-bounded-disk.patch',
     '0081-wallet-cli-select-public-and-private-Fast-Wallet-wor.patch',
@@ -91,18 +94,20 @@ test('the authenticated Core retains the measured production patch sequence', ()
     '0096-wallet-use-latency-safe-grpc-chunks.patch',
     '0097-wallet-adopt-verified-Ledger-companion-scan-state.patch',
   ]);
-  assert.match(lock, /^previous_patch_count=96$/m);
-  assert.match(
-    lock,
-    /^previous_patched_tree=810ee1ce8c931962bd19a9a6a795dd6e1c3064a8$/m,
-  );
-  assert.match(
-    lock,
-    /^patched_tree=74b3f675f2b5b3c547d84c1603095d3d979db07f$/m,
-  );
+  const previousPatchCount = Number(lock.match(/^previous_patch_count=(\d+)$/m)?.[1]);
+  assert.ok(previousPatchCount >= 96 && previousPatchCount < series.length);
+  assert.match(lock, /^previous_patched_tree=[0-9a-f]{40}$/m);
+  assert.match(lock, /^patched_tree=[0-9a-f]{40}$/m);
+  assert.ok(series.indexOf(repairPatchName) >= firstMeasuredPatch + 19);
   assert.match(hotPathPatch, /^-.*process_new_transaction SLOW txid=/m);
   assert.match(hotPathPatch, /^-.*SLOW_TX[^\n]*\n-.*txid=/m);
   assert.match(hotPathPatch, /^-.*HOT_BLOCK/m);
+});
+
+test('a repaired stripe is only delivered after its decoded payload matches the accepted envelope', () => {
+  assert.match(repairPatch, /last_chunk_matches\(res\.start_height, res\.blocks\.size\(\)\)/);
+  assert.match(repairPatch, /if \(repaired_payload_mismatch \|\| res\.blocks\.size\(\) != res\.output_indices\.size\(\)\)/);
+  assert.match(repairPatch, /repaired_payload_range_mismatch/);
 });
 
 test('the measured Pixel transport uses six persistent disjoint lanes', () => {

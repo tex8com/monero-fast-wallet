@@ -98,6 +98,12 @@ struct WalletSubaddress {
   std::string label;
 };
 
+struct WalletAccountBalance {
+  uint32_t accountIndex{0};
+  uint64_t balanceAtomic{0};
+  uint64_t unlockedBalanceAtomic{0};
+};
+
 struct CreateFastReceiveIdentityRequest {
   WalletId sourceWalletId;
   std::string identityId;
@@ -141,6 +147,12 @@ struct WalletSnapshot {
   // or a newer one after a mutation such as signed Ledger key-image import.
   uint64_t snapshotRevision{0};
   bool synchronized{false};
+  uint64_t lockedBalanceAtomic{0};
+  // Canonical maximum across accounts; meaningful for full unlocking only
+  // when unlockState is blocks/timestamp/mixed. Pending means not yet mined.
+  uint64_t unlockBlocksRemaining{0};
+  uint64_t unlockTimeRemainingSeconds{0};
+  std::string unlockState{"unknown"};
 };
 
 struct LedgerKeyImageSyncResult {
@@ -197,6 +209,11 @@ struct NetworkSyncStatus {
   NetworkType network{NetworkType::Mainnet};
   std::string state{"idle"};
   std::string phase{"idle"};
+  // Last confirmed successful block-download path; never inferred from a
+  // configured endpoint. Unknown/checking while a real fetch exceeds Core's
+  // liveness deadline, until its actual result confirms a path again.
+  std::string blockTransport{"unknown"};
+  std::string blockTransportReason{"awaiting-first-batch"};
   // Diagnostics only: never contains key material, balances, addresses, or
   // transaction data.  It makes transport failures observable in the product
   // testbench instead of leaving a stalled 0% progress display unexplained.
@@ -247,6 +264,7 @@ struct NetworkSyncStatus {
   uint64_t downloadStartHeight{0};
   uint64_t downloadedHeight{0};
   uint64_t chainHeight{0};
+  std::string priorityWalletId;
   uint64_t priorityWalletHeight{0};
   uint64_t targetHeight{0};
   uint64_t transportStarts{0};
@@ -327,10 +345,19 @@ struct PrepareTransactionRequest {
   uint32_t mixinCount{0};
 };
 
+struct BroadcastedTransaction {
+  std::string hash;
+  uint64_t amountAtomic{0};
+  uint64_t feeAtomic{0};
+  uint32_t subaddressAccount{0};
+  std::vector<uint32_t> subaddressIndices;
+};
+
 struct PreparedTransaction {
   std::string id;
   std::string status;
   std::string error;
+  std::string errorCode;
   uint64_t amountAtomic{0};
   uint64_t dustAtomic{0};
   uint64_t feeAtomic{0};
@@ -340,6 +367,15 @@ struct PreparedTransaction {
   std::vector<uint32_t> subaddrIndices;
   // Present only after an explicit export-for-delayed-relay operation.
   std::vector<std::string> rawTxHex;
+  // Only the explicit report API fills these. A remaining hash can have an
+  // unknown daemon outcome and must never be automatically replanned.
+  std::vector<std::string> broadcastedTxIds;
+  std::vector<std::string> uncertainTxIds;
+  std::vector<std::string> remainingTxIds;
+  std::vector<BroadcastedTransaction> broadcastedTransactions;
+  bool broadcastedTotalsKnown{false};
+  uint64_t broadcastedAmountAtomic{0};
+  uint64_t broadcastedFeeAtomic{0};
 };
 
 struct FastReceiveIdentity {

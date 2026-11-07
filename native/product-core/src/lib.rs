@@ -1,10 +1,12 @@
 //! Shared, platform-neutral product contract and diagnostic recorder.
 //!
-//! The C ABI deliberately accepts only enums, counters and pseudonymous
+//! The diagnostic C ABI deliberately accepts only enums, counters and pseudonymous
 //! fixed-size identifiers. There is no free-form event field in which a seed,
 //! password, private key, address, transaction id or provider token can leak.
 
 pub mod app_vault;
+pub mod send_plan;
+pub mod send_plan_ffi;
 pub mod fast_wallet_coordinator;
 pub mod fast_wallet_hosting;
 pub mod wallet_lifecycle;

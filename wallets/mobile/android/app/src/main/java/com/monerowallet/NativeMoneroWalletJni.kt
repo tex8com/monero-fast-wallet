@@ -1202,6 +1202,56 @@ internal object NativeMoneroWalletJni {
     return nativeListSubaddresses(walletId, accountIndex)
   }
 
+  fun getAccounts(walletId: String): List<Map<String, Any>> {
+    requireLoaded()
+    return nativeGetAccounts(walletId)
+  }
+
+  fun prepareSendPlan(inputJson: String): String {
+    requireLoaded()
+    return nativePrepareSendPlan(inputJson)
+  }
+
+  fun claimSendPlan(planId: String, expectedGeneration: Long): String {
+    requireLoaded()
+    return nativeClaimSendPlan(planId, expectedGeneration)
+  }
+
+  fun commitSendPlan(planId: String, claimToken: String, expectedGeneration: Long): String {
+    requireLoaded()
+    return nativeCommitSendPlan(planId, claimToken, expectedGeneration)
+  }
+
+  fun releaseSendPlan(planId: String, claimToken: String) {
+    requireLoaded()
+    nativeReleaseSendPlan(planId, claimToken)
+  }
+
+  fun sendPlanStatus(planId: String): String {
+    requireLoaded()
+    return nativeSendPlanStatus(planId)
+  }
+
+  fun listSendPlans(): String {
+    requireLoaded()
+    return nativeListSendPlans()
+  }
+
+  fun discardSendPlan(planId: String) {
+    requireLoaded()
+    nativeDiscardSendPlan(planId)
+  }
+
+  fun invalidateSendPlanClaims() {
+    requireLoaded()
+    nativeInvalidateSendPlanClaims()
+  }
+
+  fun discardLegacyReview(walletId: String, pendingId: String) {
+    requireLoaded()
+    nativeDiscardLegacyReview(walletId, pendingId)
+  }
+
   fun setWalletPassword(walletId: String, newPassword: String) {
     requireLoaded()
     nativeSetWalletPassword(walletId, newPassword)
@@ -1406,14 +1456,14 @@ internal object NativeMoneroWalletJni {
     )
   }
 
-  fun commitTransaction(walletId: String, pendingId: String): Map<String, Any> {
+  fun commitTransaction(walletId: String, pendingId: String, expectedGeneration: Long): Map<String, Any> {
     requireLoaded()
-    return nativeCommitTransaction(walletId, pendingId)
+    return nativeCommitTransaction(walletId, pendingId, expectedGeneration)
   }
 
-  fun exportPendingTransaction(walletId: String, pendingId: String): Map<String, Any> {
+  fun exportPendingTransaction(walletId: String, pendingId: String, expectedGeneration: Long): Map<String, Any> {
     requireLoaded()
-    return nativeExportPendingTransaction(walletId, pendingId)
+    return nativeExportPendingTransaction(walletId, pendingId, expectedGeneration)
   }
 
   fun getHardwareWalletStatus(walletId: String): Map<String, Any> {
@@ -1601,6 +1651,20 @@ internal object NativeMoneroWalletJni {
     walletId: String,
     accountIndex: Double,
   ): List<Map<String, Any>>
+
+  @JvmStatic private external fun nativeGetAccounts(
+    walletId: String,
+  ): List<Map<String, Any>>
+
+  @JvmStatic private external fun nativePrepareSendPlan(inputJson: String): String
+  @JvmStatic private external fun nativeClaimSendPlan(planId: String, expectedGeneration: Long): String
+  @JvmStatic private external fun nativeCommitSendPlan(planId: String, claimToken: String, expectedGeneration: Long): String
+  @JvmStatic private external fun nativeReleaseSendPlan(planId: String, claimToken: String)
+  @JvmStatic private external fun nativeSendPlanStatus(planId: String): String
+  @JvmStatic private external fun nativeListSendPlans(): String
+  @JvmStatic private external fun nativeDiscardSendPlan(planId: String)
+  @JvmStatic private external fun nativeInvalidateSendPlanClaims()
+  @JvmStatic private external fun nativeDiscardLegacyReview(walletId: String, pendingId: String)
 
   @JvmStatic private external fun nativeCreateFastReceiveIdentity(
     sourceWalletId: String,
@@ -2020,11 +2084,13 @@ internal object NativeMoneroWalletJni {
   @JvmStatic private external fun nativeCommitTransaction(
     walletId: String,
     pendingId: String,
+    expectedGeneration: Long,
   ): Map<String, Any>
 
   @JvmStatic private external fun nativeExportPendingTransaction(
     walletId: String,
     pendingId: String,
+    expectedGeneration: Long,
   ): Map<String, Any>
 
   @JvmStatic private external fun nativeGetHardwareWalletStatus(

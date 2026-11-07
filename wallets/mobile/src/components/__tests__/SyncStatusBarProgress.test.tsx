@@ -11,6 +11,7 @@ jest.mock('../../i18n', () => ({
     t: (key: string, params?: Record<string, string | number>) => {
       if (key === 'sync.percent') return `${params?.percent}%`;
       if (key === 'sync.blocksRemaining') return `remaining ${params?.count}`;
+      if (key === 'sync.walletScanBacklog') return `queued ${params?.count}`;
       return key;
     },
   }),
@@ -26,6 +27,7 @@ const network = {
   stalledWallets: 0,
 } as NetworkSyncStatus;
 const snapshot = {
+  id: 'selected-wallet',
   walletHeight: target - 3_528, daemonHeight: target,
   daemonTargetHeight: target, synchronized: false,
 } as WalletSnapshot;
@@ -58,6 +60,28 @@ describe('remaining-work progress rows', () => {
     expect(texts('wallet-progress')).toContain('18%');
     expect(texts('blockchain-progress')).toContain('remaining 3,336');
     expect(texts('wallet-progress')).toContain('remaining 3,528');
+    expect(texts('wallet-progress')).toContain('queued 192');
+  });
+
+  it('uses the native priority cursor only when it belongs to this wallet', () => {
+    const priority = {...network, priorityWalletHeight: target - 3_000};
+    render({networkStatus: {...priority, priorityWalletId: 'another-wallet'}});
+    expect(texts('wallet-progress')).toContain('remaining 3,528');
+
+    act(() => {
+      tree!.update(<SyncStatusBar expanded status="syncing" snapshot={snapshot}
+        networkStatus={{...priority, priorityWalletId: snapshot.id}} syncStartHeight={start} />);
+    });
+    expect(texts('wallet-progress')).toContain('remaining 3,000');
+  });
+
+  it('drops an old scan comparison without resetting either progress bar', () => {
+    render();
+    act(() => jest.advanceTimersByTime(20_000));
+    expect(texts('sync-status-toggle')).toContain('sync.updatingWalletScan');
+    expect(texts('wallet-progress')).not.toContain('queued 192');
+    expect(texts('wallet-progress')).toContain('18%');
+    expect(texts('blockchain-progress')).toContain('23.3%');
   });
 
   it('starts both remaining work ranges at zero percent', () => {

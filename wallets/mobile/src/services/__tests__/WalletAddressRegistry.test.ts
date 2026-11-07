@@ -19,6 +19,7 @@ import {
   loadWalletAddresses,
   removeWalletAddresses,
   upsertWalletAddress,
+  upsertWalletAddresses,
 } from '../WalletAddressRegistry';
 
 describe('WalletAddressRegistry', () => {
@@ -56,5 +57,16 @@ describe('WalletAddressRegistry', () => {
     await expect(loadWalletAddresses('software-mainnet-primary')).resolves.toEqual(
       [],
     );
+  });
+
+  it('stores a complete address inventory in one metadata write', async () => {
+    const addresses = Array.from({ length: 300 }, (_, index) => createWalletAddressRecord({
+      walletId: 'selected', accountIndex: Math.floor(index / 100), addressIndex: index % 100,
+      address: `native-address-${index}`, label: `Address ${index}`,
+    }));
+    (AsyncStorage.setItem as jest.Mock).mockClear();
+    await upsertWalletAddresses(addresses);
+    expect(AsyncStorage.setItem).toHaveBeenCalledTimes(1);
+    expect(await loadWalletAddresses('selected')).toHaveLength(300);
   });
 });

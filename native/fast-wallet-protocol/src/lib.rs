@@ -27,6 +27,16 @@ mod mobile_fast_crypto {
     include!(env!("MONERO_FAST_CRYPTO_SOURCE"));
 }
 
+// Keep Product Core's native payment ABI in this same mobile Rust archive.
+// The C++ bridge references its exported functions; no second Rust runtime is
+// linked into the Android/iOS executable.
+#[cfg(feature = "mobile-fast-crypto")]
+pub use mfw_product_core::send_plan_ffi::*;
+#[cfg(feature = "mobile-fast-crypto")]
+#[used]
+static MOBILE_PAYMENT_CORE: extern "C" fn() -> *mut std::ffi::c_void =
+    mfw_product_core::send_plan_ffi::mfw_send_plan_context_create_v1;
+
 pub const PROTOCOL_VERSION: u16 = 1;
 pub const WATCH_PLAINTEXT_SIZE: usize = 256;
 pub const WATCH_CIPHERTEXT_SIZE: usize = WATCH_PLAINTEXT_SIZE + 16;

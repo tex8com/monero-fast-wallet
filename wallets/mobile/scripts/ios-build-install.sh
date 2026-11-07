@@ -14,7 +14,7 @@ MONERO_IOS_BUILD_ROOT="${MONERO_IOS_BUILD_ROOT:-}"
 MONERO_SOURCE_DIR="${MONERO_SOURCE_DIR:-}"
 WITH_GRPC_STREAM="${MONERO_WALLET_IOS_WITH_GRPC_STREAM:-1}"
 WITH_TEX8_EXTENSIONS="${MONERO_WALLET_IOS_WITH_TEX8_EXTENSIONS:-1}"
-XCODEBUILD_QUIET="${MONERO_WALLET_IOS_XCODEBUILD_QUIET:-1}"
+XCODEBUILD_QUIET="${MONERO_WALLET_IOS_XCODEBUILD_QUIET:-0}"
 FEATURE_MANIFEST="$REPO_ROOT/config/v1-release-features.json"
 MOBILE_VERSION_MANIFEST="$REPO_ROOT/config/mobile-app-version.json"
 IOS_VERSION_NAME="$(node -e '
@@ -150,7 +150,29 @@ fi
 MONERO_FAST_WALLET_PROTOCOL_LIBRARY="${MONERO_FAST_WALLET_PROTOCOL_LIBRARY:-$MONERO_FAST_WALLET_PROTOCOL_ROOT/ios-sim-arm64/libfast_wallet_protocol.a}"
 MONERO_FAST_CRYPTO_LIBRARY="${MONERO_FAST_CRYPTO_LIBRARY:-$MONERO_FAST_CRYPTO_ROOT/ios-sim-arm64/libmonero_fast_crypto.a}"
 
-if [ ! -f "$MONERO_FAST_WALLET_PROTOCOL_LIBRARY" ]; then
+protocol_needs_payment_core_rebuild() {
+  [ -f "$MONERO_FAST_WALLET_PROTOCOL_LIBRARY" ] || return 0
+  local payment_source
+  for payment_source in \
+    "$REPO_ROOT/native/fast-wallet-protocol/Cargo.toml" \
+    "$REPO_ROOT/native/fast-wallet-protocol/Cargo.lock" \
+    "$REPO_ROOT/native/fast-wallet-protocol/build-mobile.sh" \
+    "$REPO_ROOT/native/fast-wallet-protocol/src" \
+    "$REPO_ROOT/native/product-core/Cargo.toml" \
+    "$REPO_ROOT/native/product-core/Cargo.lock" \
+    "$REPO_ROOT/native/product-core/src" \
+    "$REPO_ROOT/native/product-core/schema" \
+    "$REPO_ROOT/native/product-core/generated"; do
+    if [ -f "$payment_source" ] && [ "$payment_source" -nt "$MONERO_FAST_WALLET_PROTOCOL_LIBRARY" ]; then return 0; fi
+    if [ -d "$payment_source" ] && find "$payment_source" -type f -newer "$MONERO_FAST_WALLET_PROTOCOL_LIBRARY" -print -quit | grep -q .; then return 0; fi
+  done
+  # A manually copied/stale archive must not pass merely by having a new mtime.
+  local payment_symbols
+  payment_symbols="$(xcrun nm -g "$MONERO_FAST_WALLET_PROTOCOL_LIBRARY" 2>/dev/null)" || return 0
+  [[ "$payment_symbols" == *mfw_send_plan_execute_v1* ]] || return 0
+  return 1
+}
+if protocol_needs_payment_core_rebuild; then
   TARGETS=ios-sim-arm64 OUTPUT_DIR="$MONERO_FAST_WALLET_PROTOCOL_ROOT" \
     "$REPO_ROOT/native/fast-wallet-protocol/build-mobile.sh"
 fi
@@ -250,9 +272,9 @@ if [ -n "$DERIVED_DATA_PATH" ]; then
   )
 fi
 
-# A clean React Native build can emit several gigabytes of compiler command
-# lines. Keep routine local/testbench builds quiet while preserving warnings
-# and errors; set MONERO_WALLET_IOS_XCODEBUILD_QUIET=0 for the raw transcript.
+# Xcode 27 can turn successful Swift tasks into false failures with -quiet
+# and hide the real failing phase. Keep the full transcript by default;
+# MONERO_WALLET_IOS_XCODEBUILD_QUIET=1 remains an explicit legacy opt-in.
 if [ "$XCODEBUILD_QUIET" = "1" ]; then
   xcodebuild_args+=( -quiet )
 fi

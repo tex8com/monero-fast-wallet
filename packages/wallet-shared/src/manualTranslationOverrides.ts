@@ -5,6 +5,7 @@ export type ManualTranslationLocale =
 type TranslationMap = Readonly<Record<string, string>>;
 
 const es: TranslationMap = {
+  'Checking name availability…': 'Comprobando la disponibilidad del nombre…',
   'Use separate optimized routes: fast blockchain sync over Clearnet and the remaining daemon traffic over Onion.':
     'Use rutas optimizadas separadas: sincronización rápida de la cadena de bloques por Clearnet y el resto del tráfico del daemon por Onion.',
   'Lock all wallets': 'Bloquear todas las wallets',
@@ -503,6 +504,7 @@ const es: TranslationMap = {
 };
 
 const ptBR: TranslationMap = {
+  'Checking name availability…': 'Verificando a disponibilidade do nome…',
   'Lock all wallets': 'Bloquear todas as wallets',
   'Use separate optimized routes: fast blockchain sync over Clearnet and the remaining daemon traffic over Onion.':
     'Use rotas otimizadas separadas: sincronização rápida da blockchain pela Clearnet e o restante do tráfego do daemon pela Onion.',
@@ -911,6 +913,7 @@ const ptBR: TranslationMap = {
 };
 
 const ru: TranslationMap = {
+  'Checking name availability…': 'Проверяем доступность имени…',
   'AI Assistant': 'ИИ-ассистент',
   'Tex8 Assistant': 'Tex8 Assistant',
   'Lock all wallets': 'Заблокировать все кошельки',
@@ -1062,6 +1065,7 @@ const ru: TranslationMap = {
 };
 
 const vi: TranslationMap = {
+  'Checking name availability…': 'Đang kiểm tra xem tên còn trống không…',
   Delete: 'Xóa',
   Create: 'Tạo',
   Reset: 'Đặt lại',
@@ -1229,6 +1233,7 @@ const vi: TranslationMap = {
 };
 
 const id: TranslationMap = {
+  'Checking name availability…': 'Memeriksa ketersediaan nama…',
   '{amount} XMR incoming': '{amount} XMR masuk',
   '{amount} XMR locked': '{amount} XMR terkunci',
   '{amount} XMR pending': '{amount} XMR tertunda',
@@ -1478,6 +1483,7 @@ const id: TranslationMap = {
 };
 
 const fr: TranslationMap = {
+  'Checking name availability…': 'Vérification de la disponibilité du nom…',
   '{amount} XMR incoming': '{amount} XMR reçus',
   '{amount} XMR spent': '{amount} XMR dépensés',
   '{count} conf.': '{count} conf.',
@@ -1707,6 +1713,7 @@ const fr: TranslationMap = {
 };
 
 const fil: TranslationMap = {
+  'Checking name availability…': 'Sinusuri kung magagamit ang pangalan…',
   '{amount} XMR incoming': '{amount} XMR na papasok',
   '{amount} XMR pending': '{amount} XMR na nakabinbin',
   '{count} blocks remaining': '{count} bloke ang natitira',
@@ -2083,6 +2090,7 @@ const fil: TranslationMap = {
 };
 
 const zhCN: TranslationMap = {
+  'Checking name availability…': '正在检查名称是否可用…',
   Delete: '删除',
   Published: '已发布',
   Synced: '已同步',
@@ -2113,6 +2121,7 @@ const zhCN: TranslationMap = {
 };
 
 const zhTW: TranslationMap = {
+  'Checking name availability…': '正在檢查名稱是否可用…',
   Delete: '刪除',
   Open: '開啟',
   Paste: '貼上',
@@ -2160,6 +2169,7 @@ const zhTW: TranslationMap = {
 };
 
 const ko: TranslationMap = {
+  'Checking name availability…': '이름을 사용할 수 있는지 확인하는 중…',
   'Get Started': '시작하기',
   Share: '공유',
   'Private one-to-one chat': '비공개 일대일 채팅',
@@ -2221,6 +2231,7 @@ const ko: TranslationMap = {
 };
 
 const ja: TranslationMap = {
+  'Checking name availability…': '名前が使用できるか確認中…',
   'Monero Fast Wallet Registry price': 'Monero Fast Wallet レジストリの価格',
   Import: 'インポート',
   Reset: 'リセット',
@@ -2312,6 +2323,7 @@ const ja: TranslationMap = {
 };
 
 const ar: TranslationMap = {
+  'Checking name availability…': 'جارٍ التحقق من توفر الاسم…',
   Clear: 'مسح',
   Delete: 'حذف',
   Reset: 'إعادة تعيين',
@@ -2406,6 +2418,7 @@ const ar: TranslationMap = {
 };
 
 const ur: TranslationMap = {
+  'Checking name availability…': 'نام کی دستیابی چیک کی جا رہی ہے…',
   Create: 'بنائیں',
   Off: 'بند',
   On: 'فعال',
@@ -2523,6 +2536,7 @@ const ur: TranslationMap = {
 };
 
 const hi: TranslationMap = {
+  'Checking name availability…': 'नाम की उपलब्धता जाँची जा रही है…',
   'Monero Fast Wallet Registry price': 'Monero Fast Wallet रजिस्ट्री मूल्य',
   Cancel: 'रद्द करें',
   Clear: 'साफ़ करें',
@@ -2664,6 +2678,7 @@ const hi: TranslationMap = {
 };
 
 const uk: TranslationMap = {
+  'Checking name availability…': 'Перевіряємо доступність імені…',
   Create: 'Створити',
   Open: 'Відкрити',
   'Prepare Send': 'Підготувати надсилання',
@@ -2825,6 +2840,7 @@ const uk: TranslationMap = {
 };
 
 const tr: TranslationMap = {
+  'Checking name availability…': 'Adın kullanılabilirliği kontrol ediliyor…',
   Cancel: 'İptal',
   Delete: 'Sil',
   Import: 'İçe aktar',

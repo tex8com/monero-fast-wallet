@@ -13,7 +13,7 @@ default = []
 # Mobile links one Rust static archive only. This feature compiles the
 # authenticated Monero acceleration C ABI into the protocol archive so Rust's
 # standard library is not duplicated at the final Android/iOS link.
-mobile-fast-crypto = ["dep:rayon"]
+mobile-fast-crypto = ["dep:rayon", "dep:mfw-product-core"]
 
 [dependencies]
 argon2 = "0.5"
@@ -24,6 +24,7 @@ getrandom = "0.4"
 hex = "0.4"
 hpke = { version = "0.14", default-features = false, features = ["alloc", "getrandom", "x25519", "hkdfsha2", "chacha"] }
 mfw-recipient-protocol = { path = "../mfw-recipient-protocol" }
+mfw-product-core = { path = "../product-core", optional = true }
 monero-address = { git = "https://github.com/monero-oxide/monero-oxide.git", rev = "7c288b058ae7f1e3d36600a2af11b3176102bcfc" }
 rayon = { version = "1.10", optional = true }
 sha2 = "0.10"

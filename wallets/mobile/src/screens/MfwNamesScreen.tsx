@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Platform,
   ActivityIndicator,
   Alert,
   ScrollView,
@@ -14,6 +15,7 @@ import LinearGradient from 'react-native-linear-gradient';
 
 import { Icon } from '../components/Icon';
 import LedgerSigningModal from '../components/LedgerSigningModal';
+import { ledgerFlowCancellationAllowed, ledgerNativeCancellationSupported } from '../services/LedgerCancellation';
 import WalletSelector, {
   type WalletOption,
 } from '../components/WalletSelector';
@@ -22,6 +24,11 @@ import {
   checkConfiguredMfwNameAvailability,
   type MfwNameAvailability,
 } from '../services/MfwNameAvailabilityService';
+import {
+  getMfwResolverPreferenceRevision,
+  useMfwResolverPreferenceRevision,
+} from '../services/MfwResolverSettings';
+import type { MoneroNetwork } from '../services/NativeMoneroWallet';
 import {
   createWalletAddressRecord,
   loadWalletAddresses,
@@ -87,7 +94,13 @@ type RegistrationStep = 1 | 2 | 3;
 
 type AvailabilityPresentation =
   | { state: 'idle' | 'checking' | 'invalid' | 'unavailable' }
-  | { state: 'ready'; value: MfwNameAvailability; checkedAtMs: number };
+  | {
+      state: 'ready';
+      value: MfwNameAvailability;
+      network: MoneroNetwork;
+      resolverRevision: number;
+      checkedAtMs: number;
+    };
 
 function shortAddress(value: string) {
   if (value.length <= 24) {
@@ -98,6 +111,7 @@ function shortAddress(value: string) {
 
 export default function MfwNamesScreen({ navigation, route }: any) {
   const { dateLocale, t } = useI18n();
+  const resolverRevision = useMfwResolverPreferenceRevision();
   const {
     connectLedgerForSigning,
     isRegisteredWalletOpen,
@@ -134,9 +148,9 @@ export default function MfwNamesScreen({ navigation, route }: any) {
   const [creatingRegistration, setCreatingRegistration] = useState(false);
   const [importingRecovery, setImportingRecovery] = useState(false);
   const [recoveryName, setRecoveryName] = useState('');
-  const [availability, setAvailability] = useState<AvailabilityPresentation>({
-    state: 'idle',
-  });
+  const [availabilityResult, setAvailability] =
+    useState<AvailabilityPresentation>({ state: 'idle' });
+  const [availabilityRetry, setAvailabilityRetry] = useState(0);
   const [message, setMessage] = useState<string | undefined>();
   const [cancellingRelayId, setCancellingRelayId] = useState<
     string | undefined
@@ -144,6 +158,13 @@ export default function MfwNamesScreen({ navigation, route }: any) {
   const [ledgerSigningProgress, setLedgerSigningProgress] = useState<
     LedgerSigningProgress | undefined
   >();
+  const ledgerSigningProgressRef = useRef<LedgerSigningProgress | undefined>(undefined);
+  const updateLedgerSigningProgress = (progress: LedgerSigningProgress | undefined) => {
+    // Update before React renders, so an older cancel callback sees the live
+    // phase before native signing or synchronization starts.
+    ledgerSigningProgressRef.current = progress;
+    setLedgerSigningProgress(progress);
+  };
   const ledgerSigningCancelledRef = useRef(false);
   const reverseDiscoveryKeyRef = useRef<string | undefined>(undefined);
 
@@ -170,7 +191,7 @@ export default function MfwNamesScreen({ navigation, route }: any) {
     };
     const publishProgress = (progress: LedgerSigningProgress) => {
       if (!ledgerSigningCancelledRef.current) {
-        setLedgerSigningProgress(progress);
+        updateLedgerSigningProgress(progress);
       }
     };
     let hardwareStatusTimer: ReturnType<typeof setInterval> | undefined;
@@ -178,7 +199,7 @@ export default function MfwNamesScreen({ navigation, route }: any) {
     try {
       let signingSession: WalletSession | undefined = session;
       if (session.readOnly) {
-        setLedgerSigningProgress({ phase: 'searching' });
+        updateLedgerSigningProgress({ phase: 'searching' });
         signingSession = await connectLedgerForSigning({
           isCancelled: () => ledgerSigningCancelledRef.current,
           onProgress: publishProgress,
@@ -224,7 +245,7 @@ export default function MfwNamesScreen({ navigation, route }: any) {
       if (hardwareStatusTimer) {
         clearInterval(hardwareStatusTimer);
       }
-      setLedgerSigningProgress(undefined);
+      updateLedgerSigningProgress(undefined);
     }
   };
 
@@ -266,6 +287,14 @@ export default function MfwNamesScreen({ navigation, route }: any) {
       return undefined;
     }
   }, [name]);
+  const availabilityNetwork = registeredWallet?.network ?? 'mainnet';
+  const availability =
+    availabilityResult.state === 'ready' &&
+    (availabilityResult.value.canonicalName !== enteredCanonicalName ||
+      availabilityResult.network !== availabilityNetwork ||
+      availabilityResult.resolverRevision !== resolverRevision)
+      ? { state: 'checking' as const }
+      : availabilityResult;
   const localEnteredNameRecord = enteredCanonicalName
     ? ownedNames.find(
         record =>
@@ -563,7 +592,7 @@ export default function MfwNamesScreen({ navigation, route }: any) {
     ) {
       return;
     }
-    const discoveryKey = `${wallet.id}:${wallet.network}:${addresses
+    const discoveryKey = `${wallet.id}:${wallet.network}:${resolverRevision}:${addresses
       .map(record => record.address)
       .sort()
       .join(',')}`;
@@ -583,6 +612,12 @@ export default function MfwNamesScreen({ navigation, route }: any) {
         let records = await loadMfwOwnedNames();
         const now = new Date().toISOString();
         for (const { resolution, address } of discovered) {
+          if (
+            !active ||
+            resolverRevision !== getMfwResolverPreferenceRevision()
+          ) {
+            return;
+          }
           const existing = records.find(
             record =>
               record.walletRegistrationId === wallet.id &&
@@ -629,7 +664,9 @@ export default function MfwNamesScreen({ navigation, route }: any) {
         }
       })
       .catch(error => {
-        reverseDiscoveryKeyRef.current = undefined;
+        if (reverseDiscoveryKeyRef.current === discoveryKey) {
+          reverseDiscoveryKeyRef.current = undefined;
+        }
         logWalletEvent('MfwNameRegistry', 'reverse-discovery.failed', {
           failure:
             error instanceof Error ? error.name : 'unknown-reverse-failure',
@@ -639,7 +676,13 @@ export default function MfwNamesScreen({ navigation, route }: any) {
     return () => {
       active = false;
     };
-  }, [addresses, loadingAddresses, loadingOwnedNames, registeredWallet]);
+  }, [
+    addresses,
+    loadingAddresses,
+    loadingOwnedNames,
+    registeredWallet,
+    resolverRevision,
+  ]);
 
   useEffect(() => {
     let active = true;
@@ -779,11 +822,17 @@ export default function MfwNamesScreen({ navigation, route }: any) {
         name,
         // Availability is public registry data. It must also work before a
         // wallet is opened (or directly after a clean development install).
-        network: registeredWallet?.network ?? 'mainnet',
+        network: availabilityNetwork,
       })
         .then(value => {
-          if (active) {
-            setAvailability({ state: 'ready', value, checkedAtMs: Date.now() });
+          if (active && resolverRevision === getMfwResolverPreferenceRevision()) {
+            setAvailability({
+              state: 'ready',
+              value,
+              network: availabilityNetwork,
+              resolverRevision,
+              checkedAtMs: Date.now(),
+            });
           }
         })
         .catch(() => {
@@ -797,7 +846,14 @@ export default function MfwNamesScreen({ navigation, route }: any) {
       active = false;
       clearTimeout(timer);
     };
-  }, [name, registeredWallet?.network, renewingName, updatingName]);
+  }, [
+    name,
+    availabilityNetwork,
+    availabilityRetry,
+    renewingName,
+    updatingName,
+    resolverRevision,
+  ]);
 
   const selectWallet = async (wallet: WalletOption) => {
     setMessage(undefined);
@@ -873,6 +929,7 @@ export default function MfwNamesScreen({ navigation, route }: any) {
     }
     if (
       availability.state !== 'ready' ||
+      availability.resolverRevision !== getMfwResolverPreferenceRevision() ||
       availability.value.status !== 'available'
     ) {
       setMessage(t('mfwNames.availabilityRequired'));
@@ -885,6 +942,10 @@ export default function MfwNamesScreen({ navigation, route }: any) {
         enteredAddress,
         registeredWallet.network,
       );
+      if (availability.resolverRevision !== getMfwResolverPreferenceRevision()) {
+        setMessage(t('mfwNames.availabilityRequired'));
+        return;
+      }
       const draft = createMfwNameRegistrationDraft({
         walletRegistrationId: registeredWallet.id,
         walletAddressId:
@@ -976,6 +1037,7 @@ export default function MfwNamesScreen({ navigation, route }: any) {
       }
       if (
         availability.state !== 'ready' ||
+        availability.resolverRevision !== getMfwResolverPreferenceRevision() ||
         availability.value.status !== 'available'
       ) {
         setMessage(t('mfwNames.availabilityRequired'));
@@ -2330,9 +2392,23 @@ export default function MfwNamesScreen({ navigation, route }: any) {
                     {t('mfwNames.invalidName')}
                   </Text>
                 ) : availability.state === 'unavailable' ? (
-                  <Text style={s.availabilityError}>
-                    {t('mfwNames.availabilityUnavailable')}
-                  </Text>
+                  <>
+                    <Text style={s.availabilityError}>
+                      {t('mfwNames.availabilityUnavailable')}
+                    </Text>
+                    {v1ReleaseFeatures.mfwNameRegistration ? (
+                      <TouchableOpacity
+                        accessibilityRole="button"
+                        style={s.secondaryButton}
+                        onPress={() => {
+                          setAvailability({ state: 'checking' });
+                          setAvailabilityRetry(retry => retry + 1);
+                        }}
+                      >
+                        <Text style={s.secondaryTitle}>{t('action.retry')}</Text>
+                      </TouchableOpacity>
+                    ) : null}
+                  </>
                 ) : availability.state === 'ready' ? (
                   <View style={s.availabilityBlock}>
                     <View style={[s.availabilityRow, s.availabilityBlockRow]}>
@@ -2785,10 +2861,14 @@ export default function MfwNamesScreen({ navigation, route }: any) {
       </ScrollView>
       <LedgerSigningModal
         progress={ledgerSigningProgress}
+        canCancel={ledgerFlowCancellationAllowed(Platform.OS, ledgerSigningProgress?.phase)}
         onCancel={() => {
+          if (!ledgerFlowCancellationAllowed(Platform.OS, ledgerSigningProgressRef.current?.phase)) return;
           ledgerSigningCancelledRef.current = true;
-          setLedgerSigningProgress(undefined);
-          walletService.cancelLedgerOperation().catch(() => undefined);
+          updateLedgerSigningProgress(undefined);
+          if (ledgerNativeCancellationSupported(Platform.OS)) {
+            walletService.cancelLedgerOperation().catch(() => undefined);
+          }
         }}
       />
     </View>

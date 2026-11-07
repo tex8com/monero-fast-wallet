@@ -1,0 +1,40 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: TEX8 Monero Patch Integrator <monero-patches@tex8.local>
+Date: Tue, 3 Nov 2026 12:50:00 -0500
+Subject: [PATCH] wallet: retry legacy gRPC chunk-wait timeouts consistently
+
+The legacy range pool reports its local wait deadline as -2, while the
+lane pool leaves code 0. Treat both as timeouts so each gets the existing
+two bounded smaller-chunk retries. Do not change the liveness deadline,
+validation rules, or handling of genuine gRPC errors.
+
+---
+diff --git a/src/wallet/wallet2.cpp b/src/wallet/wallet2.cpp
+--- a/src/wallet/wallet2.cpp
++++ b/src/wallet/wallet2.cpp
+@@ -3525,7 +3525,11 @@
+       << " -- closing stream, falling back to bin RPC for "
+       << (ended_ok ? "this iteration" : "this session"));
+     const int fallback_error_code = m_grpc_stream_client->last_error_code();
+-    const bool timed_out = !ended_ok && fallback_error_code == 0;
++    // Both the lane client (0) and the legacy range pool (-2) report
++    // a local chunk-wait deadline. Apply the same bounded smaller-chunk
++    // retries to either path; genuine gRPC protocol errors stay failures.
++    const bool timed_out = !ended_ok &&
++        (fallback_error_code == 0 || fallback_error_code == -2);
+     m_grpc_stream_client->close();
+     m_grpc_stream_active = false;
+     if (ended_ok)
+@@ -3564,8 +3568,8 @@
+     }
+ 
+     log_grpc_fallback("session",
+-      fallback_error_code == 0 ? "chunk_timeout" : "stream_receive_failed",
+-      fallback_error_code == 0 ? "timeout" : "grpc_receive",
++      timed_out ? "chunk_timeout" : "stream_receive_failed",
++      timed_out ? "timeout" : "grpc_receive",
+       fallback_error_code, m_grpc_stream_next_height,
+       static_cast<uint64_t>(m_blockchain.size()), 0, 0, 0);
+     m_grpc_stream_fallback_to_bin = true;
+-- 
+2.50.1

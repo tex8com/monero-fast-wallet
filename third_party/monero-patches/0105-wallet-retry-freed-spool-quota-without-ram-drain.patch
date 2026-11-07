@@ -1,0 +1,355 @@
+From 1c02cd4b8e1752bfd87701035e5fe9daa0d117ec Mon Sep 17 00:00:00 2001
+From: Roland Kohlhuber <rolandkohlhuber@Rolands-MacBook-Air.local>
+Date: Tue, 3 Nov 2026 18:51:35 -0500
+Subject: [PATCH] wallet: retry freed spool quota without waiting for RAM drain
+
+---
+ src/wallet/grpc_stream/CMakeLists.txt         |  15 ++
+ .../grpc_stream/grpc_block_stream_client.cpp  |  52 +++---
+ .../grpc_stream/grpc_spool_queue_wait.h       |  41 +++++
+ .../grpc_stream/test_spool_queue_wait.cpp     | 157 ++++++++++++++++++
+ 4 files changed, 244 insertions(+), 21 deletions(-)
+ create mode 100644 src/wallet/grpc_stream/grpc_spool_queue_wait.h
+ create mode 100644 src/wallet/grpc_stream/test_spool_queue_wait.cpp
+
+diff --git a/src/wallet/grpc_stream/CMakeLists.txt b/src/wallet/grpc_stream/CMakeLists.txt
+index 5460ce6..90d048f 100644
+--- a/src/wallet/grpc_stream/CMakeLists.txt
++++ b/src/wallet/grpc_stream/CMakeLists.txt
+@@ -21,6 +21,21 @@ pkg_check_modules(PROTOBUF REQUIRED protobuf)
+ if(NOT DEFINED GRPC_CPP_PLUGIN_PATH)
+     find_program(GRPC_CPP_PLUGIN_PATH grpc_cpp_plugin REQUIRED)
+ endif()
++
++# Hermetic queue-flow regression: no gRPC server, filesystem spool or wallet.
++if(BUILD_TESTS)
++    find_package(Threads REQUIRED)
++    add_executable(cuprate_grpc_spool_queue_wait_tests test_spool_queue_wait.cpp)
++    set_target_properties(cuprate_grpc_spool_queue_wait_tests PROPERTIES
++        CXX_STANDARD 17
++        CXX_STANDARD_REQUIRED ON
++    )
++    target_include_directories(cuprate_grpc_spool_queue_wait_tests
++        PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
++    target_link_libraries(cuprate_grpc_spool_queue_wait_tests PRIVATE Threads::Threads)
++    add_test(NAME cuprate_grpc_spool_queue_wait
++        COMMAND cuprate_grpc_spool_queue_wait_tests)
++endif()
+ if(NOT DEFINED PROTOC_PATH)
+     # The Monero depends prefix supplies the protobuf headers linked by the
+     # wallet. Prefer its matching protoc when available: a newer system
+diff --git a/src/wallet/grpc_stream/grpc_block_stream_client.cpp b/src/wallet/grpc_stream/grpc_block_stream_client.cpp
+index c2fa53f..1513ef4 100644
+--- a/src/wallet/grpc_stream/grpc_block_stream_client.cpp
++++ b/src/wallet/grpc_stream/grpc_block_stream_client.cpp
+@@ -14,6 +14,7 @@
+ // instead of bloating memory.
+ 
+ #include "grpc_block_stream_client.h"
++#include "grpc_spool_queue_wait.h"
+ #include "grpc_stream_status.h"
+ 
+ #include <algorithm>
+@@ -274,13 +275,14 @@ struct chunk_record {
+ };
+ 
+ namespace {
+-    bool write_spooled_payload(chunk_record& record)
++    spool_write_result write_spooled_payload(chunk_record& record)
+     {
+         if (record.payload.empty() ||
+                 record.payload.size() != record.payload_bytes ||
+-                !process_spool().enabled() ||
+-                !process_spool().try_reserve(record.payload.size()))
+-            return false;
++                !process_spool().enabled())
++            return spool_write_result::unavailable;
++        if (!process_spool().try_reserve(record.payload.size()))
++            return spool_write_result::quota_full;
+         const uint64_t reserved = record.payload.size();
+         const std::string path = process_spool().next_path();
+         FILE* file = std::fopen(path.c_str(), "wb");
+@@ -288,7 +290,7 @@ namespace {
+         {
+             process_spool().release(reserved);
+             process_spool().record_failure();
+-            return false;
++            return spool_write_result::unavailable;
+         }
+ #if !defined(_WIN32)
+         (void)::fchmod(fileno(file), S_IRUSR | S_IWUSR);
+@@ -308,7 +310,7 @@ namespace {
+             std::remove(path.c_str());
+             process_spool().release(reserved);
+             process_spool().record_failure();
+-            return false;
++            return spool_write_result::unavailable;
+         }
+         record.spool_crc32 = payload_crc32(record.payload);
+         record.spool_path = path;
+@@ -321,7 +323,7 @@ namespace {
+             (unsigned long long)process_spool().buffered_bytes(),
+             (unsigned long long)process_spool().peak_bytes(),
+             (unsigned long long)process_spool().write_count());
+-        return true;
++        return spool_write_result::stored;
+     }
+ 
+     bool read_spooled_payload(chunk_record& record)
+@@ -567,21 +569,29 @@ bool cuprate_grpc_stream_client::open_stream(uint64_t start_height,
+             std::unique_lock<std::mutex> lk(p_->mu);
+             const auto t_enq0 = std::chrono::steady_clock::now();
+             const size_t queue_depth_before = p_->queue.size();
+-            bool stored_on_disk = false;
+-            if (p_->memory_queue_depth >= p_->queue_capacity &&
+-                    process_spool().enabled())
+-            {
+-                lk.unlock();
+-                stored_on_disk = write_spooled_payload(rec);
+-                lk.lock();
+-            }
+-            if (!stored_on_disk)
+-            {
+-                p_->cv_not_full.wait(lk, [this]() {
+-                    return p_->memory_queue_depth < p_->queue_capacity ||
+-                        p_->cancelled;
++            const auto memory_available = [this]() {
++                return p_->memory_queue_depth < p_->queue_capacity;
++            };
++            const auto queue_can_wake = [this, &memory_available]() {
++                return memory_available() || p_->cancelled;
++            };
++            const chunk_queue_storage storage = await_chunk_queue_storage(
++                memory_available,
++                [this]() { return p_->cancelled; },
++                [&]() {
++                    lk.unlock();
++                    const spool_write_result result = write_spooled_payload(rec);
++                    lk.lock();
++                    return result;
++                },
++                [&](bool retry_quota) {
++                    if (retry_quota)
++                        p_->cv_not_full.wait_for(lk,
++                            kSpoolQuotaRetryInterval, queue_can_wake);
++                    else
++                        p_->cv_not_full.wait(lk, queue_can_wake);
+                 });
+-            }
++            const bool stored_on_disk = storage == chunk_queue_storage::disk;
+             const double enq_wait_ms = std::chrono::duration<double, std::milli>(
+                 std::chrono::steady_clock::now() - t_enq0).count();
+             if (p_->cancelled)
+diff --git a/src/wallet/grpc_stream/grpc_spool_queue_wait.h b/src/wallet/grpc_stream/grpc_spool_queue_wait.h
+new file mode 100644
+index 0000000..ddbc513
+--- /dev/null
++++ b/src/wallet/grpc_stream/grpc_spool_queue_wait.h
+@@ -0,0 +1,41 @@
++#pragma once
++
++#include <chrono>
++
++namespace cuprate_grpc_stream {
++
++enum class spool_write_result { stored, quota_full, unavailable };
++enum class chunk_queue_storage { memory, disk, cancelled };
++
++// A different lane can release the process-wide disk quota without freeing
++// this lane's single RAM slot. Bound that cross-lane wakeup delay without
++// adding another receiver, changing queue order, or retaining another payload.
++constexpr std::chrono::milliseconds kSpoolQuotaRetryInterval{25};
++
++// Callbacks run with the caller's queue lock held. try_spool may temporarily
++// release that lock for disk I/O; wait releases it as a condition-variable wait.
++// Only quota exhaustion is retryable. A real disk failure must keep the former
++// RAM-only fallback instead of repeatedly writing to an unhealthy filesystem.
++template <typename MemoryAvailable, typename Cancelled, typename TrySpool,
++          typename Wait>
++chunk_queue_storage await_chunk_queue_storage(
++    MemoryAvailable memory_available, Cancelled cancelled,
++    TrySpool try_spool, Wait wait)
++{
++    bool disk_unavailable = false;
++    for (;;) {
++        if (cancelled())
++            return chunk_queue_storage::cancelled;
++        if (memory_available())
++            return chunk_queue_storage::memory;
++        if (!disk_unavailable) {
++            const spool_write_result result = try_spool();
++            if (result == spool_write_result::stored)
++                return chunk_queue_storage::disk;
++            disk_unavailable = result == spool_write_result::unavailable;
++        }
++        wait(!disk_unavailable);
++    }
++}
++
++} // namespace cuprate_grpc_stream
+diff --git a/src/wallet/grpc_stream/test_spool_queue_wait.cpp b/src/wallet/grpc_stream/test_spool_queue_wait.cpp
+new file mode 100644
+index 0000000..ccca132
+--- /dev/null
++++ b/src/wallet/grpc_stream/test_spool_queue_wait.cpp
+@@ -0,0 +1,157 @@
++#include "grpc_spool_queue_wait.h"
++
++#include <atomic>
++#include <condition_variable>
++#include <future>
++#include <iostream>
++#include <mutex>
++#include <stdexcept>
++#include <thread>
++
++using namespace cuprate_grpc_stream;
++
++namespace {
++void require(bool value, const char* message)
++{
++    if (!value)
++        throw std::runtime_error(message);
++}
++
++void ready_memory_does_not_write_disk()
++{
++    unsigned writes = 0;
++    const auto result = await_chunk_queue_storage(
++        [] { return true; }, [] { return false; },
++        [&] { ++writes; return spool_write_result::stored; },
++        [](bool) { throw std::runtime_error("unexpected wait"); });
++    require(result == chunk_queue_storage::memory && writes == 0,
++        "available RAM must not spill another chunk");
++}
++
++void available_disk_does_not_need_ram()
++{
++    const auto result = await_chunk_queue_storage(
++        [] { return false; }, [] { return false; },
++        [] { return spool_write_result::stored; },
++        [](bool) { throw std::runtime_error("unexpected wait"); });
++    require(result == chunk_queue_storage::disk,
++        "available disk must accept a chunk with full RAM");
++}
++
++void another_lane_releases_quota_without_ram_drain()
++{
++    std::mutex queue_mutex;
++    std::condition_variable queue_cv;
++    bool memory_available = false;
++    bool cancelled = false;
++    std::atomic<bool> disk_quota_available{false};
++    std::atomic<unsigned> attempts{0};
++    std::promise<void> first_attempt;
++    auto first = first_attempt.get_future();
++    std::promise<chunk_queue_storage> completed;
++    auto result = completed.get_future();
++    std::thread receiver([&] {
++        std::unique_lock<std::mutex> lock(queue_mutex);
++        const auto can_wake = [&] { return memory_available || cancelled; };
++        completed.set_value(await_chunk_queue_storage(
++            [&] { return memory_available; }, [&] { return cancelled; },
++            [&] {
++                const bool quota_available = disk_quota_available.load();
++                if (attempts.fetch_add(1) == 0)
++                    first_attempt.set_value();
++                return quota_available
++                    ? spool_write_result::stored : spool_write_result::quota_full;
++            },
++            [&](bool retry_quota) {
++                if (retry_quota)
++                    queue_cv.wait_for(lock, kSpoolQuotaRetryInterval, can_wake);
++                else
++                    queue_cv.wait(lock, can_wake);
++            }));
++    });
++
++    const bool attempted = first.wait_for(std::chrono::seconds(2))
++        == std::future_status::ready;
++    // Simulate another lane popping one of its disk chunks. This neither
++    // consumes our RAM chunk behind the disk backlog nor notifies our queue.
++    disk_quota_available.store(true);
++    const bool resumed = result.wait_for(std::chrono::seconds(2))
++        == std::future_status::ready;
++    if (!resumed) {
++        std::lock_guard<std::mutex> lock(queue_mutex);
++        cancelled = true;
++    }
++    queue_cv.notify_all();
++    receiver.join();
++    require(attempted && resumed, "disk quota release did not resume receiver");
++    require(result.get() == chunk_queue_storage::disk && !memory_available
++        && attempts.load() >= 2,
++        "quota must be retried without draining the occupied RAM slot");
++}
++
++void disk_failure_does_not_retry_io()
++{
++    bool memory_available = false;
++    unsigned attempts = 0;
++    unsigned waits = 0;
++    const auto result = await_chunk_queue_storage(
++        [&] { return memory_available; }, [] { return false; },
++        [&] { ++attempts; return spool_write_result::unavailable; },
++        [&](bool retry_quota) {
++            require(!retry_quota, "real disk failure must use RAM-only wait");
++            ++waits;
++            memory_available = true;
++        });
++    require(result == chunk_queue_storage::memory && attempts == 1 && waits == 1,
++        "disk failures must not become repeated I/O attempts");
++}
++
++void cancellation_stops_quota_retries()
++{
++    bool cancelled = false;
++    unsigned attempts = 0;
++    unsigned waits = 0;
++    const auto result = await_chunk_queue_storage(
++        [] { return false; }, [&] { return cancelled; },
++        [&] { ++attempts; return spool_write_result::quota_full; },
++        [&](bool retry_quota) {
++            require(retry_quota, "full quota must use bounded wait");
++            ++waits;
++            cancelled = true;
++        });
++    require(result == chunk_queue_storage::cancelled && attempts == 1 && waits == 1,
++        "cancelled receivers must not retry or enqueue a chunk");
++}
++
++void free_ram_wins_after_quota_wait()
++{
++    bool memory_available = false;
++    unsigned attempts = 0;
++    const auto result = await_chunk_queue_storage(
++        [&] { return memory_available; }, [] { return false; },
++        [&] { ++attempts; return spool_write_result::quota_full; },
++        [&](bool retry_quota) {
++            require(retry_quota, "full quota must be retryable");
++            memory_available = true;
++        });
++    require(result == chunk_queue_storage::memory && attempts == 1,
++        "a newly available RAM slot must avoid an unnecessary spool write");
++}
++} // namespace
++
++int main()
++{
++    try {
++        ready_memory_does_not_write_disk();
++        available_disk_does_not_need_ram();
++        another_lane_releases_quota_without_ram_drain();
++        disk_failure_does_not_retry_io();
++        cancellation_stops_quota_retries();
++        free_ram_wins_after_quota_wait();
++        std::cout << "6 spool queue wait regression groups passed\n";
++        return 0;
++    } catch (const std::exception& error) {
++        std::cerr << error.what() << '\n';
++        return 1;
++    }
++}
+-- 
+2.54.0 (Apple Git-157)
+

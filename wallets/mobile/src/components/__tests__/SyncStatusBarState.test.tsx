@@ -10,7 +10,8 @@ jest.mock('../../i18n', () => ({
   useI18n: () => ({
     dateLocale: 'en-US',
     t: (key: string, params?: Record<string, string | number>) =>
-      key === 'sync.percent' ? `${params?.percent}%` : key,
+      key === 'sync.percent' ? `${params?.percent}%`
+        : key === 'sync.networkRate' ? `${params?.rate} Mbit/s` : key,
   }),
 }));
 
@@ -24,7 +25,8 @@ const network = {
   state: 'synced', phase: 'synced', downloadStartHeight: height - 100,
   downloadedHeight: height, chainHeight: height, priorityWalletHeight: height,
   targetHeight: height, transportStarts: 1, joinedWallets: 1, stalledWallets: 0,
-} as NetworkSyncStatus;
+  blockTransport: 'grpc', blockTransportReason: 'grpc-active',
+} as unknown as NetworkSyncStatus;
 
 // Home owns expanded=true even when it mounts an already synchronized wallet.
 function HomeSyncCard(props: Partial<Props>) {
@@ -79,6 +81,25 @@ describe('sync card completion state', () => {
     expect(tree.root.findAllByProps({testID: 'sync-status-details'})).toHaveLength(0);
   });
 
+  it('expires a measured rate even when no further native status object arrives', () => {
+    const downloading = {...network, state: 'fetching-blocks', phase: 'fetching-blocks',
+      downloadedHeight: height - 80, chainHeight: height - 80,
+      payloadBytesReceived: 1_000_000, networkBytesReceived: 1_200,
+    } as NetworkSyncStatus;
+    const props: Partial<Props> = {networkStatus: downloading,
+      snapshot: {...snapshot, walletHeight: height - 80, synchronized: false},
+      readinessPhase: 'wallet-scan', syncStartHeight: height - 100};
+    render(props);
+    const rateTexts = () => tree.root.findAllByType(Text)
+      .map(node => node.props.children).filter(value => typeof value === 'string' && value.includes('Mbit/s'));
+    expect(rateTexts()).toHaveLength(0);
+    act(() => jest.advanceTimersByTime(750));
+    update({...props, networkStatus: {...downloading, payloadBytesReceived: 7_000_000}});
+    expect(rateTexts()).toContain('64.00 Mbit/s');
+    act(() => jest.advanceTimersByTime(3_000));
+    expect(rateTexts()).toHaveLength(0);
+  });
+
   it('identifies a failed Tor route without claiming the synced node is offline', () => {
     render({torStatus: {connected: false, phase: 'error', endpoint: 'node.onion:18089', checkedAtMs: 1}});
     expect(texts('sync-status-toggle')).toContain('sync.torUnavailable');
@@ -109,7 +130,7 @@ describe('sync card completion state', () => {
     expect(expanded()).toBe(true);
   });
 
-  it.each(['wallet-scan', 'block-sync', 'recovering-session', 'persisting-wallet'] as const)(
+  it.each(['wallet-scan', 'block-sync', 'recovering-session'] as const)(
     'does not claim Synced while the %s readiness gate is still pending',
     readinessPhase => {
       render({readinessPhase});
@@ -124,13 +145,35 @@ describe('sync card completion state', () => {
     },
   );
 
-  it('shows the mempool check when block download is at the target height', () => {
-    render({networkStatus: {...network, state: 'checking-mempool', phase: 'checking-mempool'}});
-    expect(texts('sync-status-toggle')).toContain('sync.checkingMempool');
-    expect(texts('blockchain-progress')).toContain('sync.checkingMempool');
-    expect(texts('blockchain-progress')).not.toContain('sync.synced');
-    expect(expanded()).toBe(true);
-    expect(ledColor()).toBe(colors.warning);
+  it('keeps the completed sync card stable during routine mempool checks', () => {
+    render();
+    update({networkStatus: {...network, state: 'checking-mempool', phase: 'checking-mempool'}});
+    expect(texts('sync-status-toggle')).toContain('sync.synced');
+    expect(expanded()).toBe(false);
+    expect(ledColor()).toBe(colors.success);
+    toggle();
+    expect(texts('blockchain-progress')).toContain('100%');
+    expect(texts('blockchain-progress')).not.toContain('sync.checkingMempool');
+  });
+
+  it('keeps two compact progress bars and the measured transport without an explanatory card', () => {
+    render({snapshot: {...snapshot, synchronized: false}, readinessPhase: 'wallet-scan'});
+    expect(tree.root.findAllByProps({testID: 'blockchain-progress'}, {deep: false})).toHaveLength(1);
+    expect(tree.root.findAllByProps({testID: 'wallet-progress'}, {deep: false})).toHaveLength(1);
+    expect(tree.root.findAllByProps({testID: 'sync-block-transport'})).toHaveLength(0);
+    expect(texts('sync-transport-badge')).toContain('gRPC');
+    expect(texts('sync-status-toggle')).toContain('sync.verifyingRecent');
+    expect(texts('wallet-progress')).not.toContain('sync.verifyingRecent');
+    expect(texts('wallet-progress')).not.toContain('100%');
+  });
+
+  it('keeps the real fallback warning visible in the compact download row', () => {
+    render({networkStatus: {...network, blockTransport: 'rpc', blockTransportReason: 'rpc-fallback'}});
+    toggle();
+    const badge = tree.root.findByProps({testID: 'sync-transport-badge'});
+    expect(StyleSheet.flatten(badge.props.style).color).toBe(colors.warning);
+    expect(badge.props.accessibilityLabel).toContain('sync.transport.fallback');
+    expect(ledColor()).not.toBe(colors.success);
   });
 
   it.each([
@@ -148,12 +191,31 @@ describe('sync card completion state', () => {
     expect(expanded()).toBe(true);
   });
 
-  it('keeps Ledger spend-output verification visible until it completes', () => {
-    render({readinessPhase: 'scanning-spend-outputs'});
-    expect(texts('sync-status-toggle')).toContain('sync.spendOutputsChecking');
+  it('keeps the Ledger instruction visible alongside a completed scan', () => {
+    render({readinessPhase: 'waiting-ledger'});
+    expect(texts('sync-status-toggle')).toContain('sync.synced');
+    expect(expanded()).toBe(false);
+    expect(texts('ledger-verification-status')).toContain('sync.waitingLedger');
+    toggle();
+    expect(texts('wallet-progress')).toContain('100%');
+    update({readinessPhase: 'scanning-spend-outputs'});
+    expect(texts('ledger-verification-status')).toContain('sync.spendOutputsChecking');
+    expect(texts('wallet-progress')).toContain('100%');
+    toggle();
+    update({readinessPhase: 'waiting-ledger'});
+    expect(expanded()).toBe(false);
+    expect(texts('ledger-verification-status')).toContain('sync.waitingLedger');
+    update();
+    expect(tree.root.findAllByProps({testID: 'ledger-verification-status'})).toHaveLength(0);
+  });
+
+  it('shows scan progress with no hardware hint until the viewing wallet catches up', () => {
+    render({
+      readinessPhase: 'wallet-scan',
+      snapshot: {...snapshot, walletHeight: height - 5, synchronized: false},
+    });
     expect(texts('wallet-progress')).not.toContain('100%');
-    expect(ledColor()).toBe(colors.warning);
-    expect(expanded()).toBe(true);
+    expect(tree.root.findAllByProps({testID: 'ledger-verification-status'})).toHaveLength(0);
   });
 
   it('resets the details when switching to another wallet', () => {

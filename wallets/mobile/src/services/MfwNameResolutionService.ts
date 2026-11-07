@@ -1,4 +1,7 @@
-import manifest from '../../../../config/v1-release-features.json';
+import {
+  mfwResolverOrigins,
+  mfwResolverSuggestionOrigins,
+} from '../../../../packages/wallet-shared/src/mfwResolverPreference';
 import {
   requireV1ReleaseFeature,
   v1ReleaseFeatures,
@@ -17,10 +20,11 @@ import {
   MFW_NAME_MIN_CONFIRMATIONS,
 } from './MfwNameRegistration';
 import { walletService } from './WalletService';
+import { loadMfwResolverPreference } from './MfwResolverSettings';
 
 /**
- * Resolves a public `.mfw` recipient through the immutable release
- * configuration. The feature gate is checked before any network request.
+ * Resolves a public `.mfw` recipient through the selected pinned resolver set.
+ * The feature gate is checked before any network request.
  */
 export async function resolveConfiguredMfwNameForPayment(
   input: string,
@@ -28,7 +32,7 @@ export async function resolveConfiguredMfwNameForPayment(
 ): Promise<string> {
   requireV1ReleaseFeature('mfwNameResolution');
 
-  const origins: readonly string[] = manifest.parameters.mfwNameResolverOrigins;
+  const origins = mfwResolverOrigins(await loadMfwResolverPreference());
   if (!v1ReleaseFeatures.mfwNameResolution || origins.length < 1) {
     throw new Error('MFW name resolution is not configured for this release');
   }
@@ -51,17 +55,15 @@ export async function fetchConfiguredMfwNameSuggestions(
   prefix: string,
 ): Promise<string[]> {
   requireV1ReleaseFeature('mfwNameResolution');
-  const suggestionOrigins: readonly string[] =
-    manifest.parameters.mfwNameSuggestionOnionOrigins;
-  if (!v1ReleaseFeatures.mfwNameResolution || suggestionOrigins.length < 1) {
-    throw new Error('MFW name resolution is not configured for this release');
-  }
+  const suggestionOrigins = mfwResolverSuggestionOrigins(
+    await loadMfwResolverPreference(),
+  );
+  if (suggestionOrigins.length === 0) return [];
 
   // Suggestions are display-only discovery data, but the entered prefix is
   // still private. Query the Registry's Onion origins directly through the
   // embedded Tor transport; never tunnel this lookup to a Clearnet hostname.
-  // Exact payment resolution below retains its independent quorum and native
-  // validation boundary.
+  // Exact payment resolution still verifies the signed record natively.
   return (await new MfwNameResolverQuorum(suggestionOrigins).suggest(prefix))
     .names;
 }
@@ -77,16 +79,15 @@ export interface DiscoveredMfwOwnedName {
 
 /**
  * Finds public Registry names for restored wallet addresses. Reverse results
- * are discovery hints only: every name is exact-resolved through a fresh
- * quorum, its signed record is verified natively, and its address must match
- * the queried wallet address before it is returned.
+ * are discovery hints only. Resolve each name with the same resolver set,
+ * verify its signed record natively and require a matching wallet address.
  */
 export async function discoverConfiguredMfwNamesForAddresses(input: {
   addresses: readonly string[];
   network: MoneroNetwork;
 }): Promise<DiscoveredMfwOwnedName[]> {
   requireV1ReleaseFeature('mfwNameRegistration');
-  const origins: readonly string[] = manifest.parameters.mfwNameResolverOrigins;
+  const origins = mfwResolverOrigins(await loadMfwResolverPreference());
   if (
     !v1ReleaseFeatures.mfwNameRegistration ||
     origins.length < 1 ||
@@ -108,18 +109,20 @@ export async function discoverConfiguredMfwNamesForAddresses(input: {
     ),
   ];
   const discovered = new Map<string, DiscoveredMfwOwnedName>();
+  const quorum = new MfwNameResolverQuorum(origins);
   for (const address of addresses) {
-    const reverse = await new MfwNameResolverQuorum(origins).reverse(address);
+    const reverse = await quorum.reverse(address);
     if (reverse.network !== input.network || reverse.truncated) {
       throw new Error(
         'MFW reverse discovery is incomplete or on another network',
       );
     }
     for (const name of reverse.names) {
-      const exact = await resolveConfiguredMfwOwnedNameForImport({
+      const exact = await resolveMfwOwnedNameForImport(
         name,
-        network: input.network,
-      });
+        input.network,
+        quorum,
+      );
       if (exact.address !== address) {
         throw new Error('MFW reverse discovery changed the verified address');
       }
@@ -136,18 +139,29 @@ export async function resolveConfiguredMfwOwnedNameForImport(input: {
   network: MoneroNetwork;
 }): Promise<{ resolution: MfwNameResolution; address: string }> {
   requireV1ReleaseFeature('mfwNameRegistration');
-  const origins: readonly string[] = manifest.parameters.mfwNameResolverOrigins;
+  const origins = mfwResolverOrigins(await loadMfwResolverPreference());
   if (!v1ReleaseFeatures.mfwNameRegistration || origins.length < 1) {
     throw new Error('MFW name registration is not configured for this release');
   }
-  const canonicalName = canonicalMfwName(input.name);
-  const quorum = new MfwNameResolverQuorum(origins);
+  return resolveMfwOwnedNameForImport(
+    input.name,
+    input.network,
+    new MfwNameResolverQuorum(origins),
+  );
+}
+
+async function resolveMfwOwnedNameForImport(
+  name: string,
+  network: MoneroNetwork,
+  quorum: MfwNameResolverQuorum,
+): Promise<DiscoveredMfwOwnedName> {
+  const canonicalName = canonicalMfwName(name);
   const resolution = await quorum.resolve(canonicalName);
   await quorum.verifyFinalizedRecord(resolution);
   if (
     resolution.status !== 'finalized' ||
     resolution.canonicalName !== canonicalName ||
-    resolution.network !== input.network ||
+    resolution.network !== network ||
     resolution.confirmations < MFW_NAME_MIN_CONFIRMATIONS ||
     resolution.expiryHeight <= resolution.chainTipHeight ||
     !/^[0-9a-f]{64}$/.test(resolution.ownerPublicKeyHex) ||
@@ -160,15 +174,12 @@ export async function resolveConfiguredMfwOwnedNameForImport(input: {
   const address = await createMfwNameNativeCrypto().verifyRecordAddress({
     recordPayloadHex: resolution.recordPayloadHex,
     expectedName: canonicalName,
-    network: input.network,
+    network,
     signingOwnerPublicKeyHex: resolution.signingOwnerPublicKeyHex,
   });
   return {
     resolution,
-    address: await walletService.validateRecipientAddress(
-      address,
-      input.network,
-    ),
+    address: await walletService.validateRecipientAddress(address, network),
   };
 }
 
@@ -178,7 +189,7 @@ export async function resolveConfiguredMfwNameTransitionPredecessor(input: {
   expectedOwnerPublicKeyHex: string;
 }): Promise<MfwNameResolution> {
   requireV1ReleaseFeature('mfwNameRegistration');
-  const origins: readonly string[] = manifest.parameters.mfwNameResolverOrigins;
+  const origins = mfwResolverOrigins(await loadMfwResolverPreference());
   if (!v1ReleaseFeatures.mfwNameRegistration || origins.length < 1) {
     throw new Error('MFW name registration is not configured for this release');
   }
@@ -211,7 +222,7 @@ export async function resolveConfiguredMfwOwnedNameFinalization(input: {
   expectedStatus?: 'finalized' | 'revoked';
 }): Promise<MfwNameResolution> {
   requireV1ReleaseFeature('mfwNameRegistration');
-  const origins: readonly string[] = manifest.parameters.mfwNameResolverOrigins;
+  const origins = mfwResolverOrigins(await loadMfwResolverPreference());
   if (!v1ReleaseFeatures.mfwNameRegistration || origins.length < 1) {
     throw new Error('MFW name registration is not configured for this release');
   }

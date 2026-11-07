@@ -9,11 +9,13 @@ import {
 } from 'react-native';
 import {useSafeAreaInsets} from 'react-native-safe-area-context';
 import {Icon} from '../components/Icon';
+import BlockSyncTransportStatus from '../components/BlockSyncTransportStatus';
 import {useI18n} from '../i18n';
 import {colors, radius, spacing} from '../theme/colors';
 import {
   requireNativeMoneroWallet,
   type MoneroNetwork,
+  type NetworkSyncStatus,
 } from '../services/NativeMoneroWallet';
 import {
   createDefaultNodeConnectionSettings,
@@ -102,6 +104,7 @@ export default function NodeStatusScreen({navigation}: any) {
   const [diagnostics, setDiagnostics] =
     useState<ConnectionDiagnosticsResult | null>(null);
   const [diagnosticsRunning, setDiagnosticsRunning] = useState(false);
+  const [blockSyncStatus, setBlockSyncStatus] = useState<NetworkSyncStatus>();
   const [spoolLimitMib, setSpoolLimitMib] = useState(1024);
   const [spoolPreferenceSaved, setSpoolPreferenceSaved] = useState(false);
   const connectivity = useConnectivityState();
@@ -169,6 +172,34 @@ export default function NodeStatusScreen({navigation}: any) {
       mounted = false;
     };
   }, []); // Deliberately load the one global profile only once.
+
+  useEffect(() => {
+    setBlockSyncStatus(undefined);
+    // A reachability probe for a configured endpoint does not prove which
+    // transport the live downloader is actually using. Keep this separate,
+    // and never show an old profile's result while settings are being saved.
+    if (saveState !== 'saved' || currentFingerprint !== persistedFingerprint) return;
+    let mounted = true;
+    let inFlight = false;
+    const refresh = async () => {
+      if (inFlight) return;
+      inFlight = true;
+      try {
+        const live = await requireNativeMoneroWallet().networkSyncStatus(draft.network);
+        if (mounted) setBlockSyncStatus(live.network === draft.network ? live : undefined);
+      } catch {
+        if (mounted) setBlockSyncStatus(undefined);
+      } finally {
+        inFlight = false;
+      }
+    };
+    void refresh();
+    const timer = setInterval(() => void refresh(), 1_000);
+    return () => {
+      mounted = false;
+      clearInterval(timer);
+    };
+  }, [currentFingerprint, draft.network, persistedFingerprint, saveState]);
 
   useEffect(() => {
     let mounted = true;
@@ -377,10 +408,12 @@ export default function NodeStatusScreen({navigation}: any) {
             icon="globe"
             label={t('nodeStatus.clearnetRoute')}
             hint={t('nodeStatus.clearnetHint')}
+            probeOnly
             result={displayedDiagnostics.clearnet}
             running={diagnosticsRunning}
             t={t}
           /> : null}
+          <BlockSyncTransportStatus status={blockSyncStatus} testID="node-block-transport" />
           <TouchableOpacity
             accessibilityRole="button"
             activeOpacity={0.8}
@@ -549,6 +582,7 @@ function RouteCard({
   hint,
   result,
   running,
+  probeOnly = false,
   t,
 }: {
   icon: 'onion' | 'globe';
@@ -556,13 +590,14 @@ function RouteCard({
   hint: string;
   result: ConnectionRouteResult | undefined;
   running: boolean;
+  probeOnly?: boolean;
   t: ReturnType<typeof useI18n>['t'];
 }) {
   const connected = result?.status === 'connected';
   const status = running
     ? t('nodeStatus.checking')
     : connected
-      ? t('nodeStatus.connected')
+      ? t(probeOnly ? 'nodeStatus.endpointReachable' : 'nodeStatus.connected')
       : result
         ? t('nodeStatus.notConnected')
         : t('status.pending');
@@ -579,7 +614,7 @@ function RouteCard({
         <Text
           style={[
             s.routeStatus,
-            connected && s.connectedText,
+            connected && !running && !probeOnly && s.connectedText,
             result?.status === 'error' && s.errorText,
           ]}
         >

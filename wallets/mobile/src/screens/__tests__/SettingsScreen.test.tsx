@@ -1,9 +1,11 @@
 import React from 'react';
 import ReactTestRenderer from 'react-test-renderer';
 import { Alert, Text, TextInput, TouchableOpacity } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import { LanguageProvider } from '../../i18n';
 import { AppSecurityProvider } from '../../services/AppSecurity';
+import { loadMfwResolverPreference } from '../../services/MfwResolverSettings';
 import { walletService } from '../../services/WalletService';
 import SettingsScreen from '../SettingsScreen';
 import NodeStatusScreen, {liveRouteResult} from '../NodeStatusScreen';
@@ -230,6 +232,22 @@ describe('SettingsScreen', () => {
     renderers.push(renderer!);
     return renderer!;
   }
+
+  it('defaults to both .mfw resolvers and persists a selected single resolver', async () => {
+    await AsyncStorage.clear();
+    const renderer = await renderSettings();
+    expect(buttonWithText(renderer, 'Both (recommended)').props.accessibilityState)
+      .toMatchObject({ selected: true });
+
+    await ReactTestRenderer.act(async () => {
+      await buttonWithText(renderer, 'Community only').props.onPress();
+    });
+    expect(buttonWithText(renderer, 'Community only').props.accessibilityState)
+      .toMatchObject({ selected: true });
+
+    await expect(loadMfwResolverPreference()).resolves.toBe('community');
+    await AsyncStorage.clear();
+  });
 
   it('shows separate editable Tor daemon and Clearnet sync fields on Node Status', async () => {
     const renderer = await renderNodeStatus();

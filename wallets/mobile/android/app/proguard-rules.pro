@@ -20,6 +20,15 @@
     public static byte[] ledgerBleExchange(byte[], boolean);
 }
 
+# Shared send-plan JNI callbacks are private trusted native entry points.
+-keepnames class com.monerowallet.NativeMoneroWalletModule
+-keepclassmembers class com.monerowallet.NativeMoneroWalletModule {
+    private static boolean checkSendPlanAuthorization();
+  private static long sendPlanAuthorizationGeneration();
+    private static java.lang.String readSendPlanJournal();
+    private static void writeSendPlanJournal(java.lang.String);
+}
+
 # tor-android's native libtor.so looks up TorService fields and native methods
 # by their exact JVM names. The published AAR does not provide consumer rules,
 # so keep this small JNI boundary intact in minified release builds.

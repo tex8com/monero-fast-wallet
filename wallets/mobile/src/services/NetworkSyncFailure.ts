@@ -19,6 +19,16 @@ type NetworkSyncFailureSource = Pick<
   'lastError' | 'phase' | 'state'
 >;
 
+/** Keep the download counters after a failed status read, but never present
+ * the retained transport or priority cursor as a fresh observation. */
+export function networkSyncStatusAfterReadFailure(
+  previous: NetworkSyncStatus | undefined,
+): NetworkSyncStatus | undefined {
+  return previous
+    ? {...previous, blockTransport: 'unknown', blockTransportReason: 'checking', priorityWalletId: undefined}
+    : undefined;
+}
+
 export function networkSyncFailureCode(
   status: NetworkSyncFailureSource | undefined,
 ): NetworkSyncFailureCode | undefined {

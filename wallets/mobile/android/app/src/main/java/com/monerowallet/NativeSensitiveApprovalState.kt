@@ -7,6 +7,7 @@ internal data class NativeTransactionApproval(
   val amountAtomic: String,
   val feeAtomic: String,
   val expiresAtMs: Long,
+  val authorizationGeneration: Long,
 )
 
 /**
@@ -19,6 +20,7 @@ internal object NativeSensitiveApprovalState {
 
   @Synchronized
   fun put(approval: NativeTransactionApproval) {
+    requireNativeAuthorizationGeneration(approval.authorizationGeneration)
     transactionApprovals.clear()
     transactionApprovals[approval.pendingId] = approval
   }
@@ -27,7 +29,8 @@ internal object NativeSensitiveApprovalState {
   fun consume(walletId: String, pendingId: String): NativeTransactionApproval? {
     val approval = transactionApprovals.remove(pendingId) ?: return null
     return approval.takeIf {
-      it.walletId == walletId && it.expiresAtMs >= System.currentTimeMillis()
+      it.walletId == walletId && it.expiresAtMs >= System.currentTimeMillis() &&
+        nativeAuthorizationMatchesGeneration(it.authorizationGeneration)
     }
   }
 

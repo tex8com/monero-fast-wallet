@@ -1,8 +1,13 @@
+import { Platform } from 'react-native';
+import { ledgerNativeCancellationSupported, UnsupportedLedgerCancellationError } from './LedgerCancellation';
 import {
   ledgerCoreDeviceName,
   requireNativeMoneroWallet,
 } from './NativeMoneroWallet';
 import { walletSnapshotIsSynchronized } from './WalletSynchronization';
+import { SendPlanReleaseGate } from '../../../../packages/wallet-shared/src/sendPlan';
+import { distinctPhysicalSendSourceIndexes, isPreparedSendPlan, parseWalletSendPlan, physicalSendSourceIdentity, reviewedWalletSendPlan } from './WalletSendPlan';
+import type { SendPlan, ReviewedWalletTransaction } from './WalletSendPlan';
 import {
   daemonRequiresEmbeddedTor,
   prepareDaemonForConnection,
@@ -65,6 +70,7 @@ import {
   loadWalletAddresses,
   removeWalletAddresses,
   upsertWalletAddress,
+  upsertWalletAddresses,
 } from './WalletAddressRegistry';
 import type { WalletAddressRecord } from './WalletAddressRegistry';
 import type {
@@ -91,6 +97,7 @@ import type {
   RestoreWalletWithNativeSeedInput,
   TransactionPriority,
   WalletTransaction,
+  WalletAccount,
   WalletSnapshot,
 } from './NativeMoneroWallet';
 import type { LedgerKeyImageSyncResult } from '../../specs/NativeMoneroWallet';
@@ -419,6 +426,7 @@ export class WalletService {
     CachedWalletSpendAccountScope
   >();
   private spendAccountIndexesCache = new Map<string, readonly number[]>();
+  private sendPlanReleaseGate = new SendPlanReleaseGate();
 
   private requireSigningSession(session: WalletSession): void {
     if (session.readOnly) {
@@ -470,6 +478,9 @@ export class WalletService {
   }
 
   async cancelLedgerOperation(): Promise<void> {
+    if (!ledgerNativeCancellationSupported(Platform.OS)) {
+      throw new UnsupportedLedgerCancellationError();
+    }
     return requireNativeMoneroWallet().cancelLedgerOperation();
   }
 
@@ -4372,6 +4383,85 @@ export class WalletService {
     );
   }
 
+  /** Ordinary payments always use the complete physical wallet, across accounts. */
+  async prepareSendPlan(
+    sessions: readonly WalletSession[],
+    input: PrepareWalletTransactionInput,
+  ): Promise<ReviewedWalletTransaction> {
+    if (sessions.length === 0) throw new Error('Select a payment wallet.');
+    const ownedNames = await loadMfwOwnedNames();
+    for (const source of sessions) {
+      this.requireSigningSession(source);
+      if (source.network !== sessions[0].network) throw new Error('Payment wallets must use the same Monero network.');
+      await assertNoHeldMfwClaim(source.registrationId);
+      if (ownedNames.some(record => record.walletRegistrationId === source.registrationId &&
+        record.stage === 'claim-pending' && record.claimScheduledAt !== undefined)) {
+        throw new Error('A name transaction is scheduled for a selected wallet. Wait until it is broadcast before sending other funds.');
+      }
+    }
+    const identities = await Promise.all(sessions.map(source => this.sendSourceIdentity(source)));
+    const distinctSources = distinctPhysicalSendSourceIndexes(identities).map(index => sessions[index]);
+    await this.releasePendingSendPlans();
+    const response = await requireNativeMoneroWallet().prepareSendPlan(JSON.stringify({
+      sources: distinctSources.map(source => ({ walletId: source.walletId })),
+      address: input.address,
+      amountAtomic: input.sweepAll ? '' : input.amountAtomic,
+      priority: input.priority ?? 'low',
+    }));
+    const plan = parseWalletSendPlan(JSON.parse(response));
+    if (!isPreparedSendPlan(plan)) {
+      throw new Error(plan.error || 'The native payment preview could not be prepared. Check its saved status.');
+    }
+    return reviewedWalletSendPlan(plan);
+  }
+
+  async sendSourceIdentity(session: WalletSession): Promise<string> {
+    // A registration, native handle or cached account address can be an alias.
+    // Always identify the physical master through native account 0/address 0.
+    return physicalSendSourceIdentity(session.network, await this.getAddress(session, 0, 0));
+  }
+
+  async sendPlanStatus(planId: string): Promise<SendPlan> {
+    const plan = parseWalletSendPlan(JSON.parse(await requireNativeMoneroWallet().sendPlanStatus(planId)));
+    if (plan.id !== planId) throw new Error('The native payment status belongs to another plan.');
+    return plan;
+  }
+
+  async listSendPlans(): Promise<SendPlan[]> {
+    const plans: unknown = JSON.parse(await requireNativeMoneroWallet().listSendPlans());
+    if (!Array.isArray(plans)) throw new Error('The saved payment statuses could not be read.');
+    return plans.map(parseWalletSendPlan);
+  }
+
+  async commitSendPlan(planId: string): Promise<SendPlan> {
+    try {
+      const result = parseWalletSendPlan(JSON.parse(await requireNativeMoneroWallet().commitSendPlan(planId)));
+      if (result.id !== planId) throw new Error('The native payment result belongs to another plan.');
+      return await this.sendPlanStatus(planId).catch(() => result);
+    } catch {
+      // The same durable plan is the only authority after a bridge failure.
+      // Never prepare or broadcast a replacement automatically.
+      return this.sendPlanStatus(planId);
+    }
+  }
+
+  async discardSendPlan(planId: string): Promise<void> {
+    this.sendPlanReleaseGate.requireDiscard(planId);
+    await this.releasePendingSendPlans();
+  }
+
+  private releasePendingSendPlans(): Promise<void> {
+    return this.sendPlanReleaseGate.discardPending(async planId => {
+      await requireNativeMoneroWallet().discardSendPlan(planId);
+      return this.sendPlanStatus(planId);
+    });
+  }
+
+  async snapshotForAllAccounts(session: WalletSession): Promise<WalletSnapshot> {
+    return traceWalletOperation('snapshotForAllAccounts', sessionLogFields(session),
+      () => requireNativeMoneroWallet().snapshot(session.walletId));
+  }
+
   async prepareTransaction(
     session: WalletSession,
     input: PrepareWalletTransactionInput,
@@ -4771,6 +4861,29 @@ export class WalletService {
     return record;
   }
 
+  async getAccounts(session: WalletSession): Promise<WalletAccount[]> {
+    const accounts = await traceWalletOperation(
+      'getAccounts',
+      sessionLogFields(session),
+      () => requireNativeMoneroWallet().getAccounts(session.walletId),
+    );
+    if (!Array.isArray(accounts) || accounts.length === 0) {
+      throw new Error('The native wallet did not return its complete account list.');
+    }
+    const seen = new Set<number>();
+    for (const account of accounts) {
+      if (!Number.isSafeInteger(account.accountIndex) || account.accountIndex < 0 || seen.has(account.accountIndex)) {
+        throw new Error('The native wallet returned an invalid account list.');
+      }
+      seen.add(account.accountIndex);
+      const balance = parseAtomicBalance(account.balanceAtomic);
+      const unlocked = parseAtomicBalance(account.unlockedBalanceAtomic);
+      if (unlocked > balance) throw new Error('The native account balance is inconsistent.');
+    }
+    if (!seen.has(0)) throw new Error('The native wallet account list is incomplete.');
+    return [...accounts].sort((left, right) => left.accountIndex - right.accountIndex);
+  }
+
   async listSubaddresses(
     session: WalletSession,
     requestedAccountIndexes?: readonly number[],
@@ -4779,17 +4892,14 @@ export class WalletService {
     if (!registrationId) {
       throw new Error('Open a registered wallet before listing addresses');
     }
-    const accountIndexes = Array.from(
-      new Set(
-        (requestedAccountIndexes?.length
-          ? requestedAccountIndexes
-          : [session.accountIndex ?? 0]
-        ).filter(
-          accountIndex =>
-            Number.isSafeInteger(accountIndex) && accountIndex >= 0,
-        ),
-      ),
-    ).sort((left, right) => left - right);
+    const accounts = await this.getAccounts(session);
+    const knownAccounts = new Set(accounts.map(account => account.accountIndex));
+    const accountIndexes = requestedAccountIndexes === undefined
+      ? accounts.map(account => account.accountIndex)
+      : [...new Set(requestedAccountIndexes)].sort((left, right) => left - right);
+    if (!accountIndexes.length || accountIndexes.some(index => !Number.isSafeInteger(index) || !knownAccounts.has(index))) {
+      throw new Error('The requested wallet account is not in the native account list.');
+    }
     const [nativeAddressGroups, storedAddresses] = await Promise.all([
       Promise.all(
         accountIndexes.map(accountIndex =>
@@ -4806,30 +4916,35 @@ export class WalletService {
       ),
       loadWalletAddresses(registrationId),
     ]);
+    nativeAddressGroups.forEach((addresses, groupIndex) => {
+      const expectedAccount = accountIndexes[groupIndex];
+      const seen = new Set<number>();
+      for (const address of addresses) {
+        if (address.accountIndex !== expectedAccount || !Number.isSafeInteger(address.addressIndex) || address.addressIndex < 0 || seen.has(address.addressIndex) || !address.address.trim()) {
+          throw new Error('The native wallet returned an invalid receiving-address list.');
+        }
+        seen.add(address.addressIndex);
+        parseAtomicBalance(address.balanceAtomic);
+      }
+      if (!seen.has(0)) throw new Error('A wallet account is missing its primary receiving address.');
+    });
     const nativeAddresses = nativeAddressGroups.flat();
     const storedById = new Map(
       storedAddresses.map(address => [address.id, address]),
     );
-    for (const address of nativeAddresses) {
+    await upsertWalletAddresses(nativeAddresses.map(address => {
       const id = `${registrationId}:${address.accountIndex}:${address.addressIndex}`;
-      await upsertWalletAddress(
-        createWalletAddressRecord({
-          walletId: registrationId,
-          accountIndex: address.accountIndex,
-          addressIndex: address.addressIndex,
-          address: address.address,
-          label:
-            address.label ||
-            storedById.get(id)?.label ||
-            (address.addressIndex === 0
-              ? address.accountIndex === 0
-                ? 'Primary account'
-                : `Account ${address.accountIndex}`
-              : undefined),
-          createdAt: storedById.get(id)?.createdAt,
-        }),
-      );
-    }
+      return createWalletAddressRecord({
+        walletId: registrationId,
+        accountIndex: address.accountIndex,
+        addressIndex: address.addressIndex,
+        address: address.address,
+        label: address.label || storedById.get(id)?.label || (address.addressIndex === 0
+          ? address.accountIndex === 0 ? 'Primary account' : `Account ${address.accountIndex}`
+          : undefined),
+        createdAt: storedById.get(id)?.createdAt,
+      });
+    }));
     const nativeAddressById = new Map(
       nativeAddresses.map(address => [
         `${registrationId}:${address.accountIndex}:${address.addressIndex}`,

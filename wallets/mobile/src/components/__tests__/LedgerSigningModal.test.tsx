@@ -21,6 +21,41 @@ jest.mock('../../i18n', () => ({
 }));
 
 describe('LedgerSigningModal', () => {
+  it.each([
+    ['verifying-wallet', 'ledgerSigning.verifyingWallet', 'ledgerSigning.verifyingInstructions'],
+    ['preparing-transaction', 'ledgerSigning.preparingTransaction', 'ledgerSigning.preparingInstructions'],
+  ] as const)('explains %s without claiming a new block scan or a detected approval dialog', (phase, messageKey, instructionsKey) => {
+    const onCancel = jest.fn();
+    let renderer: ReactTestRenderer.ReactTestRenderer | undefined;
+    ReactTestRenderer.act(() => {
+      renderer = ReactTestRenderer.create(<LedgerSigningModal canCancel={false}
+        onCancel={onCancel} progress={{phase}} />);
+    });
+    const text = renderer!.root.findAllByType(Text).map(node => node.props.children).join(' ');
+    expect(text).toContain(messageKey);
+    expect(text).toContain(instructionsKey);
+    expect(text).not.toContain('Synchronizing the signing wallet');
+    expect(text).not.toContain('ledgerSigning.awaitingConfirmation');
+    expect(renderer!.root.findAllByType(TouchableOpacity)).toHaveLength(0);
+    ReactTestRenderer.act(() => renderer!.root.findByType(Modal).props.onRequestClose());
+    expect(onCancel).not.toHaveBeenCalled();
+    ReactTestRenderer.act(() => renderer!.unmount());
+  });
+
+  it('does not dismiss a native operation when cancellation is unsupported', () => {
+    const onCancel = jest.fn();
+    let renderer: ReactTestRenderer.ReactTestRenderer | undefined;
+    ReactTestRenderer.act(() => {
+      renderer = ReactTestRenderer.create(<LedgerSigningModal canCancel={false}
+        onCancel={onCancel} progress={{ phase: 'preparing-request' }} />);
+    });
+    expect(renderer!.root.findAllByType(TouchableOpacity)).toHaveLength(0);
+    ReactTestRenderer.act(() => renderer!.root.findByType(Modal).props.onRequestClose());
+    expect(onCancel).not.toHaveBeenCalled();
+    expect(renderer!.root.findByProps({ testID: 'ledger-signing-spinner' })).toBeDefined();
+    ReactTestRenderer.act(() => renderer!.unmount());
+  });
+
   it('keeps wallet synchronization cancellable after Ledger connects', () => {
     const onCancel = jest.fn();
     let renderer: ReactTestRenderer.ReactTestRenderer | undefined;

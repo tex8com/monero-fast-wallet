@@ -40,10 +40,8 @@ import type {
 } from '../services/NativeMoneroWallet';
 import { formatAtomicXmr } from '../services/WalletFormat';
 import { walletService } from '../services/WalletService';
-import {
-  loadWalletAddresses,
-  type WalletAddressRecord,
-} from '../services/WalletAddressRegistry';
+import type { WalletAddressRecord } from '../services/WalletAddressRegistry';
+import { groupWalletAddresses } from '../services/WalletAddressGroups';
 import { transactionsForWalletAddress } from '../services/WalletAddressActivity';
 import { useXmrPrice } from '../data/priceService';
 import {
@@ -150,17 +148,31 @@ function addressBalanceDetail(
 export default function ReceiveScreen({ navigation, route }: any) {
   const [copied, setCopied] = useState(false);
   const [paymentLinkCopied, setPaymentLinkCopied] = useState(false);
-  const [paymentLinkBusy, setPaymentLinkBusy] =
-    useState<PaymentLinkAction>();
+  const [paymentLinkBusy, setPaymentLinkBusy] = useState<PaymentLinkAction>();
   const [paymentLinkError, setPaymentLinkError] = useState<string>();
   const [paymentAmount, setPaymentAmount] = useState('');
   const [paymentAmountCurrency, setPaymentAmountCurrency] =
     useState<PaymentAmountCurrency>('XMR');
   const [hardwareBusy, setHardwareBusy] = useState(false);
   const [hardwareMessage, setHardwareMessage] = useState<string | undefined>();
-  const [walletAddresses, setWalletAddresses] = useState<WalletAddressRecord[]>(
-    [],
-  );
+  const [addressSample, setAddressSample] = useState<{
+    scope: string;
+    addresses: WalletAddressRecord[];
+  }>();
+  const [addressListStatus, setAddressListStatus] = useState<{
+    scope: string;
+    state: 'loading' | 'ready' | 'error';
+  }>();
+  const addressScopeRef = useRef('');
+  const addressReadGenerationRef = useRef(0);
+  const addressLoadInFlightRef = useRef<
+    | {
+        scope: string;
+        generation: number;
+        promise: Promise<WalletAddressRecord[] | undefined>;
+      }
+    | undefined
+  >(undefined);
   const [selectedAddressId, setSelectedAddressId] = useState<
     string | undefined
   >();
@@ -234,6 +246,22 @@ export default function ReceiveScreen({ navigation, route }: any) {
       isFastWalletRegistration(selectedRegisteredWallet) &&
       selectedRegisteredWallet.seedBackupStatus !== 'verified',
   );
+  const addressScope = `${session?.walletId ?? ''}:${
+    registeredWallet?.id ?? ''
+  }:${activeReceiveWalletId ?? ''}`;
+  addressScopeRef.current = addressScope;
+  const walletAddresses =
+    addressSample?.scope === addressScope ? addressSample.addresses : [];
+  const addressGroups = useMemo(
+    () => groupWalletAddresses(walletAddresses),
+    [walletAddresses],
+  );
+  const addressListReady =
+    addressListStatus?.scope === addressScope &&
+    addressListStatus.state === 'ready';
+  const addressListFailed =
+    addressListStatus?.scope === addressScope &&
+    addressListStatus.state === 'error';
   const selectedAddress =
     walletAddresses.find(item => item.id === selectedAddressId) ??
     walletAddresses[0];
@@ -271,33 +299,6 @@ export default function ReceiveScreen({ navigation, route }: any) {
         transactions.length,
       ),
   );
-  const receiveAccountIndexesKey = useMemo(() => {
-    const accountIndexes = new Set<number>();
-    const isLegacyAccountRegistration =
-      selectedRegisteredWallet?.kind === 'hardware' &&
-      selectedRegisteredWallet.role === 'fast';
-    if (isLegacyAccountRegistration) {
-      accountIndexes.add(session?.accountIndex ?? 0);
-    } else {
-      accountIndexes.add(0);
-      transactions.forEach(transaction => {
-        if (
-          Number.isSafeInteger(transaction.subaddrAccount) &&
-          transaction.subaddrAccount >= 0
-        ) {
-          accountIndexes.add(transaction.subaddrAccount);
-        }
-      });
-    }
-    return Array.from(accountIndexes)
-      .sort((left, right) => left - right)
-      .join(',');
-  }, [
-    selectedRegisteredWallet?.kind,
-    selectedRegisteredWallet?.role,
-    session?.accountIndex,
-    transactions,
-  ]);
   const selectedAddressTransactions = useMemo(
     () => transactionsForWalletAddress(transactions, selectedAddress),
     [selectedAddress, transactions],
@@ -343,58 +344,65 @@ export default function ReceiveScreen({ navigation, route }: any) {
     }
   }, [routeManageAddresses, routeWalletId]);
 
-  useEffect(() => {
-    let mounted = true;
+  const loadAddresses = useCallback(async () => {
     if (
       !session ||
       !registeredWallet ||
       activeReceiveWalletId !== registeredWallet.id
-    ) {
-      setWalletAddresses([]);
-      return () => {
-        mounted = false;
-      };
-    }
-
-    const load = async () => {
-      const accountIndexes = receiveAccountIndexesKey
-        .split(',')
-        .map(value => Number(value))
-        .filter(value => Number.isSafeInteger(value) && value >= 0);
-      const addresses = await walletService.listSubaddresses(
-        session,
-        accountIndexes,
-      );
-      if (!mounted) {
-        return;
+    )
+      return undefined;
+    const scope = addressScope;
+    if (
+      addressLoadInFlightRef.current?.scope === scope &&
+      addressLoadInFlightRef.current.generation ===
+        addressReadGenerationRef.current
+    )
+      return addressLoadInFlightRef.current.promise;
+    const generation = ++addressReadGenerationRef.current;
+    setAddressListStatus({ scope, state: 'loading' });
+    const promise = (async () => {
+      try {
+        // Core's account list includes unused accounts; transaction history is
+        // deliberately not used to decide which receiving addresses exist.
+        const addresses = await walletService.listSubaddresses(session);
+        if (
+          addressScopeRef.current !== scope ||
+          addressReadGenerationRef.current !== generation
+        )
+          return undefined;
+        setAddressSample({ scope, addresses });
+        setAddressListStatus({ scope, state: 'ready' });
+        setSelectedAddressId(current =>
+          current && addresses.some(item => item.id === current)
+            ? current
+            : addresses[0]?.id,
+        );
+        return addresses;
+      } catch {
+        if (
+          addressScopeRef.current === scope &&
+          addressReadGenerationRef.current === generation
+        )
+          setAddressListStatus({ scope, state: 'error' });
+        return undefined;
       }
-      setWalletAddresses(addresses);
-      setSelectedAddressId(current =>
-        current && addresses.some(item => item.id === current)
-          ? current
-          : addresses[0]?.id,
-      );
+    })();
+    addressLoadInFlightRef.current = { scope, generation, promise };
+    const clear = () => {
+      if (addressLoadInFlightRef.current?.promise === promise)
+        addressLoadInFlightRef.current = undefined;
     };
+    void promise.then(clear, clear);
+    return promise;
+  }, [activeReceiveWalletId, addressScope, registeredWallet?.id, session]);
 
-    load().catch(() => {
-      loadWalletAddresses(registeredWallet.id)
-        .then(addresses => {
-          if (mounted) {
-            setWalletAddresses(addresses);
-          }
-        })
-        .catch(() => undefined);
-    });
-
+  useEffect(() => {
+    setAddressBusy(false);
+    void loadAddresses();
     return () => {
-      mounted = false;
+      addressReadGenerationRef.current += 1;
     };
-  }, [
-    activeReceiveWalletId,
-    receiveAccountIndexesKey,
-    registeredWallet,
-    session,
-  ]);
+  }, [loadAddresses]);
 
   useFocusEffect(
     useCallback(() => {
@@ -403,8 +411,9 @@ export default function ReceiveScreen({ navigation, route }: any) {
       // section never depends on a manual refresh action.
       refreshSnapshot().catch(() => undefined);
       refreshTransactions().catch(() => undefined);
+      void loadAddresses();
       return undefined;
-    }, [refreshSnapshot, refreshTransactions]),
+    }, [loadAddresses, refreshSnapshot, refreshTransactions]),
   );
 
   useEffect(() => {
@@ -560,10 +569,10 @@ export default function ReceiveScreen({ navigation, route }: any) {
   };
 
   const handleCreateAddress = async () => {
-    if (!session || !registeredWallet || addressBusy) {
+    if (!session || !registeredWallet || addressBusy || !addressListReady)
       return;
-    }
-
+    const scope = addressScope;
+    const generation = addressReadGenerationRef.current;
     setAddressBusy(true);
     try {
       const newAddress = await walletService.createSubaddress(
@@ -572,18 +581,22 @@ export default function ReceiveScreen({ navigation, route }: any) {
           t('receive.newAddressLabel', { count: walletAddresses.length + 1 }),
         selectedAddress?.accountIndex,
       );
-      const addresses = await walletService.listSubaddresses(
-        session,
-        receiveAccountIndexesKey
-          .split(',')
-          .map(value => Number(value))
-          .filter(value => Number.isSafeInteger(value) && value >= 0),
-      );
-      setWalletAddresses(addresses);
-      setSelectedAddressId(newAddress.id);
-      setNewAddressLabel('');
+      if (
+        addressScopeRef.current !== scope ||
+        addressReadGenerationRef.current !== generation
+      )
+        return;
+      const addresses = await loadAddresses();
+      if (addressScopeRef.current !== scope) return;
+      if (addresses?.some(item => item.id === newAddress.id)) {
+        setSelectedAddressId(newAddress.id);
+        setNewAddressLabel('');
+      }
+    } catch {
+      if (addressScopeRef.current === scope)
+        setAddressListStatus({ scope, state: 'error' });
     } finally {
-      setAddressBusy(false);
+      if (addressScopeRef.current === scope) setAddressBusy(false);
     }
   };
 
@@ -757,9 +770,7 @@ export default function ReceiveScreen({ navigation, route }: any) {
                   <Icon
                     name={paymentLinkCopied ? 'check' : 'copy'}
                     size={17}
-                    color={
-                      paymentLinkCopied ? colors.success : colors.orange
-                    }
+                    color={paymentLinkCopied ? colors.success : colors.orange}
                   />
                 )}
                 <Text style={s.paymentLinkSecondaryText} numberOfLines={1}>
@@ -801,6 +812,7 @@ export default function ReceiveScreen({ navigation, route }: any) {
               <View style={s.addressToolsContainer}>
                 <TouchableOpacity
                   accessibilityRole="button"
+                  accessibilityLabel={t('receive.manageAddresses')}
                   onPress={() => setShowAddressTools(value => !value)}
                   style={s.addressToolsToggle}
                 >
@@ -813,15 +825,16 @@ export default function ReceiveScreen({ navigation, route }: any) {
                   <View style={s.addressesBox}>
                     <View style={s.addressesHeader}>
                       <Text style={s.addressesTitle}>
-                        {t('receive.otherAddresses')}
+                        {t('receive.receivingAddresses')}
                       </Text>
                       <TouchableOpacity
                         activeOpacity={0.75}
-                        disabled={addressBusy}
+                        disabled={addressBusy || !addressListReady}
                         onPress={handleCreateAddress}
                         style={[
                           s.newAddressButton,
-                          addressBusy && s.addressButtonBusy,
+                          (addressBusy || !addressListReady) &&
+                            s.addressButtonBusy,
                         ]}
                       >
                         {addressBusy ? (
@@ -849,46 +862,113 @@ export default function ReceiveScreen({ navigation, route }: any) {
                     <Text style={s.addressPrivacyHint}>
                       {t('receive.subaddressPrivacyHint')}
                     </Text>
-                    {walletAddresses.map(item => {
-                      const selected = item.id === selectedAddress?.id;
-                      return (
-                        <TouchableOpacity
-                          accessibilityRole="radio"
-                          accessibilityState={{ selected }}
-                          activeOpacity={0.75}
-                          key={item.id}
-                          onPress={() => setSelectedAddressId(item.id)}
-                          style={[
-                            s.addressRow,
-                            selected && s.addressRowSelected,
-                          ]}
+                    {addressListReady ? (
+                      <>
+                        <Text
+                          style={s.addressInventory}
+                          testID="receive-address-inventory"
                         >
-                          <View style={s.addressRowCopy}>
-                            <Text style={s.addressRowLabel} numberOfLines={1}>
-                              {item.label}
+                          {t('receive.addressInventory', {
+                            accounts: addressGroups.length,
+                            addresses: walletAddresses.length,
+                          })}
+                        </Text>
+                        {addressGroups.map(group => (
+                          <View
+                            key={group.accountIndex}
+                            style={s.addressAccountGroup}
+                            testID={`receive-account-${group.accountIndex}`}
+                          >
+                            <Text style={s.addressAccountTitle}>
+                              {t('receive.accountAddressTitle', {
+                                account: group.accountIndex,
+                                name: group.label,
+                              })}
                             </Text>
-                            <Text style={s.addressRowValue} numberOfLines={1}>
-                              {shortAddress(item.address)}
+                            <Text style={s.addressAccountCount}>
+                              {t('receive.accountAddressCount', {
+                                count: group.addresses.length,
+                              })}
                             </Text>
+                            {group.addresses.map(item => {
+                              const selected = item.id === selectedAddress?.id;
+                              return (
+                                <TouchableOpacity
+                                  accessibilityRole="radio"
+                                  accessibilityState={{ selected }}
+                                  testID={`receive-address-${item.accountIndex}-${item.addressIndex}`}
+                                  activeOpacity={0.75}
+                                  key={item.id}
+                                  onPress={() => setSelectedAddressId(item.id)}
+                                  style={[
+                                    s.addressRow,
+                                    selected && s.addressRowSelected,
+                                  ]}
+                                >
+                                  <View style={s.addressRowCopy}>
+                                    <Text
+                                      style={s.addressRowLabel}
+                                      numberOfLines={1}
+                                    >
+                                      {item.label}
+                                    </Text>
+                                    <Text
+                                      style={s.addressRowValue}
+                                      numberOfLines={1}
+                                    >
+                                      {shortAddress(item.address)}
+                                    </Text>
+                                  </View>
+                                  <View style={s.addressRowBalanceGroup}>
+                                    <Text
+                                      style={s.addressRowBalance}
+                                      numberOfLines={1}
+                                    >
+                                      {addressBalanceDetail(
+                                        item,
+                                        ledgerBalanceUnverified,
+                                      )}
+                                    </Text>
+                                    {selected ? (
+                                      <Icon
+                                        name="check"
+                                        size={16}
+                                        color={colors.orange}
+                                      />
+                                    ) : null}
+                                  </View>
+                                </TouchableOpacity>
+                              );
+                            })}
                           </View>
-                          <View style={s.addressRowBalanceGroup}>
-                            <Text style={s.addressRowBalance} numberOfLines={1}>
-                              {addressBalanceDetail(
-                                item,
-                                ledgerBalanceUnverified,
-                              )}
-                            </Text>
-                            {selected ? (
-                              <Icon
-                                name="check"
-                                size={16}
-                                color={colors.orange}
-                              />
-                            ) : null}
-                          </View>
+                        ))}
+                      </>
+                    ) : addressListFailed ? (
+                      <View testID="receive-address-list-error">
+                        <Text
+                          accessibilityRole="alert"
+                          style={s.paymentLinkError}
+                        >
+                          {t('receive.addressListError')}
+                        </Text>
+                        <TouchableOpacity
+                          accessibilityRole="button"
+                          onPress={() => void loadAddresses()}
+                          style={s.newAddressButton}
+                        >
+                          <Text style={s.newAddressButtonText}>
+                            {t('action.retry')}
+                          </Text>
                         </TouchableOpacity>
-                      );
-                    })}
+                      </View>
+                    ) : (
+                      <View style={s.addressLoading}>
+                        <ActivityIndicator color={colors.orange} size="small" />
+                        <Text style={s.addressAccountCount}>
+                          {t('receive.addressListLoading')}
+                        </Text>
+                      </View>
+                    )}
                   </View>
                 ) : null}
               </View>
@@ -1387,6 +1467,24 @@ const s = StyleSheet.create({
     borderColor: colors.success,
   },
   addressToolsContainer: { width: '100%', marginTop: 12 },
+  addressInventory: {
+    color: colors.textSecondary,
+    fontSize: 13,
+    marginBottom: 8,
+  },
+  addressAccountGroup: { gap: 6, marginTop: 12 },
+  addressAccountTitle: {
+    color: colors.textPrimary,
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  addressAccountCount: { color: colors.textSecondary, fontSize: 12 },
+  addressLoading: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: 14,
+  },
   addressToolsToggle: {
     flexDirection: 'row',
     alignItems: 'center',

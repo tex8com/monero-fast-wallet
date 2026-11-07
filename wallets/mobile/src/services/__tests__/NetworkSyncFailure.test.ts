@@ -1,7 +1,10 @@
 import {
   networkSyncFailureCode,
   networkSyncFailureTranslationKey,
+  networkSyncStatusAfterReadFailure,
 } from '../NetworkSyncFailure';
+import type {NetworkSyncStatus} from '../NativeMoneroWallet';
+import {networkSyncTransportPresentation} from '../../../../../packages/wallet-shared/src/networkSync';
 
 const status = (lastError: string, state = 'retrying') => ({
   lastError,
@@ -52,5 +55,25 @@ describe('networkSyncFailureCode', () => {
     expect(networkSyncFailureTranslationKey('wallet-scan')).toBe(
       'sync.failureWalletScan',
     );
+  });
+
+  it('removes stale gRPC confirmation after an IPC read failure without losing progress', () => {
+    const previous = {
+      network: 'mainnet', state: 'fetching-blocks', phase: 'fetching-blocks',
+      blockTransport: 'grpc', blockTransportReason: 'grpc-stream',
+      chainHeight: 150, downloadStartHeight: 100, downloadedHeight: 170,
+      targetHeight: 200, transportStarts: 1, joinedWallets: 1,
+      stalledWallets: 0, payloadBytesReceived: 12345, providerGeneration: 4,
+    } as unknown as NetworkSyncStatus;
+    const next = networkSyncStatusAfterReadFailure(previous);
+    expect(next).toEqual({...previous, blockTransport: 'unknown', blockTransportReason: 'checking'});
+    expect(networkSyncTransportPresentation(next)).toMatchObject({
+      transport: 'unknown', tone: 'neutral', slowFallback: false,
+    });
+    expect(previous.blockTransport).toBe('grpc');
+  });
+
+  it('does not invent a transport snapshot when the first status read fails', () => {
+    expect(networkSyncStatusAfterReadFailure(undefined)).toBeUndefined();
   });
 });

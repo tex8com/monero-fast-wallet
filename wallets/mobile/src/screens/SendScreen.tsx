@@ -24,6 +24,10 @@ import LinearGradient from 'react-native-linear-gradient';
 import { colors, radius, spacing } from '../theme/colors';
 import { Icon } from '../components/Icon';
 import LedgerSigningModal from '../components/LedgerSigningModal';
+import { ledgerFlowCancellationAllowed, ledgerNativeCancellationSupported } from '../services/LedgerCancellation';
+import SendPlanReceipt from '../components/SendPlanReceipt';
+import { distinctPhysicalSendSourceIndexes, sendPlanOutcome, type SendPlan, type ReviewedWalletTransaction } from '../services/WalletSendPlan';
+import { classifySendPreparationError } from '../../../../packages/wallet-shared/src/sendErrors';
 import RecipientQrScanner from '../components/RecipientQrScanner';
 import SendSuccessModal, {
   type SendSuccessReceipt,
@@ -99,6 +103,10 @@ import {
   resolveConfiguredMfwNameForPayment,
 } from '../services/MfwNameResolutionService';
 import {
+  getMfwResolverPreferenceRevision,
+  useMfwResolverPreferenceRevision,
+} from '../services/MfwResolverSettings';
+import {
   acceptRecipientReview,
   createPrivatePhoneSendPreset,
   createRecipientReview,
@@ -139,7 +147,7 @@ export default function SendScreen({ navigation, route }: any) {
   const [sendError, setSendError] = useState<string | undefined>();
   const [sendStatus, setSendStatus] = useState<string | undefined>();
   const [preparedTx, setPreparedTx] = useState<
-    PreparedTransaction | undefined
+    ReviewedWalletTransaction | undefined
   >();
   const [preparedSession, setPreparedSession] = useState<
     WalletSession | undefined
@@ -147,6 +155,17 @@ export default function SendScreen({ navigation, route }: any) {
   const [sending, setSending] = useState(false);
   const preparationInFlightRef = useRef(false);
   const submissionInFlightRef = useRef(false);
+  const submittedPlanIdsRef = useRef(new Set<string>());
+  const [additionalWalletIds, setAdditionalWalletIds] = useState<string[]>([]);
+  const [additionalWalletsVisible, setAdditionalWalletsVisible] = useState(false);
+  const [sourceIdentitySample, setSourceIdentitySample] = useState<{
+    scope: string; identities?: string[]; error?: boolean;
+  } | undefined>(undefined);
+  const [sourceIdentityRetry, setSourceIdentityRetry] = useState(0);
+  const [savedSendPlans, setSavedSendPlans] = useState<SendPlan[]>([]);
+  const [planReceipt, setPlanReceipt] = useState<SendPlan | undefined>(undefined);
+  const [planStatusError, setPlanStatusError] = useState<string | undefined>(undefined);
+  const [checkingPlanStatus, setCheckingPlanStatus] = useState(false);
   const preparedSourceRef = useRef<{
     pendingId: string;
     registrationId: string | undefined;
@@ -165,6 +184,13 @@ export default function SendScreen({ navigation, route }: any) {
   const [ledgerSigningProgress, setLedgerSigningProgress] = useState<
     LedgerSigningProgress | undefined
   >();
+  const ledgerSigningProgressRef = useRef<LedgerSigningProgress | undefined>(undefined);
+  const updateLedgerSigningProgress = (progress: LedgerSigningProgress | undefined) => {
+    // Update before React renders, so an older cancel callback sees the live
+    // phase before native signing or synchronization starts.
+    ledgerSigningProgressRef.current = progress;
+    setLedgerSigningProgress(progress);
+  };
   const ledgerSigningCancelledRef = useRef(false);
   const [mfwNamePreset, setMfwNamePreset] = useState<
     MfwNameSendPreset | undefined
@@ -191,10 +217,11 @@ export default function SendScreen({ navigation, route }: any) {
   const [recentRecipients, setRecentRecipients] = useState<RecipientContact[]>(
     [],
   );
-  const [resolverMfwNames, setResolverMfwNames] = useState<string[]>([]);
-  const [resolvedMfwRecipient, setResolvedMfwRecipient] = useState<
-    { name: string; address: string } | undefined
-  >();
+  const [mfwLookupResult, setMfwLookupResult] = useState<{
+    resolverRevision: number;
+    names: string[];
+    recipient?: { name: string; address: string };
+  }>();
   const [mfwLookupPending, setMfwLookupPending] = useState(false);
   const [recipientValidationPending, setRecipientValidationPending] =
     useState(false);
@@ -202,6 +229,12 @@ export default function SendScreen({ navigation, route }: any) {
   const [contactLabel, setContactLabel] = useState('');
   const [contactAddress, setContactAddress] = useState('');
   const { dateLocale, t } = useI18n();
+  const resolverRevision = useMfwResolverPreferenceRevision();
+  const currentMfwLookup =
+    mfwLookupResult?.resolverRevision === resolverRevision
+      ? mfwLookupResult
+      : undefined;
+  const resolvedMfwRecipient = currentMfwLookup?.recipient;
   const acknowledgeIncomingPaymentLink =
     useIncomingPaymentLinkAcknowledgement();
   const consumePaymentLinkRoute = useCallback(
@@ -215,6 +248,7 @@ export default function SendScreen({ navigation, route }: any) {
   const {
     connectLedgerForSigning,
     isRegisteredWalletOpen,
+    getRegisteredWalletSession,
     openRegisteredWalletById,
     publishPendingOutgoing,
     reconcileLedgerBalance,
@@ -237,9 +271,8 @@ export default function SendScreen({ navigation, route }: any) {
     [],
   );
 
-  // Total Balance can span several Monero accounts, while one Core
-  // transaction spends from exactly one account. WalletService publishes the
-  // richest live account as this fail-closed transaction scope.
+  // Normal payments use all accounts in the selected physical wallet. Only
+  // purpose-bound name transactions keep their existing single-account path.
   const hasSpendAccountScope = Boolean(
     snapshot &&
       Number.isSafeInteger(snapshot.spendAccountIndex) &&
@@ -248,12 +281,35 @@ export default function SendScreen({ navigation, route }: any) {
       snapshot.spendBalanceAtomic !== undefined &&
       snapshot.spendUnlockedBalanceAtomic !== undefined,
   );
-  const unlockedAtomic = hasSpendAccountScope
-    ? toAtomicBigInt(snapshot?.spendUnlockedBalanceAtomic)
-    : 0n;
-  const accountBalanceAtomic = hasSpendAccountScope
+  const eligibleAdditionalSources = mfwNamePreset ? [] : registeredWallets.flatMap(wallet => {
+    if (wallet.id === registeredWallet?.id || wallet.network !== session?.network) return [];
+    const candidateSession = getRegisteredWalletSession?.(wallet.id);
+    const candidateSnapshot = walletSnapshots[wallet.id];
+    return candidateSession && candidateSession.network === session?.network &&
+      !candidateSession.readOnly && walletSnapshotIsSynchronized(candidateSnapshot)
+      ? [{ wallet, session: candidateSession }] : [];
+  });
+  const sourceIdentityScope = JSON.stringify([
+    registeredWallet?.id, session?.walletId, session?.network, Boolean(mfwNamePreset),
+    eligibleAdditionalSources.map(source => [source.wallet.id, source.session.walletId, source.session.network]),
+  ]);
+  const sourceIdentitiesReady = sourceIdentitySample?.scope === sourceIdentityScope &&
+    sourceIdentitySample.identities !== undefined;
+  const sourceIdentitiesFailed = sourceIdentitySample?.scope === sourceIdentityScope && sourceIdentitySample.error;
+  const additionalSources = sourceIdentitiesReady
+    ? distinctPhysicalSendSourceIndexes(sourceIdentitySample!.identities!).filter(index => index > 0)
+      .map(index => eligibleAdditionalSources[index - 1].wallet)
+    : [];
+  const validAdditionalWalletIds = additionalWalletIds.filter(id => additionalSources.some(source => source.id === id));
+  const additionalSourcesReady = additionalWalletIds.every(id => additionalSources.some(source => source.id === id));
+  const additionalUnlocked = validAdditionalWalletIds.reduce((total, id) =>
+    total + toAtomicBigInt(walletSnapshots[id]?.unlockedBalanceAtomic), 0n);
+  const unlockedAtomic = mfwNamePreset
+    ? (hasSpendAccountScope ? toAtomicBigInt(snapshot?.spendUnlockedBalanceAtomic) : toAtomicBigInt(snapshot?.unlockedBalanceAtomic))
+    : toAtomicBigInt(snapshot?.unlockedBalanceAtomic) + additionalUnlocked;
+  const accountBalanceAtomic = mfwNamePreset && hasSpendAccountScope
     ? toAtomicBigInt(snapshot?.spendBalanceAtomic)
-    : 0n;
+    : toAtomicBigInt(snapshot?.balanceAtomic) + validAdditionalWalletIds.reduce((total, id) => total + toAtomicBigInt(walletSnapshots[id]?.balanceAtomic), 0n);
   const lockedAtomic = accountBalanceAtomic > unlockedAtomic
     ? accountBalanceAtomic - unlockedAtomic
     : 0n;
@@ -268,12 +324,13 @@ export default function SendScreen({ navigation, route }: any) {
   const usd =
     hasAmount && price > 0 ? (amountNumber * price).toFixed(2) : '0.00';
   const walletSynchronized = walletSnapshotIsSynchronized(snapshot);
-  const availableBalanceKnown = walletSynchronized && hasSpendAccountScope;
+  const availableBalanceKnown = walletSynchronized && Boolean(snapshot) && additionalSourcesReady;
+  const unresolvedSavedPayment = savedSendPlans.some(plan => plan.leaseHeld);
   const sweepAvailable = Boolean(
     availableBalanceKnown && session && unlockedAtomic > 0n && !sending,
   );
   const sendEnabled =
-    Boolean(walletSynchronized && session) &&
+    Boolean(walletSynchronized && session && additionalSourcesReady && !unresolvedSavedPayment) &&
     address.trim().length > 0 &&
     (sweepAll ? unlockedAtomic > 0n : amountAvailable);
   const preparedFee = preparedTx
@@ -343,7 +400,7 @@ export default function SendScreen({ navigation, route }: any) {
     : 0;
   const normalApprovalExpiresAtMs = preparedTx?.approvalExpiresAtMs;
   const normalApprovalExpired = Boolean(
-    preparedTx && !mfwNamePreset && !sending &&
+    preparedTx && !preparedTx.sendPlan && !mfwNamePreset && !sending &&
       (normalApprovalExpiresAtMs === undefined ||
         !Number.isFinite(normalApprovalExpiresAtMs) ||
         normalApprovalExpiresAtMs <= approvalNowMs),
@@ -379,6 +436,7 @@ export default function SendScreen({ navigation, route }: any) {
     pendingId: preparedTx?.id,
     key: JSON.stringify([
       registeredWallet?.id, registeredWallet?.kind, session?.network,
+      additionalWalletIds.join(','),
       address.trim(), amount, amountCurrency, sweepAll,
       recipientReview?.address, recipientReview?.source, recipientReview?.resolvedAt,
       mfwNamePreset?.flowId, routeMfwNamePreset?.flowId,
@@ -386,14 +444,13 @@ export default function SendScreen({ navigation, route }: any) {
     ]),
   };
   const mfwAutocomplete = useMemo(
-    () => mfwNameAutocompleteSuggestions(address, resolverMfwNames),
-    [address, resolverMfwNames],
+    () => mfwNameAutocompleteSuggestions(address, currentMfwLookup?.names ?? []),
+    [address, currentMfwLookup],
   );
 
   useEffect(() => {
     const generation = ++mfwLookupGeneration.current;
-    setResolverMfwNames([]);
-    setResolvedMfwRecipient(undefined);
+    setMfwLookupResult(undefined);
     setMfwLookupPending(false);
     if (step !== 'manual-recipient') {
       return;
@@ -416,15 +473,20 @@ export default function SendScreen({ navigation, route }: any) {
             )
           : Promise.resolve(undefined),
       ]).then(([names, resolvedAddress]) => {
-        if (mfwLookupGeneration.current !== generation) {
+        if (
+          mfwLookupGeneration.current !== generation ||
+          resolverRevision !== getMfwResolverPreferenceRevision()
+        ) {
           return;
         }
-        setResolverMfwNames(names);
-        setResolvedMfwRecipient(
-          exactName && resolvedAddress
-            ? { name: exactName, address: resolvedAddress }
-            : undefined,
-        );
+        setMfwLookupResult({
+          resolverRevision,
+          names,
+          recipient:
+            exactName && resolvedAddress
+              ? { name: exactName, address: resolvedAddress }
+              : undefined,
+        });
         setMfwLookupPending(false);
       });
     }, 250);
@@ -434,7 +496,13 @@ export default function SendScreen({ navigation, route }: any) {
         mfwLookupGeneration.current += 1;
       }
     };
-  }, [address, registeredWallet?.network, session?.network, step]);
+  }, [
+    address,
+    registeredWallet?.network,
+    resolverRevision,
+    session?.network,
+    step,
+  ]);
 
   useEffect(() => {
     const preset = routeMfwNamePreset;
@@ -502,7 +570,6 @@ export default function SendScreen({ navigation, route }: any) {
       setSendError(t('send.openWalletBeforeSending'));
       return;
     }
-
     consumedPrivatePhoneFlowId.current = preset.flowId;
     let active = true;
     walletService
@@ -669,6 +736,9 @@ export default function SendScreen({ navigation, route }: any) {
     sending || preparationInFlightRef.current || submissionInFlightRef.current;
 
   const clearPreparedTransaction = () => {
+    if (preparedTx?.sendPlan && !submittedPlanIdsRef.current.has(preparedTx.id)) {
+      walletService.discardSendPlan(preparedTx.id).catch(() => setSendError(t('send.planCleanupFailed')));
+    }
     preparedSourceRef.current = undefined;
     setPreparedTx(undefined);
     setPreparedSession(undefined);
@@ -685,6 +755,79 @@ export default function SendScreen({ navigation, route }: any) {
     setSendError(message);
     setStep('amount');
   }, []);
+
+  useEffect(() => {
+    const plan = preparedTx?.sendPlan;
+    return () => {
+      if (plan && !submittedPlanIdsRef.current.has(plan.id)) {
+        walletService.discardSendPlan(plan.id).catch(() => {
+          logWalletEvent('SendScreen', 'sendPlan.discard.failed');
+        });
+      }
+    };
+  }, [preparedTx?.id]);
+
+  useEffect(() => {
+    setAdditionalWalletIds([]);
+  }, [registeredWallet?.id, registeredWallet?.network]);
+
+  useEffect(() => {
+    let active = true;
+    if (!session || mfwNamePreset) return () => { active = false; };
+    setSourceIdentitySample({ scope: sourceIdentityScope });
+    const read = async () => Promise.all([session, ...eligibleAdditionalSources.map(source => source.session)]
+      .map(source => walletService.sendSourceIdentity(source)));
+    read().then(identities => {
+      if (active) setSourceIdentitySample({ scope: sourceIdentityScope, identities });
+    }).catch(() => {
+      if (active) setSourceIdentitySample({ scope: sourceIdentityScope, error: true });
+    });
+    return () => { active = false; };
+  }, [sourceIdentityScope, sourceIdentityRetry]);
+
+  const additionalSourceIdsKey = JSON.stringify(additionalSources.map(source => source.id));
+  useEffect(() => {
+    if (!sourceIdentitiesReady) return;
+    const allowed = new Set(additionalSources.map(source => source.id));
+    setAdditionalWalletIds(current => {
+      const next = current.filter(id => allowed.has(id));
+      return next.length === current.length ? current : next;
+    });
+  }, [sourceIdentityScope, sourceIdentitiesReady, additionalSourceIdsKey]);
+
+  useEffect(() => {
+    if (sweepAll && !preparedTx && !sending) {
+      setAmountCurrency('XMR');
+      setAmount(formatAtomicXmr(unlockedAtomic, { maxFractionDigits: 12 }));
+    }
+  }, [unlockedAtomic, sweepAll, preparedTx, sending]);
+
+  useEffect(() => {
+    const reviewed = preparedSourceRef.current;
+    if (!reviewed || submissionInFlightRef.current || preparationInFlightRef.current) return;
+    if (reviewed.registrationId !== registeredWallet?.id || reviewed.network !== session?.network ||
+      (session?.walletId !== reviewed.originalSessionId && session?.walletId !== reviewed.signingSessionId)) {
+      preparedSourceRef.current = undefined;
+      setPreparedTx(undefined);
+      setPreparedSession(undefined);
+      setStep('amount');
+      setSendError(t('send.preparationChanged'));
+    }
+  }, [registeredWallet?.id, session?.network, session?.walletId, t]);
+
+  const loadSavedSendPlans = useCallback(async () => {
+    try {
+      const plans = await walletService.listSendPlans();
+      setSavedSendPlans(plans.filter(plan => plan.leaseHeld && plan.id !== preparedSourceRef.current?.pendingId));
+      setPlanStatusError(undefined);
+    } catch {
+      setPlanStatusError(t('send.planStatusUnavailable'));
+    }
+  }, [t]);
+
+  useFocusEffect(useCallback(() => {
+    loadSavedSendPlans().catch(() => undefined);
+  }, [loadSavedSendPlans]));
 
   const expireNormalApproval = useCallback(() => {
     discardNormalPreparation(t('mfwNames.approvalExpired'));
@@ -763,6 +906,10 @@ export default function SendScreen({ navigation, route }: any) {
     // Ref ownership changes synchronously, before a second tap can reuse the
     // previous render's enabled button and start another native preparation.
     if (preparationInFlightRef.current || submissionInFlightRef.current || sending) return;
+    if (!additionalSourcesReady || unresolvedSavedPayment) {
+      setSendError(t('send.planNeedsAttention'));
+      return;
+    }
     if (!session) {
       setSendError(t('send.openWalletBeforeSending'));
       return;
@@ -826,16 +973,20 @@ export default function SendScreen({ navigation, route }: any) {
           elapsedMs: Date.now() - preparationStartedAt,
           phaseSequence: ledgerPhaseSequence,
         });
-        setLedgerSigningProgress(progress);
+        updateLedgerSigningProgress(progress);
       }
     };
     let hardwareStatusTimer: ReturnType<typeof setInterval> | undefined;
+    let hardwareStatusInFlight = false;
+    let hardwareStatusPollingFinished = false;
     let ledgerHandoffCreated = false;
+    let createdSendPlanId: string | undefined;
     try {
       let signingSession: WalletSession | undefined = session;
       if (registeredWallet?.kind === 'hardware') {
         publishProgress({ phase: 'searching' });
         signingSession = await connectLedgerForSigning({
+          walletWide: !mfwNamePreset,
           isCancelled: () => ledgerSigningCancelledRef.current,
           onProgress: publishProgress,
         });
@@ -849,24 +1000,34 @@ export default function SendScreen({ navigation, route }: any) {
       }
       if (signingSession.hardwareDevice) {
         ensureNotCancelled();
-        publishProgress({ phase: 'preparing-request' });
+        // Native preparation may wait for node data or a Ledger approval.
+        // This stage does not claim that a specific device dialog was seen.
+        publishProgress({ phase: 'preparing-transaction' });
         hardwareStatusTimer = setInterval(() => {
+          // The native getter shares the preparation session lock. Keep at
+          // most one pending read and ignore it after this preparation ends.
+          if (hardwareStatusPollingFinished || hardwareStatusInFlight) return;
+          hardwareStatusInFlight = true;
           walletService
             .getHardwareWalletStatus(signingSession)
             .then(status => {
               if (
+                !hardwareStatusPollingFinished &&
                 !ledgerSigningCancelledRef.current &&
                 status.requiresUserAction
               ) {
                 publishProgress({ phase: 'awaiting-confirmation' });
               }
             })
-            .catch(() => undefined);
+            .catch(() => undefined)
+            .finally(() => { hardwareStatusInFlight = false; });
         }, 500);
       }
       ensurePreparationIntentCurrent(signingSession);
-      const nextTransaction = await walletService.prepareTransaction(
-        signingSession,
+      const extraSessions = additionalWalletIds.map(id => getRegisteredWalletSession?.(id));
+      if (extraSessions.some(extra => !extra || extra.readOnly)) throw new Error(t('send.preparationChanged'));
+      const nextTransaction = await walletService.prepareSendPlan(
+        [signingSession, ...(extraSessions as WalletSession[])],
         {
           address: address.trim(),
           amountAtomic: sweepAll ? undefined : amountAtomic?.toString(),
@@ -874,6 +1035,7 @@ export default function SendScreen({ navigation, route }: any) {
           sweepAll,
         },
       );
+      createdSendPlanId = nextTransaction.id;
       ensureNotCancelled();
       ensurePreparationIntentCurrent(signingSession);
       if (nextTransaction.status !== 'ok' || !nextTransaction.id) {
@@ -892,7 +1054,7 @@ export default function SendScreen({ navigation, route }: any) {
       setPreparedTx(nextTransaction);
       setPreparedSession(signingSession);
       setSendStatus(undefined);
-      setLedgerSigningProgress(undefined);
+      updateLedgerSigningProgress(undefined);
       if (sweepAll) {
         setAmountCurrency('XMR');
         setAmount(
@@ -903,15 +1065,33 @@ export default function SendScreen({ navigation, route }: any) {
       }
       setStep('confirm');
     } catch (error) {
+      hardwareStatusPollingFinished = true;
+      if (createdSendPlanId) {
+        await walletService.discardSendPlan(createdSendPlanId).catch(() => {
+          logWalletEvent('SendScreen', 'sendPlan.cancelCleanup.failed');
+        });
+      }
       if (ledgerHandoffCreated) {
         await restoreLedgerViewAfterSigning().catch(() => false);
       }
       setSendStatus(undefined);
-      setLedgerSigningProgress(undefined);
-      if (!isLedgerSigningCancelledError(error)) {
-        setSendError(error instanceof Error ? error.message : String(error));
+      updateLedgerSigningProgress(undefined);
+      // This catch is preparation-only. Commit results below keep their
+      // saved partial/uncertain receipts and are never labelled "not sent".
+      const failure = classifySendPreparationError(error);
+      if (failure.cancelled) {
+        setSendError(undefined);
+        setSendStatus(t('send.preparationCancelledLedger'));
+      } else if (!isLedgerSigningCancelledError(error)) {
+        // This is a trusted local intent guard, not arbitrary native text.
+        // Keep its explicit wallet/recipient-change instruction visible.
+        const changed = t('send.preparationChanged');
+        setSendError(error instanceof Error && error.message === changed
+          ? changed : t(failure.messageKey));
       }
+      loadSavedSendPlans().catch(() => undefined);
     } finally {
+      hardwareStatusPollingFinished = true;
       if (hardwareStatusTimer) {
         clearInterval(hardwareStatusTimer);
       }
@@ -956,6 +1136,54 @@ export default function SendScreen({ navigation, route }: any) {
         discardNormalPreparation(t('send.preparationChanged'));
         return;
       }
+    }
+    if (preparedTx.sendPlan) {
+      const plan = preparedTx.sendPlan;
+      submittedPlanIdsRef.current.add(plan.id);
+      submissionInFlightRef.current = true;
+      setSending(true);
+      setSendError(undefined);
+      setActiveSendStartedAtMs(Date.now());
+      let result: SendPlan;
+      try {
+        result = await walletService.commitSendPlan(plan.id);
+      } catch {
+        result = {
+          ...plan, status: 'uncertain', phase: 'interrupted', leaseHeld: true,
+          broadcastAttempted: undefined, broadcastedTotalsKnown: false,
+          broadcastedAmountAtomic: null, broadcastedFeeAtomic: null,
+        };
+      } finally {
+        submissionInFlightRef.current = false;
+        setSending(false);
+        setActiveSendStartedAtMs(undefined);
+      }
+      // Keep every native transaction and the exact saved plan identity. A
+      // partial or unknown result offers status checks, never another send.
+      setPlanReceipt(result);
+      setSavedSendPlans(current => [
+        ...current.filter(saved => saved.id !== result.id),
+        ...(result.leaseHeld ? [result] : []),
+      ]);
+      preparedSourceRef.current = undefined;
+      setPreparedTx(undefined);
+      setPreparedSession(undefined);
+      setStep('amount');
+      if (sendPlanOutcome(result) === 'complete') {
+        setAmount('');
+        setSweepAll(false);
+        setAdditionalWalletIds([]);
+        rememberRecipient(result.address ?? '', recipientContacts).then(setRecentRecipients).catch(() => undefined);
+      }
+      if (!result.leaseHeld && registeredWallet?.kind === 'hardware') {
+        restoreLedgerViewAfterSigning().catch(() => false)
+          .then(() => registeredWallet.role !== 'fast' ? reconcileLedgerBalance().catch(() => false) : false)
+          .then(() => refreshSnapshot()).catch(() => undefined);
+      } else {
+        refreshSnapshot().catch(() => undefined);
+      }
+      refreshTransactions().catch(() => undefined);
+      return;
     }
     // Check the actual clock as well as the rendered countdown: expiry can
     // occur between the last timer tick and this user action.
@@ -1041,7 +1269,7 @@ export default function SendScreen({ navigation, route }: any) {
         try {
           ensureAutomaticClaimNotCancelled();
           if (transactionSession.hardwareDevice) {
-            setLedgerSigningProgress({
+            updateLedgerSigningProgress({
               phase: 'preparing-request',
               detail: t('mfwNames.relayApproveSecond'),
             });
@@ -1076,7 +1304,7 @@ export default function SendScreen({ navigation, route }: any) {
           }
           // Hardware cancellation ends here. Once handed over, cancellation
           // must be acknowledged by the durable relay (available on Names).
-          setLedgerSigningProgress(undefined);
+          updateLedgerSigningProgress(undefined);
           setSendStatus(t('mfwNames.relayUploading'));
           await scheduleServerMfwClaim({
             registrationId: completedNamePreset.registrationId,
@@ -1094,7 +1322,7 @@ export default function SendScreen({ navigation, route }: any) {
           if (!isLedgerSigningCancelledError(error))
             recordPostBroadcastFailure('scheduleMfwClaim', error);
         } finally {
-          setLedgerSigningProgress(undefined);
+          updateLedgerSigningProgress(undefined);
         }
       }
 
@@ -1303,11 +1531,19 @@ export default function SendScreen({ navigation, route }: any) {
       return;
     }
     const isMfwName = isMfwNameCandidate(candidate);
+    const validationResolverRevision = getMfwResolverPreferenceRevision();
     setRecipientValidationPending(true);
     try {
       const validated = isMfwName
         ? await resolveConfiguredMfwNameForPayment(candidate, network)
         : await walletService.validateRecipientAddress(candidate, network);
+      if (
+        isMfwName &&
+        validationResolverRevision !== getMfwResolverPreferenceRevision()
+      ) {
+        setSendError(t('send.mfwUnavailable'));
+        return;
+      }
       setAddress(validated);
       setRecipientReview(
         createRecipientReview({
@@ -1375,6 +1611,52 @@ export default function SendScreen({ navigation, route }: any) {
     setSendError(undefined);
   };
 
+  const updatePlanReceiptStatus = async (discard: boolean) => {
+    if (!planReceipt || checkingPlanStatus) return;
+    const id = planReceipt.id;
+    setCheckingPlanStatus(true);
+    setPlanStatusError(undefined);
+    try {
+      if (discard) await walletService.discardSendPlan(id);
+      const result = await walletService.sendPlanStatus(id);
+      setPlanReceipt(current => current?.id === id ? result : current);
+      setSavedSendPlans(current => [
+        ...current.filter(saved => saved.id !== id), ...(result.leaseHeld ? [result] : []),
+      ]);
+      if (discard && !result.leaseHeld && registeredWallet?.kind === 'hardware') {
+        await restoreLedgerViewAfterSigning().catch(() => false);
+      }
+      refreshSnapshot().catch(() => undefined);
+      refreshTransactions().catch(() => undefined);
+    } catch {
+      setPlanStatusError(t(discard ? 'send.planCleanupFailed' : 'send.planStatusUnavailable'));
+    } finally {
+      setCheckingPlanStatus(false);
+    }
+  };
+
+  const savedPaymentsPanel = savedSendPlans.length > 0 || planStatusError ? <View style={s.recipientSummaryCard}>
+    <View style={s.recipientSummaryCopy}>
+      <Text style={s.fieldLabel}>{t('send.planSavedPayments')}</Text>
+      <Text style={s.subtitle}>{t(planStatusError ? 'send.planStatusUnavailable' : 'send.planNeedsAttention')}</Text>
+      {savedSendPlans.map(plan => <TouchableOpacity key={plan.id} accessibilityRole="button"
+        testID={`send-saved-plan-${plan.id}`} onPress={() => { setPlanReceipt(plan); setPlanStatusError(undefined); }}>
+        <Text style={s.changeRecipient}>{t('send.planCheckStatus')}</Text>
+        {plan.address ? <Text numberOfLines={1} style={s.recipientSummaryMeta}>{plan.address}</Text> : null}
+      </TouchableOpacity>)}
+      {planStatusError ? <TouchableOpacity accessibilityRole="button" onPress={() => { loadSavedSendPlans().catch(() => undefined); }}>
+        <Text style={s.changeRecipient}>{t('action.retry')}</Text>
+      </TouchableOpacity> : null}
+    </View>
+  </View> : null;
+
+  if (planReceipt) {
+    return <SendPlanReceipt plan={planReceipt} checking={checkingPlanStatus} error={planStatusError}
+      onStatus={() => { updatePlanReceiptStatus(false).catch(() => undefined); }}
+      onDiscard={() => { updatePlanReceiptStatus(true).catch(() => undefined); }}
+      onClose={() => { setPlanReceipt(undefined); setStep('amount'); }} />;
+  }
+
   if (step === 'confirm') {
     return (
       <View style={s.container}>
@@ -1385,11 +1667,11 @@ export default function SendScreen({ navigation, route }: any) {
         >
           <TouchableOpacity
             style={s.backButton}
-            onPress={() =>
-              mfwNamePreset
-                ? navigation.navigate('MfwNames')
-                : setStep('amount')
-            }
+            onPress={() => {
+              if (sourceChangesBlocked()) return;
+              if (mfwNamePreset) navigation.navigate('MfwNames');
+              else { clearPreparedTransaction(); setStep('amount'); }
+            }}
             activeOpacity={0.7}
           >
             <Icon name="arrow-left" size={20} color={colors.textSecondary} />
@@ -1504,6 +1786,9 @@ export default function SendScreen({ navigation, route }: any) {
             <Icon name="lock" size={17} color={colors.orange} />
             <Text style={s.privacyText}>{t('send.privacyDetails')}</Text>
           </View>
+          {preparedTx?.sendPlan && preparedTx.txCount > 1 ? <Text style={s.subtitle}>
+            {t('send.planMultipleTransactions', { count: preparedTx.txCount })}
+          </Text> : null}
 
           {sending ? (
             <View style={s.submissionProgress}>
@@ -1517,7 +1802,7 @@ export default function SendScreen({ navigation, route }: any) {
                 })}
               </Text>
             </View>
-          ) : mfwNamePreset || preparedTx ? (
+          ) : mfwNamePreset || (preparedTx && !preparedTx.sendPlan) ? (
             <Text
               accessibilityLiveRegion="polite"
               testID="send-approval-countdown"
@@ -1716,6 +2001,7 @@ export default function SendScreen({ navigation, route }: any) {
       const normalizedName = candidate.toLowerCase();
       if (
         isMfwNameCandidate(candidate) &&
+        resolverRevision === getMfwResolverPreferenceRevision() &&
         resolvedMfwRecipient?.name === normalizedName
       ) {
         const network = session?.network ?? registeredWallet?.network;
@@ -1753,6 +2039,7 @@ export default function SendScreen({ navigation, route }: any) {
         >
           <Text style={s.title}>{t('send.title')}</Text>
           <Text style={s.subtitle}>{t('send.subtitle')}</Text>
+          {savedPaymentsPanel}
           {sendStatus ? <Text style={s.statusText}>{sendStatus}</Text> : null}
 
           {step === 'recipient-choice' ? (
@@ -2211,6 +2498,7 @@ export default function SendScreen({ navigation, route }: any) {
           <Text style={s.title}>{t('send.title')}</Text>
           <Text style={s.subtitle}>{t('send.subtitle')}</Text>
         </View>
+        {savedPaymentsPanel}
 
         {sendWalletOptions.length > 0 ? (
           <View pointerEvents={sending ? 'none' : 'auto'}>
@@ -2225,6 +2513,36 @@ export default function SendScreen({ navigation, route }: any) {
           />
           </View>
         ) : null}
+
+        {!mfwNamePreset && eligibleAdditionalSources.length > 0 &&
+          (!sourceIdentitiesReady || additionalSources.length > 0) ? <View style={s.recipientSummaryCard}>
+          <View style={s.recipientSummaryCopy}>
+            <TouchableOpacity accessibilityRole="button" accessibilityState={{ expanded: additionalWalletsVisible }}
+              testID="send-add-wallet"
+              onPress={() => { if (!sourceChangesBlocked()) setAdditionalWalletsVisible(current => !current); }}>
+              <Text style={s.changeRecipient}>{t('send.planAddWallet')}</Text>
+            </TouchableOpacity>
+            {additionalWalletsVisible ? <>
+              <Text style={s.subtitle}>{t('send.planAdditionalWalletsHint')}</Text>
+              {!sourceIdentitiesReady ? <>
+                <Text style={s.subtitle}>{t(sourceIdentitiesFailed ? 'send.planSourcesUnavailable' : 'send.planSourcesLoading')}</Text>
+                {sourceIdentitiesFailed ? <TouchableOpacity accessibilityRole="button"
+                  onPress={() => setSourceIdentityRetry(current => current + 1)}>
+                  <Text style={s.changeRecipient}>{t('action.retry')}</Text>
+                </TouchableOpacity> : <ActivityIndicator color={colors.orange} size="small" />}
+              </> : null}
+              {additionalSources.map(wallet => <TouchableOpacity key={wallet.id} accessibilityRole="checkbox"
+                accessibilityState={{ checked: additionalWalletIds.includes(wallet.id) }} disabled={sending}
+                testID={`send-source-${wallet.id}`} onPress={() => {
+                  if (sourceChangesBlocked()) return;
+                  clearPreparedTransaction();
+                  setAdditionalWalletIds(current => current.includes(wallet.id) ? current.filter(id => id !== wallet.id) : [...current, wallet.id]);
+                }}>
+                <Text style={s.changeRecipient}>{additionalWalletIds.includes(wallet.id) ? '☑ ' : '☐ '}{walletDisplayName(wallet)}</Text>
+              </TouchableOpacity>)}
+            </> : null}
+          </View>
+        </View> : null}
 
         <View style={s.recipientSummaryCard}>
           <View style={s.recipientSummaryCopy}>
@@ -2305,7 +2623,7 @@ export default function SendScreen({ navigation, route }: any) {
                 ]}
                 onPress={() => {
                   if (!sweepAvailable || sourceChangesBlocked()) return;
-                  // Preview the confirmed account maximum. Core still computes
+                  // Preview the selected wallets' maximum. Core still computes
                   // the exact fee-adjusted amount through its sweep-all path.
                   setAmountCurrency('XMR');
                   setAmount(formatAtomicXmr(unlockedAtomic, { maxFractionDigits: 12 }));
@@ -2398,7 +2716,7 @@ export default function SendScreen({ navigation, route }: any) {
             </Text>
           </View>
         ) : null}
-        {sendStatus ? <Text style={s.statusText}>{sendStatus}</Text> : null}
+        {sendStatus ? <Text accessibilityLiveRegion="polite" style={s.statusText} testID="send-status-message">{sendStatus}</Text> : null}
         {sendError ? <Text style={s.errorText}>{sendError}</Text> : null}
         {!snapshot ? (
           <Text style={s.errorText}>{t('send.openWalletBeforePreparing')}</Text>
@@ -2500,11 +2818,15 @@ export default function SendScreen({ navigation, route }: any) {
       />
       <LedgerSigningModal
         progress={ledgerSigningProgress}
+        canCancel={ledgerFlowCancellationAllowed(Platform.OS, ledgerSigningProgress?.phase)}
         onCancel={() => {
+          if (!ledgerFlowCancellationAllowed(Platform.OS, ledgerSigningProgressRef.current?.phase)) return;
           ledgerSigningCancelledRef.current = true;
-          setLedgerSigningProgress(undefined);
+          updateLedgerSigningProgress(undefined);
           setSendStatus(undefined);
-          walletService.cancelLedgerOperation().catch(() => undefined);
+          if (ledgerNativeCancellationSupported(Platform.OS)) {
+            walletService.cancelLedgerOperation().catch(() => undefined);
+          }
         }}
       />
     </KeyboardAvoidingView>

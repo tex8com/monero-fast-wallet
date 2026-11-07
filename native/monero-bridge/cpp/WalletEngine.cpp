@@ -1,6 +1,13 @@
 #include "WalletEngine.h"
 #include "NetworkFanout.h"
 #include "NetworkScanMetrics.h"
+#include "BlockTransportStatus.h"
+#include "GrpcRecovery.h"
+#include "WalletCloseBarrier.h"
+#include "TransactionPlanReporting.h"
+#include "LedgerCompanionPreparation.h"
+#include "LedgerRefreshOwnership.h"
+#include "WalletUnlockSummary.h"
 
 #include <atomic>
 #include <algorithm>
@@ -321,6 +328,8 @@ void logEngineDiagnostic(
       "lastNonEmptyBlockFetchMs",
       "lastNonEmptyNetworkBytes",
       "lastNonEmptyPayloadBytes",
+      "lastBlockFetchMs",
+      "lastWalletScanMs",
       "activeDerivationUs",
       "activeTransportUs",
       "averageDerivationsPerSecond",
@@ -506,6 +515,32 @@ bool pathBelongsToFastReceiveIdentity(
   return fileName == identityId ||
       fileName.rfind(identityId + ".", 0) == 0;
 }
+
+#if defined(_WIN32)
+std::string windowsFastReceiveWalletPath(std::string path) {
+  // Only normalize Windows separators. In particular, never identify an
+  // open wallet by its basename or collapse a different directory into it.
+  std::replace(path.begin(), path.end(), '\\', '/');
+  return path;
+}
+
+bool windowsFastReceivePasswordMatches(
+    const std::string& supplied,
+    const std::string& authenticated) {
+  // Reuse Core's authenticated session password without retaining a second
+  // copy. Do not stop at the first differing byte or log password metadata.
+  volatile std::size_t difference = supplied.size() ^ authenticated.size();
+  const auto count = std::max(supplied.size(), authenticated.size());
+  for (std::size_t index = 0; index < count; ++index) {
+    const auto left = index < supplied.size()
+        ? static_cast<unsigned char>(supplied[index]) : 0;
+    const auto right = index < authenticated.size()
+        ? static_cast<unsigned char>(authenticated[index]) : 0;
+    difference |= left ^ right;
+  }
+  return difference == 0;
+}
+#endif
 
 bool isLegacyFastReceiveWalletPath(const std::string& path) {
   const auto fileName = walletFileName(path);
@@ -746,6 +781,31 @@ bool preferTransactionHistoryItem(
   return candidate.timestamp > current.timestamp;
 }
 
+const char* outputDistributionFailureStage(const std::string& error) {
+  if (error.find("get_output_distribution") == std::string::npos &&
+      error.find("Could not obtain output distribution.") == std::string::npos) {
+    return nullptr;
+  }
+  // Never log the exception itself: it can contain native paths or RPC
+  // authorities. These fixed stages come from the bounded public cache.
+  static constexpr const char* stages[] = {
+      "connect", "anchor-read", "anchor-response", "distribution-read",
+      "distribution-response", "wire-limit", "network-validation",
+      "chain-validation", "snapshot-validation", "cancelled", "expired",
+      "payment-required", "worker-start", "cache-setup", "legacy-rpc",
+      "legacy-response", "unknown"};
+  const auto marker = error.find("stage=");
+  if (marker != std::string::npos) {
+    const auto start = marker + 6;
+    const auto end = error.find_first_not_of("abcdefghijklmnopqrstuvwxyz-", start);
+    const auto stage = error.substr(start, end == std::string::npos ? end : end - start);
+    for (const auto* known : stages) {
+      if (stage == known) return known;
+    }
+  }
+  return "unknown";
+}
+
 PreparedTransaction toPreparedTransaction(
     const std::string& id,
     const Monero::PendingTransaction& source) {
@@ -753,6 +813,10 @@ PreparedTransaction toPreparedTransaction(
   result.id = id;
   result.status = pendingTransactionStatusName(source.status());
   result.error = source.errorString();
+  if (result.status != "ok") {
+    result.errorCode = transaction_plan::isInsufficientFundsError(result.error)
+        ? "insufficient_funds" : "preparation_failed";
+  }
   result.amountAtomic = source.amount();
   result.dustAtomic = source.dust();
   result.feeAtomic = source.fee();
@@ -822,8 +886,16 @@ class WalletEngine::Impl {
 #if TEX8_WALLET_BRIDGE_WITH_MONERO
   struct WalletSession {
     WalletId id;
+#if defined(_WIN32)
+    // Immutable after insertion, so registry lookup needs no Core call and
+    // cannot race a per-session operation while finding the matching handle.
+    std::string fastReceiveWalletPath;
+#endif
     Monero::Wallet* wallet{nullptr};
     mutable std::mutex mutationMutex;
+    // Session-local admission barrier. Removing coordinator membership alone
+    // cannot stop an already queued scanner or pool delivery.
+    bool sharedScanAllowed{false};
     NetworkType network{NetworkType::Stagenet};
     uint64_t cacheResetHeight{0};
     // A Ledger wallet created without an explicit restore height is a new
@@ -843,11 +915,22 @@ class WalletEngine::Impl {
     // once per scanned block or UI wallet switch.
     bool ledgerPostScanControlPlaneInitialized{false};
     uint64_t ledgerPostScanControlPlaneGeneration{0};
+    // Process-local proof only: persisted key images do not prove that the
+    // subsequent spent-status RPC succeeded. Reuse a completed verification
+    // only for the same immutable companion snapshot and node configuration.
+    WalletId ledgerVerifiedCompanion;
+    uint64_t ledgerVerifiedCompanionRevision{0};
+    uint64_t ledgerVerifiedSigningRevision{0};
+    uint64_t ledgerVerifiedConfigurationGeneration{0};
+    std::chrono::steady_clock::time_point ledgerVerifiedAt{};
     WalletSnapshot cachedSnapshot;
     bool cachedSnapshotReady{false};
     uint64_t snapshotRevision{0};
     std::unordered_map<std::string, Monero::PendingTransaction*>
         pendingTransactions;
+    // Reports are immutable after the first relay attempt. Retrying a host
+    // request must never invoke commit again after an uncertain response.
+    std::unordered_map<std::string, PreparedTransaction> transactionReports;
   };
 
   struct NetworkSyncCoordinator {
@@ -896,15 +979,14 @@ class WalletEngine::Impl {
     bool stop{false};
     bool wake{false};
     NetworkSyncStatus status;
+    block_transport::Status blockTransport;
+    grpc_recovery::Policy grpcRecovery;
     Monero::Wallet* publicTransport{nullptr};
     bool publicTransportInitialized{false};
     // `Wallet::setGrpcStreamEndpoint()` intentionally clears Core's per-session
-    // gRPC->bin-RPC fallback.  The public transport is retained across a
-    // recoverable daemon reinitialisation, so remember whether the endpoint
-    // was already applied to this *same* transport.  Reapplying an unchanged
-    // endpoint after an iteration failure would otherwise resurrect a refused
-    // gRPC stream every five seconds instead of retaining the safe bin-RPC
-    // fallback selected by the common wallet core.
+    // gRPC->bin-RPC fallback. Retain it across ordinary provider recovery;
+    // only the explicit bounded grpcRecovery policy may reapply the same
+    // endpoint after a confirmed fallback. Never reset it every iteration.
     std::string publicTransportGrpcEndpoint;
     bool publicTransportGrpcEndpointApplied{false};
     std::string providerWalletId;
@@ -921,6 +1003,7 @@ class WalletEngine::Impl {
     // baseline so the UI reports actual aggregate download throughput instead
     // of the scanner's consumption rate.
     uint64_t transportPayloadBaseline{0};
+    uint64_t lastTransportMetricsLogUs{0};
     // Incremented only when a new scanner joins. The worker coalesces that
     // short registration burst once; normal batch, scan and tip wakes must
     // never pay the startup delay again.
@@ -1146,20 +1229,71 @@ class WalletEngine::Impl {
       Monero::Wallet* provider,
       uint64_t cursor) {
     const uint64_t startedUs = monotonicMicroseconds();
+    std::optional<grpc_recovery::Attempt> recoveryAttempt;
+    std::string recoveryEndpoint;
     {
       std::lock_guard<std::mutex> lock(coordinator.mutex);
       // A retry interval ends when the next real public fetch begins. The
       // fetch duration itself belongs only to active transport time.
       coordinator.fullScanMetrics.endRetry(startedUs);
+      recoveryAttempt = coordinator.grpcRecovery.reserveAttempt(
+          startedUs, !coordinator.grpcEndpoint.empty());
+      if (recoveryAttempt) {
+        recoveryEndpoint = coordinator.grpcEndpoint;
+        coordinator.blockTransport.rechecking();
+      }
+      coordinator.blockTransport.beginFetch(startedUs);
       publishFullScanMetricsLocked(coordinator);
     }
     try {
-      auto batch = provider->fetchSharedBlockBatchFrom(cursor);
+      auto batch = grpc_recovery::fetchWithRecovery(
+          recoveryAttempt, cursor,
+          [&]() { provider->setGrpcStreamEndpoint(recoveryEndpoint); },
+          [&](uint64_t requestedCursor) {
+            return provider->fetchSharedBlockBatchFrom(requestedCursor);
+          },
+          [&](const char* outcome, const grpc_recovery::Attempt& attempt) {
+            logEngineDiagnostic("networkSync.grpcRecovery",
+                {{"status", outcome},
+                 {"retryCount", std::to_string(attempt.number)},
+                 {"retryWaitUs", std::to_string(
+                     attempt.nextDelaySeconds * 1000ULL * 1000ULL)},
+                 {"requestedCursor", std::to_string(cursor)}});
+          });
       const uint64_t endedUs = monotonicMicroseconds();
       {
         std::lock_guard<std::mutex> lock(coordinator.mutex);
         coordinator.fullScanMetrics.recordTransport(
             endedUs >= startedUs ? endedUs - startedUs : 0);
+        if (batch && !network_fanout::publicBatchValidationError(
+                cursor, batch->startHeight(), batch->endHeight(),
+                batch->currentHeight(), batch->blockCount())) {
+          const auto previousTransport =
+              coordinator.blockTransport.presentation(startedUs);
+          coordinator.blockTransport.completeFetch(
+              batch->blockCount(), batch->networkBytes(), batch->payloadBytes(),
+              !coordinator.grpcEndpoint.empty());
+          const auto confirmedTransport =
+              coordinator.blockTransport.presentation(endedUs);
+          if (confirmedTransport != previousTransport) {
+            logEngineDiagnostic("networkSync.blockTransportConfirmed",
+                {{"transport", confirmedTransport.first},
+                 {"reason", confirmedTransport.second}});
+          }
+          coordinator.grpcRecovery.observeBatch(
+              batch->blockCount(), batch->networkBytes(), batch->payloadBytes(),
+              !coordinator.grpcEndpoint.empty(), startedUs);
+          if (recoveryAttempt && batch->blockCount() > 0) {
+            logEngineDiagnostic("networkSync.grpcRecovery",
+                {{"status", batch->payloadBytes() > 0
+                    ? "grpc-restored" : batch->networkBytes() > 0
+                        ? "rpc-retained" : "unconfirmed"},
+                 {"retryCount", std::to_string(recoveryAttempt->number)},
+                 {"requestedCursor", std::to_string(cursor)}});
+          }
+        } else {
+          coordinator.blockTransport.failFetch();
+        }
         publishFullScanMetricsLocked(coordinator);
       }
       return batch;
@@ -1167,6 +1301,7 @@ class WalletEngine::Impl {
       const uint64_t endedUs = monotonicMicroseconds();
       {
         std::lock_guard<std::mutex> lock(coordinator.mutex);
+        coordinator.blockTransport.failFetch();
         coordinator.fullScanMetrics.recordTransport(
             endedUs >= startedUs ? endedUs - startedUs : 0);
         publishFullScanMetricsLocked(coordinator);
@@ -1225,6 +1360,10 @@ class WalletEngine::Impl {
           result->durationMs = elapsedMilliseconds(started);
           return;
         }
+        if (!session->sharedScanAllowed) {
+          result->durationMs = elapsedMilliseconds(started);
+          return;
+        }
         Monero::Wallet* wallet = session->wallet;
         const uint64_t cursor = wallet->walletSyncCursor();
         const uint64_t target = wallet->walletSyncTargetCursor();
@@ -1235,6 +1374,7 @@ class WalletEngine::Impl {
               wallet->walletSyncDerivationCount();
           const uint64_t derivationUsBefore =
               wallet->walletSyncDerivationDurationUs();
+          invalidateLedgerAdoption(*session);
           (void)wallet->consumeSharedBlockBatch(*batch);
           throwIfWalletFailed(wallet, "consumeSharedBlockBatch.async");
           const uint64_t derivationsAfter =
@@ -1670,7 +1810,8 @@ class WalletEngine::Impl {
 
   void primeHardwareWalletFromViewOnly(
       const WalletId& hardwareWalletId,
-      const WalletId& viewOnlyWalletId) {
+      const WalletId& viewOnlyWalletId,
+      bool capabilityOnly = false) {
 #if TEX8_WALLET_BRIDGE_WITH_TEX8_EXTENSIONS
     if (hardwareWalletId == viewOnlyWalletId) {
       throw WalletEngineError(
@@ -1688,6 +1829,22 @@ class WalletEngine::Impl {
         throw WalletEngineError(
             "Ledger signing and view-only sessions use different networks");
       }
+    }
+
+    // Copy configuration before taking session locks, in the same order as
+    // syncLedgerKeyImagesToViewWallet. A missing coordinator is harmless only
+    // when an exact, recent verification can be reused below.
+    auto* coordinator = findCoordinator(viewOnlySession->network);
+    DaemonConfig controlPlaneConfig;
+    uint64_t configurationGeneration = 0;
+    uint64_t authoritativeTargetHeight = 0;
+    bool coordinatorConfigured = false;
+    if (coordinator != nullptr) {
+      std::lock_guard<std::mutex> coordinatorLock(coordinator->mutex);
+      coordinatorConfigured = coordinator->configured;
+      controlPlaneConfig = coordinator->config;
+      configurationGeneration = coordinator->configurationGeneration;
+      authoritativeTargetHeight = coordinator->status.targetHeight;
     }
 
     WalletSession* firstSession = hardwareSession;
@@ -1715,22 +1872,156 @@ class WalletEngine::Impl {
       throw WalletEngineError(
           "Ledger signing and view-only sessions belong to different wallets");
     }
-
-    if (!hardware->prepareHardwareWalletScanFromViewOnly(*viewOnly)) {
-      throwIfWalletFailed(
-          hardware, "primeHardwareWalletFromViewOnly.prepareHardwareWalletScan");
+    if (!hardwareSession->pendingTransactions.empty()) {
       throw WalletEngineError(
-          "protected Ledger view key could not prime the signing wallet");
+          "cannot replace a Ledger scan state with a pending transaction");
     }
-    throwIfWalletFailed(
-        hardware, "primeHardwareWalletFromViewOnly.prepareHardwareWalletScan");
+
+    const auto primeCapability = [&]() {
+      const auto stageStarted = std::chrono::steady_clock::now();
+      if (!hardware->primeHardwareWalletViewKeyFromViewOnly(*viewOnly)) {
+        throwIfWalletFailed(hardware,
+            "primeHardwareWalletFromViewOnly.viewCapability");
+        throw WalletEngineError("protected Ledger view capability could not be verified");
+      }
+      throwIfWalletFailed(hardware,
+          "primeHardwareWalletFromViewOnly.viewCapability");
+      logEngineDiagnostic("primeHardwareWalletFromViewOnly.capability.ready",
+          {{"elapsedMs", std::to_string(elapsedMilliseconds(stageStarted))}});
+    };
+    if (capabilityOnly) {
+      // Opening/reconnecting a desktop signer needs the protected capability,
+      // not a costly scan-state adoption before its companion is frozen.
+      // Do not update snapshots or create/extend a full-verification proof.
+      try {
+        primeCapability();
+      } catch (...) {
+        hardwareSession->ledgerVerifiedCompanion.clear();
+        logEngineDiagnostic("primeHardwareWalletFromViewOnly.failure",
+            {{"phase", "view-capability"}});
+        throw;
+      }
+      return;
+    }
+
+    const auto startedAt = std::chrono::steady_clock::now();
+    const auto previousVerifiedAt = hardwareSession->ledgerVerifiedAt;
+    const bool adoptionFresh = coordinatorConfigured &&
+        controlPlaneConfig.trusted && viewOnlySession->cachedSnapshotReady &&
+        hardwareSession->cachedSnapshotReady &&
+        hardwareSession->ledgerVerifiedCompanion == viewOnlyWalletId &&
+        hardwareSession->ledgerVerifiedCompanionRevision ==
+            viewOnlySession->snapshotRevision &&
+        hardwareSession->ledgerVerifiedSigningRevision ==
+            hardwareSession->snapshotRevision &&
+        hardwareSession->ledgerVerifiedConfigurationGeneration ==
+            configurationGeneration &&
+        previousVerifiedAt != std::chrono::steady_clock::time_point{} &&
+        startedAt - previousVerifiedAt <= std::chrono::seconds(5);
+    // Clear before any I/O. In particular, a durable key-image checkpoint
+    // followed by failed node verification must never become a success proof.
+    hardwareSession->ledgerVerifiedCompanion.clear();
+    Monero::LedgerKeyImageSyncStats coreStats;
+    bool reconciliationStarted = false;
+    bool reconciled = false;
+    try {
+      reconciled = prepareLedgerCompanionScan(
+          primeCapability,
+          [&]() {
+            const auto stageStarted = std::chrono::steady_clock::now();
+            if (!hardware->prepareHardwareWalletScanFromViewOnly(*viewOnly)) {
+              throwIfWalletFailed(hardware,
+                  "primeHardwareWalletFromViewOnly.prepareHardwareWalletScan");
+              throw WalletEngineError(
+                  "protected Ledger view key could not prime the signing wallet");
+            }
+            throwIfWalletFailed(hardware,
+                "primeHardwareWalletFromViewOnly.prepareHardwareWalletScan");
+            logEngineDiagnostic("primeHardwareWalletFromViewOnly.adoption.ready",
+                {{"elapsedMs", std::to_string(elapsedMilliseconds(stageStarted))}});
+            return LedgerCompanionPrimeResult::Ready;
+          },
+          [&]() {
+            const auto pending = viewOnly->pendingOutputKeyImageCount();
+            throwIfWalletFailed(viewOnly,
+                "primeHardwareWalletFromViewOnly.pendingOutputCount");
+            return pending;
+          },
+          [&]() {
+            if (!coordinatorConfigured || coordinator == nullptr) {
+              throw WalletEngineError(
+                  "Ledger spent-status verification requires configured network sync");
+            }
+            reconciliationStarted = true;
+            PrivateReconciliationActivity privateReconciliation(*coordinator);
+            logEngineDiagnostic("primeHardwareWalletFromViewOnly.verification.start",
+                {{"pendingOutputCount", std::to_string(
+                    viewOnly->pendingOutputKeyImageCount())}});
+            initializeLedgerPostScanControlPlane(*viewOnlySession,
+                controlPlaneConfig, configurationGeneration);
+            uint64_t spent = 0;
+            uint64_t unspent = 0;
+            // Full spent-status verification also covers a previous process
+            // that saved key images but failed its later node RPC. Core only
+            // derives missing key images; it never repeats historical scans.
+            hardware->coldKeyImageSyncToWithStats(
+                *viewOnly, spent, unspent, coreStats, true);
+            throwIfWalletFailed(viewOnly,
+                "primeHardwareWalletFromViewOnly.verifiedCompanion");
+            updateCachedSnapshot(*viewOnlySession, authoritativeTargetHeight);
+            logEngineDiagnostic("primeHardwareWalletFromViewOnly.verification.ready",
+                {{"derivedOutputCount", std::to_string(coreStats.derivedOutputCount)},
+                 {"derivationDurationMs", std::to_string(coreStats.derivationDurationMs)},
+                 {"spentStatusRpcDurationMs", std::to_string(coreStats.spentStatusRpcDurationMs)},
+                 {"outgoingRpcDurationMs", std::to_string(coreStats.outgoingRpcDurationMs)},
+                 {"storeDurationMs", std::to_string(coreStats.storeDurationMs)}});
+          },
+          adoptionFresh);
+      if (coordinator != nullptr) {
+        std::lock_guard<std::mutex> coordinatorLock(coordinator->mutex);
+        if (!coordinator->configured ||
+            coordinator->configurationGeneration != configurationGeneration) {
+          throw WalletEngineError(
+              "Ledger node configuration changed during spend verification; try again");
+        }
+      }
+      updateCachedSnapshot(*hardwareSession, authoritativeTargetHeight);
+      hardwareSession->ledgerVerifiedCompanion = viewOnlyWalletId;
+      hardwareSession->ledgerVerifiedCompanionRevision = viewOnlySession->snapshotRevision;
+      hardwareSession->ledgerVerifiedSigningRevision = hardwareSession->snapshotRevision;
+      hardwareSession->ledgerVerifiedConfigurationGeneration = configurationGeneration;
+      hardwareSession->ledgerVerifiedAt = reconciled
+          ? std::chrono::steady_clock::now() : previousVerifiedAt;
+    } catch (...) {
+      hardwareSession->ledgerVerifiedCompanion.clear();
+      if (reconciliationStarted) {
+        viewOnlySession->ledgerPostScanControlPlaneInitialized = false;
+        viewOnlySession->ledgerPostScanControlPlaneGeneration = 0;
+        // Key images may already be durable even when the later RPC failed.
+        // Publish their actual queue count without marking spend verification
+        // complete, so a retry rechecks the node rather than reusing this state.
+        try {
+          updateCachedSnapshot(*viewOnlySession, authoritativeTargetHeight);
+        } catch (...) {
+          viewOnlySession->cachedSnapshotReady = false;
+        }
+      }
+      logEngineDiagnostic("primeHardwareWalletFromViewOnly.failure",
+          {{"phase", reconciliationStarted ? "spend-verification" : "strict-prime"},
+           {"elapsedMs", std::to_string(elapsedMilliseconds(startedAt))}});
+      throw;
+    }
     logEngineDiagnostic(
         "primeHardwareWalletFromViewOnly.success",
-        {{"network",
-          std::to_string(static_cast<int>(hardwareSession->network))}});
+        {{"network", std::to_string(static_cast<int>(hardwareSession->network))},
+         {"mode", reconciled ? "verified" : "recent-proof"},
+         {"derivedOutputCount", std::to_string(coreStats.derivedOutputCount)},
+         {"importedOutputCount", std::to_string(coreStats.importedOutputCount)},
+         {"elapsedMs", std::to_string(elapsedMilliseconds(startedAt))}});
 #else
     (void)hardwareWalletId;
     (void)viewOnlyWalletId;
+    (void)capabilityOnly;
     throw WalletEngineError(
         "protected Ledger view-key reuse requires the TEX8 Core extension");
 #endif
@@ -2074,6 +2365,81 @@ class WalletEngine::Impl {
           "fast receive wallet path does not match its identity");
     }
 
+#if defined(_WIN32)
+    {
+      // Windows owns an exclusive .keys handle for every open wallet. Keep
+      // the existing session alive and locked instead of opening it twice.
+      auto executionLock = acquireCoordinatorSharedLock();
+      const auto requestedPath = windowsFastReceiveWalletPath(path);
+      WalletSession* session = nullptr;
+      {
+        std::lock_guard<std::mutex> registryLock(mutex_);
+        for (const auto& item : wallets_) {
+          if (item.second->fastReceiveWalletPath == requestedPath) {
+            session = item.second.get();
+            break;
+          }
+        }
+      }
+      if (session != nullptr) {
+        std::unique_lock<std::mutex> sessionLock(session->mutationMutex);
+        auto reject = [](const char* code, const char* message) {
+          logEngineDiagnostic(
+              "fastReceiveRegistrationPayload.sessionRejected",
+              {{"failureCode", code}});
+          throw WalletEngineError(message);
+        };
+        auto* existingWallet = session->wallet;
+        if (existingWallet == nullptr ||
+            windowsFastReceiveWalletPath(existingWallet->path()) !=
+                requestedPath ||
+            !pathBelongsToFastReceiveIdentity(
+                existingWallet->path(), identityId)) {
+          reject("session-path", "fast receive session path mismatch");
+        }
+        if (session->network != network ||
+            fromMoneroNetwork(existingWallet->nettype()) != network) {
+          reject("session-network", "fast receive session network mismatch");
+        }
+        if (existingWallet->getDeviceType() !=
+                Monero::Wallet::Device_Software ||
+            existingWallet->watchOnly()) {
+          reject("session-device", "fast receive session requires a software wallet");
+        }
+        if (!windowsFastReceivePasswordMatches(
+                password, existingWallet->getPassword())) {
+          reject("session-password", "invalid fast receive wallet password");
+        }
+        uint64_t restoreHeight = restoreHeightHint > 1
+            ? restoreHeightHint
+            : existingWallet->getRefreshFromBlockHeight();
+        if (restoreHeight <= 1) {
+          restoreHeight = existingWallet->estimateBlockChainHeight();
+          if (restoreHeight > 1) {
+            existingWallet->setRefreshFromBlockHeight(restoreHeight);
+          }
+        }
+        FastReceiveRegistrationPayload payload;
+        payload.identity.id = identityId;
+        payload.identity.label = "Fast Receive";
+        payload.identity.path = path;
+        payload.identity.address = existingWallet->address(0, 0);
+        payload.identity.network = fromMoneroNetwork(existingWallet->nettype());
+        payload.identity.restoreHeight = restoreHeight;
+        payload.identity.derivationIndex =
+            fastReceiveDerivationIndexFromId(identityId);
+        payload.identity.scannerStatus = "registration-pending";
+        payload.privateViewKey = existingWallet->secretViewKey();
+        if (payload.privateViewKey.empty()) {
+          reject("session-view-key", "fast receive identity has no secret view key");
+        }
+        logEngineDiagnostic(
+            "fastReceiveRegistrationPayload.sessionReused", {});
+        return payload;
+      }
+    }
+#endif
+
     auto* wallet = manager_->openWallet(
         path,
         password,
@@ -2194,31 +2560,33 @@ class WalletEngine::Impl {
   }
 
   void closeWallet(const WalletId& walletId, bool store) {
-    // Remove the wallet from future fan-out before waiting for the current
-    // network iteration. New shared operations yield while this writer is
-    // pending, otherwise the high-frequency coordinator can continuously
-    // reacquire the shared side and make deletion wait for minutes.
-    leaveNetworkSync(walletId);
-    struct ExclusiveWaiter final {
-      explicit ExclusiveWaiter(std::atomic<uint32_t>& value) : value(value) {
-        value.fetch_add(1, std::memory_order_acq_rel);
-      }
-      ~ExclusiveWaiter() {
-        value.fetch_sub(1, std::memory_order_acq_rel);
-      }
-      std::atomic<uint32_t>& value;
-    } exclusiveWaiter(coordinatorExclusiveWaiters_);
-    std::unique_lock<std::shared_timed_mutex> executionLock(
-        coordinatorExecutionMutex_);
-    std::unique_ptr<WalletSession> session;
+    const auto started = std::chrono::steady_clock::now();
+    const auto maskedWalletId = maskDiagnosticId(walletId);
+    logEngineDiagnostic(
+        "closeWallet.barrierWaitStarted",
+        {{"walletId", maskedWalletId}, {"store", store ? "true" : "false"}});
+    // An Onion RPC or hardware operation can legitimately occupy a reader
+    // for minutes. Deletion must return a retryable error in that case,
+    // without first removing the scanner or losing the live session.
+    auto executionLock = acquireWalletCloseBarrier(
+        coordinatorExecutionMutex_, coordinatorExclusiveWaiters_,
+        std::chrono::seconds(3));
+    if (!executionLock.owns_lock()) {
+      logEngineDiagnostic(
+          "closeWallet.barrierTimeout",
+          {{"walletId", maskedWalletId},
+           {"elapsedMs", std::to_string(elapsedMilliseconds(started))}});
+      throw WalletEngineError(
+          "wallet is busy with network or device work; deletion was not performed, please retry");
+    }
+    logEngineDiagnostic(
+        "closeWallet.barrierAcquired",
+        {{"walletId", maskedWalletId},
+         {"elapsedMs", std::to_string(elapsedMilliseconds(started))}});
+    WalletSession* session = nullptr;
     {
       std::lock_guard<std::mutex> lock(mutex_);
-      auto it = wallets_.find(walletId);
-      if (it == wallets_.end()) {
-        throw WalletEngineError("unknown wallet id: " + walletId);
-      }
-      session = std::move(it->second);
-      wallets_.erase(it);
+      session = &getLocked(walletId);
     }
 
     disposePendingTransactions(*session);
@@ -2226,6 +2594,17 @@ class WalletEngine::Impl {
       closeSessionWallet(*session, store, "closeWallet");
       session->wallet = nullptr;
     }
+    // WalletManager retains the wallet on close failure. Keep our ownership
+    // and network membership too until that close has actually succeeded.
+    leaveNetworkSync(walletId);
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      wallets_.erase(walletId);
+    }
+    logEngineDiagnostic(
+        "closeWallet.complete",
+        {{"walletId", maskedWalletId},
+         {"elapsedMs", std::to_string(elapsedMilliseconds(started))}});
   }
 
   void closeAllWallets(bool store) {
@@ -2243,6 +2622,8 @@ class WalletEngine::Impl {
           coordinator.publicTransport->cancelRctDistributionPrefetch();
         }
         coordinator.wallets.clear();
+        coordinator.blockTransport.reset();
+        coordinator.grpcRecovery.reset();
         coordinator.providerWalletId.clear();
         coordinator.priorityWalletId.clear();
         coordinator.providerRetryAfter.clear();
@@ -2383,6 +2764,8 @@ class WalletEngine::Impl {
         const bool measurementAborted = abortFullScanMetricsLocked(*coordinator);
         stalePublicTransport = coordinator->publicTransport;
         coordinator->publicTransport = nullptr;
+        coordinator->blockTransport.reset();
+        coordinator->grpcRecovery.reset();
         coordinator->publicTransportInitialized = false;
         coordinator->publicTransportGrpcEndpoint.clear();
         coordinator->publicTransportGrpcEndpointApplied = false;
@@ -2442,8 +2825,10 @@ class WalletEngine::Impl {
       // pausing the Wallet API thread is insufficient: prepare/commit resume
       // it internally, outside our per-session mutation barrier. Join it
       // before publishing shared-sync membership or touching its scan cache.
+      invalidateLedgerAdoption(session);
       session.wallet->pauseRefresh();
       session.wallet->stopRefresh();
+      session.sharedScanAllowed = true;
       if (session.cacheResetHeight > 1 &&
           session.wallet->blockChainHeight() < session.cacheResetHeight) {
         const uint64_t resetHeight = session.cacheResetHeight;
@@ -2539,6 +2924,8 @@ class WalletEngine::Impl {
       coordinator->status.joinedWallets = coordinator->wallets.size();
       coordinator->status.queueDepth = coordinator->wallets.size();
       if (coordinator->wallets.empty()) {
+        coordinator->blockTransport.reset();
+        coordinator->grpcRecovery.reset();
         if (coordinator->publicTransport != nullptr) {
           coordinator->publicTransport->cancelRctDistributionPrefetch();
         }
@@ -2588,9 +2975,14 @@ class WalletEngine::Impl {
     }
     std::lock_guard<std::mutex> lock(coordinator->mutex);
     auto status = coordinator->status;
+    const auto actualBlockTransport =
+        coordinator->blockTransport.presentation(monotonicMicroseconds());
+    status.blockTransport = actualBlockTransport.first;
+    status.blockTransportReason = actualBlockTransport.second;
     const auto priorityCursor =
         coordinator->scannerCursors.find(coordinator->priorityWalletId);
     if (priorityCursor != coordinator->scannerCursors.end()) {
+      status.priorityWalletId = priorityCursor->first;
       status.priorityWalletHeight = priorityCursor->second;
     }
     status.providerGeneration = coordinator->configurationGeneration;
@@ -2611,6 +3003,35 @@ class WalletEngine::Impl {
     status.spoolReadCount = monero_grpc_spool_read_count();
     status.spoolBackpressureCount = monero_grpc_spool_backpressure_count();
     status.spoolEnabled = monero_grpc_spool_enabled() != 0;
+    // Persist bounded aggregate counters: Core's detailed stream diagnostics
+    // can go to a discarded stderr in release apps. No wallet data is logged.
+    const uint64_t nowUs = monotonicMicroseconds();
+    if (status.joinedWallets > 0 && status.state != "idle" &&
+        status.state != "synced" &&
+        nowUs - coordinator->lastTransportMetricsLogUs >= 5000000) {
+      coordinator->lastTransportMetricsLogUs = nowUs;
+      logEngineDiagnostic("networkSync.transportStats", {
+          {"network", std::to_string(static_cast<int>(network))},
+          {"stage", status.phase},
+          {"transport", status.blockTransport},
+          {"payloadBytesReceived", std::to_string(status.payloadBytesReceived)},
+          {"networkBytesReceived", std::to_string(status.networkBytesReceived)},
+          {"spoolBytesBuffered", std::to_string(status.spoolBytesBuffered)},
+          {"spoolPeakBytes", std::to_string(status.spoolPeakBytes)},
+          {"spoolWriteCount", std::to_string(status.spoolWriteCount)},
+          {"spoolReadCount", std::to_string(status.spoolReadCount)},
+          {"spoolBackpressureCount", std::to_string(status.spoolBackpressureCount)},
+          {"replayCachePayloadBytes", std::to_string(status.replayCachePayloadBytes)},
+          {"prefetchQueueDepth", std::to_string(status.prefetchQueueDepth)},
+          {"queueDepth", std::to_string(status.queueDepth)},
+          {"scanWorkers", std::to_string(status.scanWorkers)},
+          {"lastBlockFetchMs", std::to_string(status.lastBlockFetchMs)},
+          {"lastWalletScanMs", std::to_string(status.lastWalletScanMs)},
+          {"downloadedHeight", std::to_string(status.downloadedHeight)},
+          {"targetHeight", std::to_string(status.targetHeight)},
+          {"transportStarts", std::to_string(status.transportStarts)},
+      });
+    }
     return status;
   }
 
@@ -2629,6 +3050,7 @@ class WalletEngine::Impl {
       throw WalletEngineError("shared block batch is empty");
     }
     return withSession(walletId, [&](WalletSession& session) {
+      invalidateLedgerAdoption(session);
       const uint64_t consumed =
           session.wallet->consumeSharedBlockBatch(*native);
       throwIfWalletFailed(session.wallet, "consumeSharedBlockBatch");
@@ -2645,6 +3067,7 @@ class WalletEngine::Impl {
       throw WalletEngineError("shared pool snapshot is empty");
     }
     withSession(walletId, [&](WalletSession& session) {
+      invalidateLedgerAdoption(session);
       session.wallet->consumeSharedPoolSnapshot(*native);
       throwIfWalletFailed(session.wallet, "consumeSharedPoolSnapshot");
     });
@@ -2657,6 +3080,7 @@ class WalletEngine::Impl {
     NetworkType network = NetworkType::Mainnet;
     withSession(walletId, [&](WalletSession& session) {
       network = session.network;
+      invalidateLedgerAdoption(session);
       if (!session.wallet->detachWalletToHeight(height, expectedPreviousHash)) {
         throwIfWalletFailed(session.wallet, "detachWalletToHeight");
         throw WalletEngineError("detachWalletToHeight failed");
@@ -2919,6 +3343,11 @@ class WalletEngine::Impl {
   void startRefreshDirect(const WalletId& walletId) {
     withSession(walletId, [&](WalletSession& session) {
       auto* wallet = session.wallet;
+      if (wallet->getDeviceType() == Monero::Wallet::Device_Ledger) {
+        throw WalletEngineError(
+            "Ledger synchronization requires configured shared network sync");
+      }
+      invalidateLedgerAdoption(session);
 
     logEngineDiagnostic(
         "startRefresh.start",
@@ -2975,6 +3404,9 @@ class WalletEngine::Impl {
   void stopRefresh(const WalletId& walletId) {
     leaveNetworkSync(walletId);
     withSession(walletId, [](WalletSession& session) {
+      // An in-flight scanner must finish before we take this same lock. All
+      // queued scanners/pool deliveries then observe the closed admission.
+      session.sharedScanAllowed = false;
       session.wallet->pauseRefresh();
       session.wallet->stop();
       throwIfWalletFailed(session.wallet, "refresh");
@@ -2983,6 +3415,7 @@ class WalletEngine::Impl {
 
   void rescanBlockchain(const WalletId& walletId) {
     withSession(walletId, [](WalletSession& session) {
+      invalidateLedgerAdoption(session);
       if (!session.wallet->rescanBlockchain()) {
         throwIfWalletFailed(session.wallet, "rescanBlockchain");
         throw WalletEngineError("rescanBlockchain failed");
@@ -3054,6 +3487,7 @@ class WalletEngine::Impl {
 
       const auto addressIndex =
           static_cast<uint32_t>(wallet->numSubaddresses(accountIndex));
+      invalidateLedgerAdoption(session);
       wallet->addSubaddress(accountIndex, label);
       throwIfWalletFailed(wallet, "createSubaddress");
 
@@ -3071,6 +3505,7 @@ class WalletEngine::Impl {
       uint32_t accountIndex) {
     withSession(walletId, [&](WalletSession& session) {
       while (session.wallet->numSubaddressAccounts() <= accountIndex) {
+        invalidateLedgerAdoption(session);
         session.wallet->addSubaddressAccount("");
         throwIfWalletFailed(
             session.wallet,
@@ -3141,6 +3576,47 @@ class WalletEngine::Impl {
     }
     std::lock_guard<std::mutex> sessionLock(session->mutationMutex);
     return session->wallet->unlockedBalance(accountIndex);
+  }
+
+  NetworkType walletNetwork(const WalletId& walletId) const {
+    return withSession(walletId, [](WalletSession& session) {
+      return session.network;
+    });
+  }
+
+  std::vector<WalletId> openWalletIds() const {
+    auto executionLock = acquireCoordinatorSharedLock();
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::vector<WalletId> result;
+    result.reserve(wallets_.size());
+    for (const auto& wallet : wallets_) result.push_back(wallet.first);
+    return result;
+  }
+
+  std::vector<std::string> pendingTransactionIds(const WalletId& walletId) const {
+    return withSession(walletId, [](WalletSession& session) {
+      std::vector<std::string> result;
+      result.reserve(session.pendingTransactions.size());
+      for (const auto& pending : session.pendingTransactions) result.push_back(pending.first);
+      return result;
+    });
+  }
+
+  std::vector<WalletAccountBalance> accounts(const WalletId& walletId) const {
+    return withSession(walletId, [&](WalletSession& session) {
+      const auto count = session.wallet->numSubaddressAccounts();
+      if (count > std::numeric_limits<uint32_t>::max()) {
+        throw WalletEngineError("wallet account count exceeds the supported range");
+      }
+      std::vector<WalletAccountBalance> result;
+      result.reserve(count);
+      for (uint32_t account = 0; account < count; ++account) {
+        result.push_back(WalletAccountBalance{
+            account, session.wallet->balance(account),
+            session.wallet->unlockedBalance(account)});
+      }
+      return result;
+    });
   }
 
   WalletSnapshot snapshot(const WalletId& walletId) const {
@@ -3309,6 +3785,7 @@ class WalletEngine::Impl {
     }
     std::lock_guard<std::mutex> sessionLock(session->mutationMutex);
     auto* wallet = session->wallet;
+    invalidateLedgerAdoption(*session);
     const size_t changed = wallet->reconcileOutputKeyImages(
         keyImages,
         spentStates,
@@ -3743,6 +4220,11 @@ class WalletEngine::Impl {
     }
     const auto sessionWaitStartedAt = std::chrono::steady_clock::now();
     std::unique_lock<std::mutex> sessionLock(session->mutationMutex);
+    // Any preparation enters a new hardware transaction mode, even if the
+    // user later rejects its fee. A previous adoption proof cannot cross it.
+    if (session->wallet->getDeviceType() == Monero::Wallet::Device_Ledger) {
+      session->ledgerVerifiedCompanion.clear();
+    }
     logEngineDiagnostic(
         "prepareTransaction.sessionLock.acquired",
         {{"elapsedMs",
@@ -3808,7 +4290,13 @@ class WalletEngine::Impl {
       if (result.error.empty()) {
         result.error = "transaction preparation failed";
       }
+      if (const auto* stage = outputDistributionFailureStage(result.error)) {
+        logEngineDiagnostic("prepareTransaction.outputDistribution.failure",
+            {{"reason", stage}});
+      }
       result.id.clear();
+      result.status = "error";
+      if (result.errorCode.empty()) result.errorCode = "preparation_failed";
       session->wallet->disposeTransaction(pending);
       return result;
     }
@@ -3886,6 +4374,134 @@ class WalletEngine::Impl {
     });
   }
 
+  bool discardTransaction(const WalletId& walletId,
+                          const std::string& pendingId) {
+    if (pendingId.empty()) {
+      throw WalletEngineError("pending transaction id must not be empty");
+    }
+    return withSession(walletId, [&](WalletSession& session) {
+      const auto it = session.pendingTransactions.find(pendingId);
+      if (it == session.pendingTransactions.end()) return false;
+      session.wallet->disposeTransaction(it->second);
+      session.pendingTransactions.erase(it);
+      // Keep any report: cleanup does not erase evidence of a relay attempt.
+      return true;
+    });
+  }
+
+  PreparedTransaction commitTransactionReport(const WalletId& walletId,
+                                               const std::string& pendingId) {
+    if (pendingId.empty()) {
+      throw WalletEngineError("pending transaction id must not be empty");
+    }
+    return withSession(walletId, [&](WalletSession& session) {
+      const auto existing = session.transactionReports.find(pendingId);
+      if (existing != session.transactionReports.end()) return existing->second;
+      const auto pendingIt = session.pendingTransactions.find(pendingId);
+      if (pendingIt == session.pendingTransactions.end()) {
+        throw WalletEngineError("unknown pending transaction id");
+      }
+      // Bound the per-session receipt cache. Only entries whose signed Core
+      // handle is already gone may be evicted; they can never relay again.
+      if (!transaction_plan::makeReportRoom(
+              session.transactionReports, session.pendingTransactions, 256)) {
+        throw WalletEngineError("too many unresolved transaction reports");
+      }
+      auto* pending = pendingIt->second;
+      auto initial = toPreparedTransaction(pendingId, *pending);
+      if (initial.status != "ok" || initial.txIds.empty()) {
+        throw WalletEngineError("pending transaction is not ready for relay");
+      }
+      // Insert before I/O. Even an unexpected exception after the daemon has
+      // accepted a transaction must leave a non-replayable report behind.
+      initial.status = "uncertain";
+      initial.errorCode.clear();
+      initial.uncertainTxIds = initial.txIds;
+      initial.remainingTxIds = initial.txIds;
+      auto& report = transaction_plan::relayOnce(
+          session.transactionReports, pendingId, initial,
+          [&](PreparedTransaction& current) {
+            try {
+              (void)pending->commit();
+              current.error = pending->errorString();
+            } catch (...) {
+              current.error = "Transaction relay outcome could not be confirmed.";
+            }
+          });
+      try {
+        const auto observation = transaction_plan::observeRelay(
+            initial.txIds, pending->txid());
+        report.broadcastedTxIds = observation.broadcasted;
+        report.remainingTxIds = observation.remaining;
+        report.uncertainTxIds = observation.uncertain;
+        const auto totals = transaction_plan::knownRelayTotals(
+            observation.consistent, initial.amountAtomic, initial.feeAtomic,
+            pending->amount(), pending->fee());
+        report.broadcastedTotalsKnown = totals.known;
+        report.broadcastedAmountAtomic = totals.amountAtomic;
+        report.broadcastedFeeAtomic = totals.feeAtomic;
+        if (observation.consistent && observation.remaining.empty()) {
+          report.status = "ok";
+          report.error.clear();
+        } else if (!observation.broadcasted.empty()) {
+          report.status = "partial";
+        } else {
+          report.status = "uncertain";
+        }
+      } catch (...) {
+        // Preserve the conservative report inserted before relay.
+        report.status = "uncertain";
+      }
+      if (report.status != "ok" && report.error.empty()) {
+        report.error = "Transaction relay outcome could not be confirmed.";
+      }
+      // Exact per-transaction values come only from Core's local outgoing
+      // history, populated by commit_tx. This lookup performs no daemon I/O.
+      try {
+        if (initial.txCount == 1 && initial.txIds.size() == 1 &&
+            initial.subaddrAccounts.size() == 1 &&
+            report.broadcastedTxIds.size() == 1) {
+          report.broadcastedTransactions.push_back(BroadcastedTransaction{
+              initial.txIds.front(), initial.amountAtomic, initial.feeAtomic,
+              initial.subaddrAccounts.front(), initial.subaddrIndices});
+        } else if (auto* history = session.wallet->history(); history != nullptr) {
+          history->refresh();
+          const auto transactions = history->getAll();
+          for (const auto& hash : report.broadcastedTxIds) {
+            // A self payment has both incoming and outgoing history under
+            // one hash. transaction(hash) may return the incoming row first.
+            const auto match = std::find_if(
+                transactions.begin(), transactions.end(), [&](const auto* info) {
+                  return info != nullptr && info->hash() == hash &&
+                      info->direction() == Monero::TransactionInfo::Direction_Out &&
+                      !info->isFailed() && !info->transfers().empty();
+                });
+            if (match == transactions.end()) continue;
+            const auto transaction = toWalletTransaction(**match);
+            report.broadcastedTransactions.push_back(BroadcastedTransaction{
+                hash, transaction.amountAtomic, transaction.feeAtomic,
+                transaction.subaddrAccount, transaction.subaddrIndices});
+          }
+        }
+      } catch (...) {
+        logEngineDiagnostic("commitTransactionReport.historyUnavailable", {});
+      }
+      if (report.status == "ok") {
+        session.wallet->disposeTransaction(pending);
+        session.pendingTransactions.erase(pendingIt);
+      }
+      try {
+        updateCachedSnapshot(session, session.cachedSnapshot.daemonTargetHeight);
+      } catch (...) {
+        logEngineDiagnostic("commitTransactionReport.snapshotUnavailable", {});
+      }
+      logEngineDiagnostic("commitTransactionReport.complete", {
+          {"status", report.status},
+          {"transactionCount", std::to_string(report.broadcastedTxIds.size())}});
+      return report;
+    });
+  }
+
   PreparedTransaction exportPendingTransaction(const WalletId &walletId,
                                                 const std::string &pendingId) {
     if (pendingId.empty()) {
@@ -3926,6 +4542,7 @@ class WalletEngine::Impl {
         throw WalletEngineError("wallet is not backed by a hardware device");
       }
 
+      session.ledgerVerifiedCompanion.clear();
       const bool connected = session.wallet->reconnectDevice();
       updateHardwareStatusFromWallet(session);
       session.hardwareStatus.connected = connected;
@@ -3957,6 +4574,15 @@ class WalletEngine::Impl {
   }
 
  private:
+  // Called with the session mutation lock held, before any scan/cache change.
+  // A proof is stored on the signer, but its source readiness flag also has
+  // to reject reuse when a public API mutates the companion without a scan
+  // snapshot revision (including mutations that subsequently fail).
+  static void invalidateLedgerAdoption(WalletSession& session) {
+    session.cachedSnapshotReady = false;
+    session.ledgerVerifiedCompanion.clear();
+  }
+
   void closeSessionWallet(
       WalletSession& session,
       bool store,
@@ -3967,6 +4593,7 @@ class WalletEngine::Impl {
     }
 
     const std::string maskedWalletId = maskDiagnosticId(session.id);
+    const auto started = std::chrono::steady_clock::now();
     const uint64_t heightBeforeStop = wallet->blockChainHeight();
     // The patched public API exposes a real refresh-thread join barrier.
     // Stop Core work, then drain that thread before serializing its cache.
@@ -3989,6 +4616,7 @@ class WalletEngine::Impl {
             {"walletId", maskedWalletId},
             {"heightBeforeStop", std::to_string(heightBeforeStop)},
             {"heightAfterStop", std::to_string(heightAfterStop)},
+            {"elapsedMs", std::to_string(elapsedMilliseconds(started))},
             {"store", store ? "true" : "false"},
         });
 
@@ -4004,6 +4632,7 @@ class WalletEngine::Impl {
               {"context", context},
               {"walletId", maskedWalletId},
               {"walletHeight", std::to_string(wallet->blockChainHeight())},
+              {"elapsedMs", std::to_string(elapsedMilliseconds(started))},
           });
     }
 
@@ -4020,6 +4649,16 @@ class WalletEngine::Impl {
       uint64_t cacheResetHeight = 0) {
     try {
       throwIfWalletFailed(wallet, context);
+      // Ledger signing handles are often never joined to shared sync: their
+      // encrypted view-only companions own scanning. Still transfer refresh
+      // ownership now, while Core's newly created worker is paused. Otherwise
+      // createTransaction() can resume it after a rejected fee and race the
+      // next strict output verification outside our session mutation lock.
+      takeLedgerRefreshOwnership(
+          wallet->getDeviceType() == Monero::Wallet::Device_Ledger,
+          [&]() { wallet->pauseRefresh(); },
+          [&]() { wallet->stopRefresh(); });
+      throwIfWalletFailed(wallet, context + ".ledgerRefreshOwnership");
     } catch (...) {
       if (wallet != nullptr) {
         manager_->closeWallet(wallet, false);
@@ -4029,6 +4668,9 @@ class WalletEngine::Impl {
 
     auto session = std::make_unique<WalletSession>();
     session->id = nextWalletId();
+#if defined(_WIN32)
+    session->fastReceiveWalletPath = windowsFastReceiveWalletPath(path);
+#endif
     session->wallet = wallet;
     session->network = network;
     session->cacheResetHeight = cacheResetHeight;
@@ -4138,6 +4780,7 @@ class WalletEngine::Impl {
   void disposePendingTransactions(WalletSession& session) const {
     if (session.wallet == nullptr) {
       session.pendingTransactions.clear();
+      session.transactionReports.clear();
       return;
     }
 
@@ -4147,6 +4790,7 @@ class WalletEngine::Impl {
       }
     }
     session.pendingTransactions.clear();
+    session.transactionReports.clear();
   }
 
   void updateHardwareStatusFromWallet(WalletSession& session) const {
@@ -4182,18 +4826,19 @@ class WalletEngine::Impl {
     // represents the complete wallet, so summing only account 0 silently
     // hides funds held by additional accounts (and all their subaddresses).
     const auto accountCount = wallet->numSubaddressAccounts();
+    WalletUnlockSummary unlockSummary;
     for (std::size_t accountIndex = 0; accountIndex < accountCount; ++accountIndex) {
-      const auto balance = wallet->balance(static_cast<uint32_t>(accountIndex));
-      const auto unlocked =
-          wallet->unlockedBalance(static_cast<uint32_t>(accountIndex));
-      if (balance > std::numeric_limits<uint64_t>::max() - next.balanceAtomic ||
-          unlocked > std::numeric_limits<uint64_t>::max() -
-              next.unlockedBalanceAtomic) {
-        throw WalletEngineError("wallet balance exceeds the supported atomic range");
-      }
-      next.balanceAtomic += balance;
-      next.unlockedBalanceAtomic += unlocked;
+      const auto info = wallet->balanceUnlockStatus(static_cast<uint32_t>(accountIndex));
+      throwIfWalletFailed(wallet, "snapshot.balanceUnlockStatus");
+      unlockSummary.add(info.balance, info.unlockedBalance, info.blocksToUnlock,
+          info.timeToUnlock, info.hasPendingBalance, info.unlockInfoKnown);
     }
+    next.balanceAtomic = unlockSummary.balance;
+    next.unlockedBalanceAtomic = unlockSummary.unlocked;
+    next.lockedBalanceAtomic = unlockSummary.locked();
+    next.unlockBlocksRemaining = unlockSummary.blocks;
+    next.unlockTimeRemainingSeconds = unlockSummary.seconds;
+    next.unlockState = unlockSummary.state();
     next.walletHeight = wallet->blockChainHeight();
     next.refreshFromHeight = wallet->getRefreshFromBlockHeight();
     next.daemonBytesReceived = wallet->getBytesReceived();
@@ -4465,6 +5110,8 @@ class WalletEngine::Impl {
         std::lock_guard<std::mutex> lock(coordinator.mutex);
         if (coolingProviders.count(kPublicTransportId) == 0) {
           if (coordinator.publicTransport == nullptr) {
+            coordinator.blockTransport.reset();
+            coordinator.grpcRecovery.reset();
             coordinator.publicTransport = manager_->createSharedSyncProvider(
                 toMoneroNetwork(coordinator.network));
             if (coordinator.publicTransport == nullptr) {
@@ -5419,6 +6066,11 @@ class WalletEngine::Impl {
                   ++deferredPoolSnapshots;
                   continue;
                 }
+                if (!item.second->sharedScanAllowed) {
+                  ++deferredPoolSnapshots;
+                  continue;
+                }
+                invalidateLedgerAdoption(*item.second);
                 item.second->wallet->consumeSharedPoolSnapshot(*nativePool);
                 throwIfWalletFailed(
                     item.second->wallet, "consumeSharedPoolSnapshot");
@@ -6011,6 +6663,19 @@ void WalletEngine::primeHardwareWalletFromViewOnly(
 #endif
 }
 
+void WalletEngine::primeHardwareWalletViewKeyFromViewOnly(
+    const WalletId& hardwareWalletId,
+    const WalletId& viewOnlyWalletId) {
+#if TEX8_WALLET_BRIDGE_WITH_MONERO
+  impl_->primeHardwareWalletFromViewOnly(
+      hardwareWalletId, viewOnlyWalletId, true);
+#else
+  (void)hardwareWalletId;
+  (void)viewOnlyWalletId;
+  throw WalletEngineError(backendNotLinkedMessage());
+#endif
+}
+
 void WalletEngine::rebuildHardwareWalletCacheFromViewOnly(
     const WalletId& hardwareWalletId,
     const WalletId& viewOnlyWalletId,
@@ -6382,6 +7047,16 @@ WalletSnapshot WalletEngine::snapshot(const WalletId& walletId) const {
 #endif
 }
 
+std::vector<WalletAccountBalance> WalletEngine::accounts(
+    const WalletId& walletId) const {
+#if TEX8_WALLET_BRIDGE_WITH_MONERO
+  return impl_->accounts(walletId);
+#else
+  (void)walletId;
+  throw WalletEngineError(backendNotLinkedMessage());
+#endif
+}
+
 std::vector<WalletTransaction> WalletEngine::getTransactions(
     const WalletId& walletId,
     uint32_t limit) const {
@@ -6446,10 +7121,45 @@ LedgerKeyImageSyncResult WalletEngine::syncLedgerKeyImagesToViewWallet(
 
 PreparedTransaction WalletEngine::prepareTransaction(
     const PrepareTransactionRequest& request) {
+  const auto guard = std::atomic_load(&transactionPreparationGuard_);
+  if (guard) (*guard)(request.walletId);
 #if TEX8_WALLET_BRIDGE_WITH_MONERO
   return impl_->prepareTransaction(request);
 #else
   (void)request;
+  throw WalletEngineError(backendNotLinkedMessage());
+#endif
+}
+
+void WalletEngine::setTransactionPreparationGuard(
+    std::function<void(const WalletId&)> guard) {
+  std::shared_ptr<const std::function<void(const WalletId&)>> value;
+  if (guard) value = std::make_shared<const std::function<void(const WalletId&)>>(std::move(guard));
+  std::atomic_store(&transactionPreparationGuard_, std::move(value));
+}
+
+NetworkType WalletEngine::walletNetwork(const WalletId& walletId) const {
+#if TEX8_WALLET_BRIDGE_WITH_MONERO
+  return impl_->walletNetwork(walletId);
+#else
+  (void)walletId;
+  throw WalletEngineError(backendNotLinkedMessage());
+#endif
+}
+
+std::vector<WalletId> WalletEngine::openWalletIds() const {
+#if TEX8_WALLET_BRIDGE_WITH_MONERO
+  return impl_->openWalletIds();
+#else
+  return {};
+#endif
+}
+
+std::vector<std::string> WalletEngine::pendingTransactionIds(const WalletId& walletId) const {
+#if TEX8_WALLET_BRIDGE_WITH_MONERO
+  return impl_->pendingTransactionIds(walletId);
+#else
+  (void)walletId;
   throw WalletEngineError(backendNotLinkedMessage());
 #endif
 }
@@ -6459,6 +7169,28 @@ PreparedTransaction WalletEngine::commitTransaction(
     const std::string& pendingId) {
 #if TEX8_WALLET_BRIDGE_WITH_MONERO
   return impl_->commitTransaction(walletId, pendingId);
+#else
+  (void)walletId;
+  (void)pendingId;
+  throw WalletEngineError(backendNotLinkedMessage());
+#endif
+}
+
+bool WalletEngine::discardTransaction(
+    const WalletId& walletId, const std::string& pendingId) {
+#if TEX8_WALLET_BRIDGE_WITH_MONERO
+  return impl_->discardTransaction(walletId, pendingId);
+#else
+  (void)walletId;
+  (void)pendingId;
+  throw WalletEngineError(backendNotLinkedMessage());
+#endif
+}
+
+PreparedTransaction WalletEngine::commitTransactionReport(
+    const WalletId& walletId, const std::string& pendingId) {
+#if TEX8_WALLET_BRIDGE_WITH_MONERO
+  return impl_->commitTransactionReport(walletId, pendingId);
 #else
   (void)walletId;
   (void)pendingId;

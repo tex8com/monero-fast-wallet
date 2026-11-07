@@ -308,6 +308,14 @@ describe('Ledger companion signing prime bridge contract', () => {
     expect(companionBranch).toContain(
       'await walletService.primeHardwareWalletFromViewOnly(',
     );
+    expect(companionBranch.indexOf('primeHardwareWalletFromViewOnly(')).toBeLessThan(
+      companionBranch.indexOf('await readFrozenReference()'),
+    );
+    expect(connectFlow).toContain('referenceAccounts = nextAccounts;');
+    const rebuildBranch = connectFlow.slice(connectFlow.indexOf('rebuild: async () => {'));
+    expect(rebuildBranch.indexOf('primeHardwareWalletFromViewOnly(')).toBeLessThan(
+      rebuildBranch.indexOf('return readFrozenReference()'),
+    );
     expect(companionBranch).not.toContain('await closeReadOnlyCompanion()');
     expect(connectFlow).toContain(
       'if (!hasEncryptedViewCompanion) {\n          await walletService.startRefresh(',

@@ -1,5 +1,6 @@
 import type {
   LedgerTransportStatus,
+  WalletAccount,
   WalletSnapshot,
 } from './NativeMoneroWallet';
 
@@ -7,8 +8,10 @@ export type LedgerSigningPhase =
   | 'searching'
   | 'connecting'
   | 'synchronizing-wallet'
+  | 'verifying-wallet'
   | 'connected'
   | 'preparing-request'
+  | 'preparing-transaction'
   | 'awaiting-confirmation';
 
 export type LedgerSigningProgress = {
@@ -20,7 +23,24 @@ export type LedgerSigningProgress = {
 export type LedgerSigningControl = {
   isCancelled?: () => boolean;
   onProgress?: (progress: LedgerSigningProgress) => void;
+  walletWide?: boolean;
 };
+
+/** The normal payment signer must preserve every account, including unused ones. */
+export function assertLedgerWalletAccountsMatch(
+  reference: readonly WalletAccount[],
+  signing: readonly WalletAccount[],
+): void {
+  const sorted = (accounts: readonly WalletAccount[]) => [...accounts].sort((a, b) => a.accountIndex - b.accountIndex);
+  const expected = sorted(reference);
+  const actual = sorted(signing);
+  if (expected.length === 0 || expected.length !== actual.length ||
+    expected.some((account, index) => account.accountIndex !== actual[index].accountIndex ||
+      account.balanceAtomic !== actual[index].balanceAtomic ||
+      account.unlockedBalanceAtomic !== actual[index].unlockedBalanceAtomic)) {
+    throw new Error('The Ledger signing wallet and viewing wallet do not have the same complete account balances.');
+  }
+}
 
 export class LedgerSigningCancelledError extends Error {
   constructor() {
@@ -319,7 +339,7 @@ export async function waitForLedgerSigningSpendReadyWithSingleRebuild({
   refreshReferenceAfterMismatch,
   ...readiness
 }: Parameters<typeof waitForLedgerSigningSpendReady>[0] & {
-  rebuild: () => Promise<void>;
+  rebuild: () => Promise<WalletSnapshot | void>;
   refreshReferenceAfterMismatch?: (
     mismatch: LedgerSigningComparableStateMismatchError,
   ) => Promise<WalletSnapshot>;
@@ -382,7 +402,12 @@ export async function waitForLedgerSigningSpendReadyWithSingleRebuild({
       throw error;
     }
 
-    await rebuild();
+    // A verified re-adoption may also correct the frozen companion's spent
+    // state. Retry against that fresh reference instead of its old balance.
+    const rebuiltReference = await rebuild();
+    if (rebuiltReference) {
+      referenceSnapshot = rebuiltReference;
+    }
     try {
       return await waitForLedgerSigningSpendReady({
         ...readiness,

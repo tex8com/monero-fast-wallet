@@ -165,7 +165,10 @@ class NativeMoneroWalletModule(
   override fun invalidate() {
     mainHandler.removeCallbacks(nativeAutoLockRunnable)
     cancelPendingLedgerBleScan()
+    NativeAppAuthorization.lock()
+    NativeSensitiveApprovalState.clear()
     walletAppVault.lock()
+    runCatching { nativeWalletExecutor.execute { runCatching { NativeMoneroWalletJni.invalidateSendPlanClaims() } } }
     nativeWalletExecutor.shutdown()
     fastWalletProviderExecutor.shutdown()
     fastWalletHostingExecutor.shutdownNow()
@@ -1270,6 +1273,8 @@ class NativeMoneroWalletModule(
       Log.i(NAME, "MONERO_WALLET_APP_VAULT locked reason=$reason")
     }
     nativeWalletExecutor.execute {
+      runCatching { NativeMoneroWalletJni.invalidateSendPlanClaims() }
+        .onFailure { logNativeEvent("sendPlan.claim.invalidationFailed") }
       runCatching {
         NativeMoneroWalletJni.persistOpenWallets()
         NativeMoneroWalletJni.closeAllWallets()
@@ -4656,6 +4661,26 @@ class NativeMoneroWalletModule(
     }
   }
 
+  override fun getAccounts(walletId: String, promise: Promise) {
+    resolveNativeArray(
+      promise,
+      "getAccounts",
+      mapOf("walletId" to maskIdentifier(walletId)),
+    ) {
+      Arguments.createArray().apply {
+        NativeMoneroWalletJni.getAccounts(walletId).forEach { account ->
+          pushMap(
+            Arguments.createMap().apply {
+              putDouble("accountIndex", account.numberValue("accountIndex"))
+              putString("balanceAtomic", account.stringValue("balanceAtomic"))
+              putString("unlockedBalanceAtomic", account.stringValue("unlockedBalanceAtomic"))
+            },
+          )
+        }
+      }
+    }
+  }
+
   override fun presentRecoverySeed(walletId: String, reason: String, promise: Promise) {
     if (!requireAppAuthorized(promise) || !requireLinked(promise)) {
       return
@@ -4995,6 +5020,156 @@ class NativeMoneroWalletModule(
     }
   }
 
+  override fun prepareSendPlan(inputJson: String, promise: Promise) {
+    resolveNativeString(promise, "sendPlan.prepare") {
+      NativeMoneroWalletJni.prepareSendPlan(inputJson)
+    }
+  }
+
+  override fun sendPlanStatus(planId: String, promise: Promise) {
+    resolveNativeString(promise, "sendPlan.status") {
+      NativeMoneroWalletJni.sendPlanStatus(planId)
+    }
+  }
+
+  override fun listSendPlans(promise: Promise) {
+    resolveNativeString(promise, "sendPlan.list") {
+      NativeMoneroWalletJni.listSendPlans()
+    }
+  }
+
+  override fun discardSendPlan(planId: String, promise: Promise) {
+    resolveNativeVoid(promise, "sendPlan.discard") {
+      NativeMoneroWalletJni.discardSendPlan(planId)
+    }
+  }
+
+  private fun releaseSendPlanClaimAndReject(
+    planId: String,
+    claimToken: String,
+    promise: Promise,
+    code: String,
+    message: String,
+  ) {
+    runCatching {
+      nativeWalletExecutor.execute {
+        val released = runCatching {
+          NativeMoneroWalletJni.releaseSendPlan(planId, claimToken)
+        }.isSuccess
+        logNativeEvent(if (released) "sendPlan.claim.released" else "sendPlan.claim.releaseFailed")
+        promise.reject(code, if (released) message else "$message Check the saved payment status before continuing.")
+      }
+    }.onFailure { promise.reject(code, "$message Check the saved payment status before continuing.") }
+  }
+
+  override fun commitSendPlan(planId: String, promise: Promise) {
+    if (!requireAppAuthorized(promise) || !requireLinked(promise)) return
+    val authorizationGeneration = NativeAppAuthorization.generation()
+    runCatching {
+      nativeWalletExecutor.execute {
+        var privateClaimToken: String? = null
+        try {
+          requireNativeAuthorizationGeneration(authorizationGeneration)
+          check(checkSendPlanAuthorization()) { "The native app session is locked" }
+          val claim = JSONObject(timedNativeOperation("sendPlan.claim") {
+            NativeMoneroWalletJni.claimSendPlan(planId, authorizationGeneration)
+          })
+          val plan = claim.getJSONObject("plan")
+          val token = claim.optString("claimToken", "")
+          if (token.isBlank()) {
+            // A terminal receipt can be read again, but never retransmitted.
+            promise.resolve(plan.toString())
+            return@execute
+          }
+          privateClaimToken = token
+          val amount = plan.getString("amountAtomic")
+          val fee = plan.getString("feeAtomic")
+          val total = plan.getString("totalAtomic")
+          val digits = Regex("^[0-9]+$")
+          require(digits.matches(amount) && digits.matches(fee) && digits.matches(total)) {
+            "The native payment review contains invalid amounts"
+          }
+          require(amount.toBigInteger().signum() > 0 && amount.toBigInteger() + fee.toBigInteger() == total.toBigInteger()) {
+            "The native payment review total is inconsistent"
+          }
+          val count = plan.getLong("txCount")
+          require(count > 0) { "The native payment review contains no transactions" }
+          val labels = plan.getJSONArray("sourceLabels")
+          val names = (0 until labels.length()).map { index ->
+            labels.getString(index).filterNot(Char::isISOControl).take(120)
+          }.joinToString(", ")
+          val confirmation =
+            "Recipient\n${plan.getString("address")}\n\n" +
+              "Payment\n${formatAtomicXmr(amount)}\n\n" +
+              "Network fees\n${formatAtomicXmr(fee)}\n\n" +
+              "Total\n${formatAtomicXmr(total)}\n\n" +
+              "Transactions: $count\nSources: $names"
+          mainHandler.post {
+            val activity = reactApplicationContext.currentActivity as? FragmentActivity
+            if (activity == null || activity.isFinishing || activity.isDestroyed ||
+              !nativeAuthorizationMatchesGeneration(authorizationGeneration) || !checkSendPlanAuthorization()) {
+              releaseSendPlanClaimAndReject(planId, token, promise,
+                "monero_wallet_android_send_plan_dialog_unavailable", "Payment confirmation requires an active, unlocked app screen")
+              return@post
+            }
+            val decision = AtomicBoolean(false)
+            try {
+              val dialog = AlertDialog.Builder(activity)
+                .setTitle("Confirm complete payment")
+                .setMessage(confirmation)
+                .setPositiveButton("Authorize and send") { _, _ ->
+                  if (!decision.compareAndSet(false, true)) return@setPositiveButton
+                  if (!nativeAuthorizationMatchesGeneration(authorizationGeneration)) {
+                    releaseSendPlanClaimAndReject(planId, token, promise,
+                      "monero_wallet_android_send_plan_session_changed", "The app session changed. Review the payment again.")
+                    return@setPositiveButton
+                  }
+                  logNativeEvent("sendPlan.dialog.approved")
+                  requestFreshAuthorization("Authorize the complete payment shown in the previous system dialog.") { authorized, message ->
+                    if (!authorized || !nativeAuthorizationMatchesGeneration(authorizationGeneration)) {
+                      releaseSendPlanClaimAndReject(planId, token, promise,
+                        "monero_wallet_android_send_plan_auth_failed", if (authorized) "The app session changed. Review the payment again." else message)
+                      return@requestFreshAuthorization
+                    }
+                    runCatching {
+                      nativeWalletExecutor.execute {
+                        runCatching {
+                          requireNativeAuthorizationGeneration(authorizationGeneration)
+                          check(checkSendPlanAuthorization()) { "The native app session was locked" }
+                          timedNativeOperation("sendPlan.commit") { NativeMoneroWalletJni.commitSendPlan(planId, token, authorizationGeneration) }
+                        }.onSuccess { promise.resolve(it) }.onFailure { rejectNativeError(promise, it) }
+                      }
+                    }.onFailure { rejectNativeError(promise, it) }
+                  }
+                }
+                .setNegativeButton("Cancel") { _, _ ->
+                  if (decision.compareAndSet(false, true)) releaseSendPlanClaimAndReject(planId, token, promise,
+                    "monero_wallet_android_send_plan_cancelled", "Payment cancelled. Nothing was sent.")
+                }
+                .create()
+              dialog.setOnCancelListener {
+                if (decision.compareAndSet(false, true)) releaseSendPlanClaimAndReject(planId, token, promise,
+                  "monero_wallet_android_send_plan_cancelled", "Payment cancelled. Nothing was sent.")
+              }
+              dialog.setOnDismissListener {
+                if (decision.compareAndSet(false, true)) releaseSendPlanClaimAndReject(planId, token, promise,
+                  "monero_wallet_android_send_plan_cancelled", "Payment confirmation closed. Nothing was sent.")
+              }
+              dialog.show()
+              logNativeEvent("sendPlan.dialog.shown")
+            } catch (error: Throwable) {
+              if (decision.compareAndSet(false, true)) releaseSendPlanClaimAndReject(planId, token, promise,
+                "monero_wallet_android_send_plan_dialog_unavailable", "Payment confirmation could not be shown. Nothing was sent.")
+            }
+          }
+        } catch (error: Throwable) {
+          privateClaimToken?.let { token -> runCatching { NativeMoneroWalletJni.releaseSendPlan(planId, token) } }
+          rejectNativeError(promise, error)
+        }
+      }
+    }.onFailure { rejectNativeError(promise, it) }
+  }
+
   override fun prepareTransaction(
     walletId: String,
     address: String,
@@ -5004,6 +5179,7 @@ class NativeMoneroWalletModule(
     accountIndex: Double,
     promise: Promise,
   ) {
+    val authorizationGeneration = NativeAppAuthorization.generation()
     resolveNativeMap(
       promise,
       "prepareTransaction",
@@ -5016,6 +5192,7 @@ class NativeMoneroWalletModule(
         "walletId" to maskIdentifier(walletId),
       ),
     ) {
+      requireNativeAuthorizationGeneration(authorizationGeneration)
       val prepared = NativeMoneroWalletJni.prepareTransaction(
         walletId,
         address,
@@ -5024,6 +5201,7 @@ class NativeMoneroWalletModule(
         priority,
         accountIndex,
       )
+      requirePreparedApprovalGeneration(walletId, prepared, authorizationGeneration)
       val pendingId = prepared.stringValue("id")
       require(pendingId.isNotBlank()) {
         prepared.stringValue("error").ifBlank {
@@ -5031,7 +5209,7 @@ class NativeMoneroWalletModule(
         }
       }
       val approvalExpiresAtMs =
-        registerNativeTransactionApproval(walletId, address, prepared)
+        registerNativeTransactionApproval(walletId, address, prepared, authorizationGeneration)
       preparedTransactionToWritableMap(prepared, approvalExpiresAtMs)
     }
   }
@@ -5047,6 +5225,7 @@ class NativeMoneroWalletModule(
     accountIndex: Double,
     promise: Promise,
   ) {
+    val authorizationGeneration = NativeAppAuthorization.generation()
     resolveNativeMap(
       promise,
       "prepareMfwNameRegistration",
@@ -5060,6 +5239,7 @@ class NativeMoneroWalletModule(
         "walletId" to maskIdentifier(walletId),
       ),
     ) {
+      requireNativeAuthorizationGeneration(authorizationGeneration)
       val prepared = NativeMoneroWalletJni.prepareMfwNameRegistration(
         walletId,
         name,
@@ -5069,6 +5249,7 @@ class NativeMoneroWalletModule(
         priority,
         accountIndex,
       )
+      requirePreparedApprovalGeneration(walletId, prepared, authorizationGeneration)
       val ownerPrivateKeyHex =
         checkedCanonicalHex(
           prepared.stringValue("ownerPrivateKeyHex"),
@@ -5102,7 +5283,7 @@ class NativeMoneroWalletModule(
         }
       }
       val approvalExpiresAtMs =
-        registerNativeTransactionApproval(walletId, registryAddress, prepared)
+        registerNativeTransactionApproval(walletId, registryAddress, prepared, authorizationGeneration)
       mfwNamePreparedTransactionToWritableMap(
         prepared,
         ownerPublicKeyHex,
@@ -5123,6 +5304,7 @@ class NativeMoneroWalletModule(
     accountIndex: Double,
     promise: Promise,
   ) {
+    val authorizationGeneration = NativeAppAuthorization.generation()
     resolveNativeMap(
       promise,
       "prepareMfwNameClaim",
@@ -5135,6 +5317,7 @@ class NativeMoneroWalletModule(
         "years" to years,
       ),
     ) {
+      requireNativeAuthorizationGeneration(authorizationGeneration)
       val state = readMfwNameState(registrationId, name, address, network)
       val prepared = NativeMoneroWalletJni.prepareMfwNameClaim(
         walletId,
@@ -5148,6 +5331,7 @@ class NativeMoneroWalletModule(
         state.getString("ownerPrivateKeyHex"),
         state.getString("commitSaltHex"),
       )
+      requirePreparedApprovalGeneration(walletId, prepared, authorizationGeneration)
       val ownerPublicKeyHex =
         checkedCanonicalHex(
           prepared.stringValue("ownerPublicKeyHex"),
@@ -5163,7 +5347,7 @@ class NativeMoneroWalletModule(
         }
       }
       val approvalExpiresAtMs =
-        registerNativeTransactionApproval(walletId, registryAddress, prepared)
+        registerNativeTransactionApproval(walletId, registryAddress, prepared, authorizationGeneration)
       mfwNamePreparedTransactionToWritableMap(
         prepared,
         ownerPublicKeyHex,
@@ -5187,6 +5371,7 @@ class NativeMoneroWalletModule(
     accountIndex: Double,
     promise: Promise,
   ) {
+    val authorizationGeneration = NativeAppAuthorization.generation()
     resolveNativeMap(
       promise,
       "prepareMfwNameTransition",
@@ -5200,6 +5385,7 @@ class NativeMoneroWalletModule(
         "years" to years,
       ),
     ) {
+      requireNativeAuthorizationGeneration(authorizationGeneration)
       require(operation == "update" || operation == "renew" || operation == "revoke") {
         "MFW name transition operation is invalid"
       }
@@ -5227,6 +5413,7 @@ class NativeMoneroWalletModule(
         accountIndex,
         state.getString("ownerPrivateKeyHex"),
       )
+      requirePreparedApprovalGeneration(walletId, prepared, authorizationGeneration)
       require(prepared.stringValue("id").isNotBlank()) {
         prepared.stringValue("error").ifBlank {
           "Native MFW transition preparation did not return an approval id"
@@ -5234,7 +5421,7 @@ class NativeMoneroWalletModule(
       }
       val destination = if (operation == "renew") registryAddress else address
       val approvalExpiresAtMs =
-        registerNativeTransactionApproval(walletId, destination, prepared)
+        registerNativeTransactionApproval(walletId, destination, prepared, authorizationGeneration)
       mfwNamePreparedTransactionToWritableMap(
         prepared,
         state.getString("ownerPublicKeyHex"),
@@ -5564,6 +5751,22 @@ class NativeMoneroWalletModule(
     }
   }
 
+  private fun discardLegacyReviewAndReject(
+    walletId: String,
+    pendingId: String,
+    promise: Promise,
+    code: String,
+    message: String,
+  ) {
+    runCatching {
+      nativeWalletExecutor.execute {
+        val released = runCatching { NativeMoneroWalletJni.discardLegacyReview(walletId, pendingId) }.isSuccess
+        logNativeEvent(if (released) "legacyReview.cancel.released" else "legacyReview.cancel.cleanupFailed")
+        promise.reject(code, if (released) message else "$message The preview could not be released. Reopen the wallet before preparing another payment.")
+      }
+    }.onFailure { promise.reject(code, "$message The preview could not be released. Reopen the wallet before preparing another payment.") }
+  }
+
   override fun commitTransaction(walletId: String, pendingId: String, promise: Promise) {
     val requestedAt = SystemClock.elapsedRealtime()
     logNativeEvent("commitTransaction.requested")
@@ -5574,6 +5777,7 @@ class NativeMoneroWalletModule(
       )
       return
     }
+    val authorizationGeneration = NativeAppAuthorization.generation()
     val approval = NativeSensitiveApprovalState.consume(walletId, pendingId)
     if (approval == null) {
       logNativeEvent(
@@ -5593,13 +5797,13 @@ class NativeMoneroWalletModule(
     mainHandler.post {
       val activity = reactApplicationContext.currentActivity as? FragmentActivity
       if (activity == null || activity.isFinishing ||
-        !NativeAppAuthorization.isAuthorized()
+        !nativeAuthorizationMatchesGeneration(authorizationGeneration)
       ) {
         logNativeEvent(
           "commitTransaction.dialog.error",
           mapOf("elapsedMs" to (SystemClock.elapsedRealtime() - requestedAt)),
         )
-        promise.reject(
+        discardLegacyReviewAndReject(walletId, pendingId, promise,
           "monero_wallet_android_transaction_dialog_unavailable",
           "Transaction confirmation requires an active, unlocked app screen",
         )
@@ -5615,6 +5819,11 @@ class NativeMoneroWalletModule(
         .setTitle("Confirm transaction")
         .setMessage(confirmation)
         .setPositiveButton("Authorize and send") { _, _ ->
+          if (!nativeAuthorizationMatchesGeneration(authorizationGeneration)) {
+            discardLegacyReviewAndReject(walletId, pendingId, promise,
+              "monero_wallet_android_transaction_session_changed", "The app session changed. Review the payment again.")
+            return@setPositiveButton
+          }
           logNativeEvent(
             "commitTransaction.dialog.approved",
             mapOf("elapsedMs" to (SystemClock.elapsedRealtime() - requestedAt)),
@@ -5624,7 +5833,7 @@ class NativeMoneroWalletModule(
           requestFreshAuthorization(
             "Authorize the transaction shown in the previous system dialog.",
           ) { authorized, message ->
-            if (!authorized) {
+            if (!authorized || !nativeAuthorizationMatchesGeneration(authorizationGeneration)) {
               logNativeEvent(
                 "commitTransaction.authorization.error",
                 mapOf(
@@ -5632,9 +5841,9 @@ class NativeMoneroWalletModule(
                     (SystemClock.elapsedRealtime() - authorizationStartedAt),
                 ),
               )
-              promise.reject(
+              discardLegacyReviewAndReject(walletId, pendingId, promise,
                 "monero_wallet_android_transaction_auth_failed",
-                message,
+                if (authorized) "The app session changed. Review the payment again." else message,
               )
               return@requestFreshAuthorization
             }
@@ -5647,11 +5856,9 @@ class NativeMoneroWalletModule(
             )
             Thread {
               runCatching {
-                check(NativeAppAuthorization.isAuthorized()) {
-                  "The native app session was locked"
-                }
+                requireNativeAuthorizationGeneration(authorizationGeneration)
                 timedNativeOperation("commitTransaction.native") {
-                  NativeMoneroWalletJni.commitTransaction(walletId, pendingId)
+                  NativeMoneroWalletJni.commitTransaction(walletId, pendingId, authorizationGeneration)
                 }
               }
                 .onSuccess { committed ->
@@ -5672,7 +5879,7 @@ class NativeMoneroWalletModule(
             "commitTransaction.dialog.cancelled",
             mapOf("elapsedMs" to (SystemClock.elapsedRealtime() - requestedAt)),
           )
-          promise.reject(
+          discardLegacyReviewAndReject(walletId, pendingId, promise,
             "monero_wallet_android_transaction_cancelled",
             "Transaction cancelled",
           )
@@ -5693,6 +5900,7 @@ class NativeMoneroWalletModule(
     if (!requireAppAuthorized(promise) || !requireLinked(promise)) {
       return
     }
+    val authorizationGeneration = NativeAppAuthorization.generation()
     val approval = NativeSensitiveApprovalState.consume(walletId, pendingId)
     if (approval == null) {
       promise.reject(
@@ -5704,9 +5912,9 @@ class NativeMoneroWalletModule(
     mainHandler.post {
       val activity = reactApplicationContext.currentActivity as? FragmentActivity
       if (activity == null || activity.isFinishing ||
-        !NativeAppAuthorization.isAuthorized()
+        !nativeAuthorizationMatchesGeneration(authorizationGeneration)
       ) {
-        promise.reject(
+        discardLegacyReviewAndReject(walletId, pendingId, promise,
           "monero_wallet_android_transaction_dialog_unavailable",
           "Transaction confirmation requires an active, unlocked app screen",
         )
@@ -5722,26 +5930,34 @@ class NativeMoneroWalletModule(
         .setTitle("Confirm delayed transaction")
         .setMessage(confirmation)
         .setPositiveButton("Authorize and schedule") { _, _ ->
+          if (!nativeAuthorizationMatchesGeneration(authorizationGeneration)) {
+            discardLegacyReviewAndReject(walletId, pendingId, promise,
+              "monero_wallet_android_transaction_session_changed", "The app session changed. Review the payment again.")
+            return@setPositiveButton
+          }
           requestFreshAuthorization(
             "Authorize the delayed transaction shown in the previous system dialog.",
           ) { authorized, message ->
-            if (!authorized) {
-              promise.reject(
+            if (!authorized || !nativeAuthorizationMatchesGeneration(authorizationGeneration)) {
+              discardLegacyReviewAndReject(walletId, pendingId, promise,
                 "monero_wallet_android_transaction_auth_failed",
-                message,
+                if (authorized) "The app session changed. Review the payment again." else message,
               )
               return@requestFreshAuthorization
             }
             Thread {
               runCatching {
-                check(NativeAppAuthorization.isAuthorized()) {
-                  "The native app session was locked"
-                }
-                NativeMoneroWalletJni.exportPendingTransaction(walletId, pendingId)
+                requireNativeAuthorizationGeneration(authorizationGeneration)
+                NativeMoneroWalletJni.exportPendingTransaction(walletId, pendingId, authorizationGeneration)
               }
                 .onSuccess { exported ->
                   mainHandler.post {
-                    promise.resolve(preparedTransactionToWritableMap(exported))
+                    if (nativeAuthorizationMatchesGeneration(authorizationGeneration)) {
+                      promise.resolve(preparedTransactionToWritableMap(exported))
+                    } else {
+                      promise.reject("monero_wallet_android_transaction_session_changed",
+                        "The app session changed. The private export was not released. Review the payment again.")
+                    }
                   }
                 }
                 .onFailure { error ->
@@ -5751,7 +5967,7 @@ class NativeMoneroWalletModule(
           }
         }
         .setNegativeButton("Cancel") { _, _ ->
-          promise.reject(
+          discardLegacyReviewAndReject(walletId, pendingId, promise,
             "monero_wallet_android_transaction_cancelled",
             "Transaction cancelled",
           )
@@ -7953,6 +8169,7 @@ class NativeMoneroWalletModule(
 
   private fun checkedWalletSecretKey(value: String): String {
     val checked = checkedSecretKey(value)
+    require(checked != SEND_PLAN_JOURNAL_KEY) { "The native payment journal is not a wallet credential" }
     require(
       checked.startsWith("monero.wallet.") &&
         !checked.startsWith("monero.wallet.app.")
@@ -8334,7 +8551,12 @@ class NativeMoneroWalletModule(
         "unlockedBalanceAtomic",
         snapshot.stringValue("unlockedBalanceAtomic"),
       )
+      putString("lockedBalanceAtomic", snapshot.stringValue("lockedBalanceAtomic"))
+      putDouble("unlockBlocksRemaining", snapshot.numberValue("unlockBlocksRemaining"))
+      putDouble("unlockTimeRemainingSeconds", snapshot.numberValue("unlockTimeRemainingSeconds"))
+      putString("unlockState", snapshot.stringValue("unlockState"))
       putDouble("walletHeight", snapshot.numberValue("walletHeight"))
+      putDouble("refreshFromHeight", snapshot.numberValue("refreshFromHeight"))
       putDouble("daemonHeight", snapshot.numberValue("daemonHeight"))
       putDouble("daemonTargetHeight", snapshot.numberValue("daemonTargetHeight"))
       // Keep the native history/snapshot coherence token across this bridge.
@@ -8432,6 +8654,7 @@ class NativeMoneroWalletModule(
       putDouble("downloadStartHeight", status.numberValue("downloadStartHeight"))
       putDouble("downloadedHeight", status.numberValue("downloadedHeight"))
       putDouble("chainHeight", status.numberValue("chainHeight"))
+      putString("priorityWalletId", status.stringValue("priorityWalletId"))
       putDouble("priorityWalletHeight", status.numberValue("priorityWalletHeight"))
       putDouble("targetHeight", status.numberValue("targetHeight"))
       putDouble("transportStarts", status.numberValue("transportStarts"))
@@ -8577,23 +8800,41 @@ class NativeMoneroWalletModule(
     walletId: String,
     address: String,
     prepared: Map<String, Any>,
+    authorizationGeneration: Long,
   ): Long {
+    requirePreparedApprovalGeneration(walletId, prepared, authorizationGeneration)
     val pendingId = prepared.stringValue("id")
     require(pendingId.isNotBlank()) {
       "Native transaction preparation did not return an approval id"
     }
     val expiresAtMs = System.currentTimeMillis() + TRANSACTION_APPROVAL_TTL_MS
-    NativeSensitiveApprovalState.put(
-      NativeTransactionApproval(
+    try {
+      NativeSensitiveApprovalState.put(NativeTransactionApproval(
         walletId = walletId,
         pendingId = pendingId,
         address = address,
         amountAtomic = prepared.stringValue("amountAtomic"),
         feeAtomic = prepared.stringValue("feeAtomic"),
         expiresAtMs = expiresAtMs,
-      ),
-    )
+        authorizationGeneration = authorizationGeneration,
+      ))
+    } catch (error: Throwable) {
+      runCatching { NativeMoneroWalletJni.discardLegacyReview(walletId, pendingId) }
+      throw error
+    }
     return expiresAtMs
+  }
+
+  private fun requirePreparedApprovalGeneration(
+    walletId: String,
+    prepared: Map<String, Any>,
+    authorizationGeneration: Long,
+  ) {
+    if (!nativeAuthorizationMatchesGeneration(authorizationGeneration)) {
+      val pendingId = prepared.stringValue("id")
+      if (pendingId.isNotBlank()) runCatching { NativeMoneroWalletJni.discardLegacyReview(walletId, pendingId) }
+      requireNativeAuthorizationGeneration(authorizationGeneration)
+    }
   }
 
   private fun stringListToWritableArray(values: List<*>): WritableArray =
@@ -9389,6 +9630,39 @@ class NativeMoneroWalletModule(
     this[key] as? List<*> ?: emptyList<Any>()
 
   companion object {
+    private const val SEND_PLAN_JOURNAL_KEY = "monero.wallet.send-plans.v1"
+    private const val SEND_PLAN_MAX_JOURNAL_BYTES = 8 * 1024 * 1024
+
+    // JNI-only callbacks. No receipt, claim token or journal key is exposed as
+    // a React Native method, and renderer credential APIs reject this key.
+    @JvmStatic
+    private fun checkSendPlanAuthorization(): Boolean =
+      NativeAppAuthorization.isAuthorized() && activeInstance?.get()?.walletAppVault?.isUnlocked() == true
+
+    @JvmStatic
+    private fun sendPlanAuthorizationGeneration(): Long = NativeAppAuthorization.generation()
+
+    @JvmStatic
+    private fun readSendPlanJournal(): String {
+      val module = activeInstance?.get() ?: throw SecurityException("The native wallet module is unavailable")
+      check(checkSendPlanAuthorization()) { "The native app vault is locked" }
+      val value = module.walletAppVault.get(SEND_PLAN_JOURNAL_KEY) ?: "[]"
+      JSONArray(value)
+      return value
+    }
+
+    @JvmStatic
+    private fun writeSendPlanJournal(json: String) {
+      val module = activeInstance?.get() ?: throw SecurityException("The native wallet module is unavailable")
+      check(checkSendPlanAuthorization()) { "The native app vault is locked" }
+      require(json.toByteArray(Charsets.UTF_8).size <= SEND_PLAN_MAX_JOURNAL_BYTES) { "The native payment journal is too large" }
+      JSONArray(json)
+      // AppVault.put synchronously commits the authenticated encrypted record
+      // and decrypts its readback before returning.
+      module.walletAppVault.put(SEND_PLAN_JOURNAL_KEY, json)
+      check(module.walletAppVault.get(SEND_PLAN_JOURNAL_KEY) == json) { "The native payment journal readback did not match" }
+    }
+
     private const val MFW_RECOVERY_EXPORT_REQUEST_CODE = 0x4D46
     @Volatile
     private var activeInstance: WeakReference<NativeMoneroWalletModule>? = null

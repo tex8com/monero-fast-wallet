@@ -1,4 +1,5 @@
 #include "WalletEngine.h"
+#include "MobileSendPlanAdapter.h"
 #include "FastWalletProtocolBridge.h"
 #include "mfw_product_core_contract.h"
 
@@ -32,6 +33,7 @@ static_assert(MFW_PRODUCT_CORE_ABI_VERSION == 1u,
 #include <cstring>
 #include <limits>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -59,14 +61,102 @@ using tex8::wallet::PrepareTransactionRequest;
 using tex8::wallet::RestoreWalletRequest;
 using tex8::wallet::WalletEngine;
 using tex8::wallet::WalletEngineError;
+using tex8::wallet::WalletAccountBalance;
 using tex8::wallet::WalletSnapshot;
 using tex8::wallet::WalletSubaddress;
 using tex8::wallet::WalletTransaction;
 using tex8::wallet::WalletTransactionTransfer;
+using tex8::wallet::MobileSendPlanAdapter;
+using tex8::wallet::MobileSendPlanCallbacks;
 
-WalletEngine& walletEngine() {
-  static WalletEngine engine;
-  return engine;
+struct NativeWalletHost {
+  WalletEngine engine;
+  MobileSendPlanAdapter plans{engine};
+};
+
+NativeWalletHost& walletHost() {
+  static NativeWalletHost host;
+  return host;
+}
+
+WalletEngine& walletEngine() { return walletHost().engine; }
+MobileSendPlanAdapter& sendPlans() { return walletHost().plans; }
+
+struct SendPlanJavaHost {
+  JNIEnv* env;
+  jclass module;
+  jmethodID read;
+  jmethodID write;
+  jmethodID authorized;
+  jmethodID generation;
+  jlong capturedGeneration{0};
+  explicit SendPlanJavaHost(JNIEnv* value, std::optional<jlong> expectedGeneration)
+      : env(value), module(nullptr) {
+    module = env->FindClass("com/monerowallet/NativeMoneroWalletModule");
+    if (module) {
+      read = env->GetStaticMethodID(module, "readSendPlanJournal", "()Ljava/lang/String;");
+      write = env->GetStaticMethodID(module, "writeSendPlanJournal", "(Ljava/lang/String;)V");
+      authorized = env->GetStaticMethodID(module, "checkSendPlanAuthorization", "()Z");
+      generation = env->GetStaticMethodID(module, "sendPlanAuthorizationGeneration", "()J");
+    }
+    if (env->ExceptionCheck() || !module || !read || !write || !authorized || !generation) {
+      env->ExceptionClear();
+      if (module) env->DeleteLocalRef(module);
+      module = nullptr;
+      throw WalletEngineError("The native payment journal host is unavailable");
+    }
+    capturedGeneration = env->CallStaticLongMethod(module, generation);
+    if (env->ExceptionCheck()) {
+      env->ExceptionClear();
+      env->DeleteLocalRef(module);
+      module = nullptr;
+      throw WalletEngineError("The native payment authorization generation is unavailable");
+    }
+    if (expectedGeneration && capturedGeneration != *expectedGeneration) {
+      env->DeleteLocalRef(module);
+      module = nullptr;
+      throw WalletEngineError("The native app session changed after payment authorization");
+    }
+  }
+  ~SendPlanJavaHost() { if (module) env->DeleteLocalRef(module); }
+  void check(const char* message) {
+    if (env->ExceptionCheck()) { env->ExceptionClear(); throw WalletEngineError(message); }
+  }
+};
+
+MobileSendPlanCallbacks sendPlanCallbacks(
+    JNIEnv* env, std::optional<jlong> expectedGeneration = std::nullopt) {
+  auto host = std::make_shared<SendPlanJavaHost>(env, expectedGeneration);
+  return {
+    [host] {
+      auto value = static_cast<jstring>(host->env->CallStaticObjectMethod(host->module, host->read));
+      host->check("The encrypted payment journal could not be read");
+      if (!value) throw WalletEngineError("The encrypted payment journal returned no data");
+      const auto* bytes = host->env->GetStringUTFChars(value, nullptr);
+      if (!bytes) { host->check("The encrypted payment journal could not be decoded"); throw std::bad_alloc(); }
+      std::string json(bytes);
+      host->env->ReleaseStringUTFChars(value, bytes);
+      host->env->DeleteLocalRef(value);
+      return json;
+    },
+    [host](const std::string& json) {
+      auto value = host->env->NewStringUTF(json.c_str());
+      if (!value) { host->check("The encrypted payment journal could not be encoded"); throw std::bad_alloc(); }
+      host->env->CallStaticVoidMethod(host->module, host->write, value);
+      host->env->DeleteLocalRef(value);
+      host->check("The encrypted payment journal could not be saved durably");
+    },
+    [host] {
+      const auto before = host->env->CallStaticLongMethod(host->module, host->generation);
+      if (host->env->ExceptionCheck()) { host->env->ExceptionClear(); return false; }
+      if (before != host->capturedGeneration) return false;
+      const auto authorized = host->env->CallStaticBooleanMethod(host->module, host->authorized);
+      if (host->env->ExceptionCheck()) { host->env->ExceptionClear(); return false; }
+      const auto after = host->env->CallStaticLongMethod(host->module, host->generation);
+      if (host->env->ExceptionCheck()) { host->env->ExceptionClear(); return false; }
+      return authorized == JNI_TRUE && after == host->capturedGeneration;
+    },
+  };
 }
 
 #if TEX8_COMMUNITY_MATRIX_LINKED
@@ -535,7 +625,12 @@ jobject toJavaMap(JNIEnv* env, const WalletSnapshot& snapshot) {
       putMethod,
       "unlockedBalanceAtomic",
       std::to_string(snapshot.unlockedBalanceAtomic));
+  putMapString(env, map, putMethod, "lockedBalanceAtomic", std::to_string(snapshot.lockedBalanceAtomic));
+  putMapDouble(env, map, putMethod, "unlockBlocksRemaining", snapshot.unlockBlocksRemaining);
+  putMapDouble(env, map, putMethod, "unlockTimeRemainingSeconds", snapshot.unlockTimeRemainingSeconds);
+  putMapString(env, map, putMethod, "unlockState", snapshot.unlockState);
   putMapDouble(env, map, putMethod, "walletHeight", snapshot.walletHeight);
+  putMapDouble(env, map, putMethod, "refreshFromHeight", snapshot.refreshFromHeight);
   putMapDouble(env, map, putMethod, "daemonHeight", snapshot.daemonHeight);
   putMapDouble(
       env,
@@ -691,6 +786,8 @@ jobject toJavaMap(JNIEnv* env, const NetworkSyncStatus& status) {
   putMapString(env, map, putMethod, "network", networkName(status.network));
   putMapString(env, map, putMethod, "state", status.state);
   putMapString(env, map, putMethod, "phase", status.phase);
+  putMapString(env, map, putMethod, "blockTransport", status.blockTransport);
+  putMapString(env, map, putMethod, "blockTransportReason", status.blockTransportReason);
   putMapString(env, map, putMethod, "lastError", status.lastError);
   putMapDouble(env, map, putMethod, "consecutiveFailures", status.consecutiveFailures);
   putMapDouble(env, map, putMethod, "phaseSequence", status.phaseSequence);
@@ -732,6 +829,7 @@ jobject toJavaMap(JNIEnv* env, const NetworkSyncStatus& status) {
   putMapDouble(env, map, putMethod, "downloadStartHeight", status.downloadStartHeight);
   putMapDouble(env, map, putMethod, "downloadedHeight", status.downloadedHeight);
   putMapDouble(env, map, putMethod, "chainHeight", status.chainHeight);
+  putMapString(env, map, putMethod, "priorityWalletId", status.priorityWalletId);
   putMapDouble(env, map, putMethod, "priorityWalletHeight", status.priorityWalletHeight);
   putMapDouble(env, map, putMethod, "targetHeight", status.targetHeight);
   putMapDouble(env, map, putMethod, "transportStarts", status.transportStarts);
@@ -1000,6 +1098,30 @@ jobject toJavaSubaddressList(
     env->CallBooleanMethod(list, addMethod, value);
     env->DeleteLocalRef(value);
   }
+  return list;
+}
+
+jobject toJavaAccountList(
+    JNIEnv* env,
+    const std::vector<WalletAccountBalance>& accounts) {
+  jobject list = newArrayList(env);
+  jmethodID addMethod = arrayListAddMethod(env);
+  jclass hashMapClass = env->FindClass("java/util/HashMap");
+  jmethodID constructor = env->GetMethodID(hashMapClass, "<init>", "()V");
+  jmethodID putMethod = hashMapPutMethod(env);
+  for (const auto& account : accounts) {
+    jobject value = env->NewObject(hashMapClass, constructor);
+    putMapDouble(env, value, putMethod, "accountIndex", account.accountIndex);
+    putMapString(
+        env, value, putMethod, "balanceAtomic",
+        std::to_string(account.balanceAtomic));
+    putMapString(
+        env, value, putMethod, "unlockedBalanceAtomic",
+        std::to_string(account.unlockedBalanceAtomic));
+    env->CallBooleanMethod(list, addMethod, value);
+    env->DeleteLocalRef(value);
+  }
+  env->DeleteLocalRef(hashMapClass);
   return list;
 }
 
@@ -3214,6 +3336,20 @@ Java_com_monerowallet_NativeMoneroWalletJni_nativeListSubaddresses(
   }
 }
 
+extern "C" JNIEXPORT jobject JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativeGetAccounts(
+    JNIEnv* env,
+    jclass,
+    jstring walletId) {
+  try {
+    return toJavaAccountList(
+        env, walletEngine().accounts(toStdString(env, walletId)));
+  } catch (const std::exception& error) {
+    throwJavaError(env, error);
+    return nullptr;
+  }
+}
+
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_monerowallet_NativeMoneroWalletJni_nativeGetSeed(
     JNIEnv* env,
@@ -3383,6 +3519,75 @@ Java_com_monerowallet_NativeMoneroWalletJni_nativeSyncLedgerKeyImagesToViewWalle
   }
 }
 
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativePrepareSendPlan(
+    JNIEnv* env, jclass, jstring inputJson) {
+  try {
+    return env->NewStringUTF(sendPlans().prepare(toStdString(env, inputJson), sendPlanCallbacks(env)).c_str());
+  } catch (const std::exception& error) { throwJavaError(env, error); return nullptr; }
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativeClaimSendPlan(
+    JNIEnv* env, jclass, jstring planId, jlong expectedGeneration) {
+  try {
+    return env->NewStringUTF(sendPlans().claim(toStdString(env, planId), sendPlanCallbacks(env, expectedGeneration)).c_str());
+  } catch (const std::exception& error) { throwJavaError(env, error); return nullptr; }
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativeCommitSendPlan(
+    JNIEnv* env, jclass, jstring planId, jstring claimToken, jlong expectedGeneration) {
+  try {
+    return env->NewStringUTF(sendPlans().commit(
+        toStdString(env, planId), toStdString(env, claimToken), sendPlanCallbacks(env, expectedGeneration)).c_str());
+  } catch (const std::exception& error) { throwJavaError(env, error); return nullptr; }
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativeReleaseSendPlan(
+    JNIEnv* env, jclass, jstring planId, jstring claimToken) {
+  try {
+    sendPlans().release(toStdString(env, planId), toStdString(env, claimToken), sendPlanCallbacks(env));
+  } catch (const std::exception& error) { throwJavaError(env, error); }
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativeSendPlanStatus(
+    JNIEnv* env, jclass, jstring planId) {
+  try {
+    return env->NewStringUTF(sendPlans().status(toStdString(env, planId), sendPlanCallbacks(env)).c_str());
+  } catch (const std::exception& error) { throwJavaError(env, error); return nullptr; }
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativeListSendPlans(
+    JNIEnv* env, jclass) {
+  try { return env->NewStringUTF(sendPlans().list(sendPlanCallbacks(env)).c_str()); }
+  catch (const std::exception& error) { throwJavaError(env, error); return nullptr; }
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativeDiscardSendPlan(
+    JNIEnv* env, jclass, jstring planId) {
+  try { sendPlans().discard(toStdString(env, planId), sendPlanCallbacks(env)); }
+  catch (const std::exception& error) { throwJavaError(env, error); }
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativeInvalidateSendPlanClaims(
+    JNIEnv* env, jclass) {
+  try { sendPlans().invalidate(sendPlanCallbacks(env)); }
+  catch (const std::exception& error) { throwJavaError(env, error); }
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativeDiscardLegacyReview(
+    JNIEnv* env, jclass, jstring walletId, jstring pendingId) {
+  try { sendPlans().discardLegacyReview(toStdString(env, walletId), toStdString(env, pendingId)); }
+  catch (const std::exception& error) { throwJavaError(env, error); }
+}
+
 extern "C" JNIEXPORT jobject JNICALL
 Java_com_monerowallet_NativeMoneroWalletJni_nativePrepareTransaction(
     JNIEnv* env,
@@ -3401,7 +3606,9 @@ Java_com_monerowallet_NativeMoneroWalletJni_nativePrepareTransaction(
     request.paymentId = toStdString(env, paymentId);
     request.priority = toStdString(env, priority);
     request.accountIndex = toUInt32(accountIndex, "accountIndex");
-    return toJavaMap(env, walletEngine().prepareTransaction(request));
+    return toJavaMap(env, sendPlans().withLegacyPreparation(
+        sendPlanCallbacks(env), request,
+        [&] { return walletEngine().prepareTransaction(request); }));
   } catch (const std::exception& error) {
     throwJavaError(env, error);
     return nullptr;
@@ -3439,7 +3646,9 @@ Java_com_monerowallet_NativeMoneroWalletJni_nativePrepareMfwNameRegistration(
     request.priority = toStdString(env, priority);
     request.accountIndex = toUInt32(accountIndex, "accountIndex");
     request.mfwNameExtraNonce = material.commitExtraNonce;
-    const auto prepared = walletEngine().prepareTransaction(request);
+    const auto prepared = sendPlans().withLegacyPreparation(
+        sendPlanCallbacks(env), request,
+        [&] { return walletEngine().prepareTransaction(request); });
     std::fill(
         material.commitExtraNonce.begin(),
         material.commitExtraNonce.end(),
@@ -3514,7 +3723,9 @@ Java_com_monerowallet_NativeMoneroWalletJni_nativePrepareMfwNameClaim(
     request.priority = toStdString(env, priority);
     request.accountIndex = toUInt32(accountIndex, "accountIndex");
     request.mfwNameExtraNonce = record.extraNonce;
-    const auto prepared = walletEngine().prepareTransaction(request);
+    const auto prepared = sendPlans().withLegacyPreparation(
+        sendPlanCallbacks(env), request,
+        [&] { return walletEngine().prepareTransaction(request); });
     std::fill(record.extraNonce.begin(), record.extraNonce.end(), 0);
 
     jobject map = toJavaMap(env, prepared);
@@ -3588,7 +3799,9 @@ Java_com_monerowallet_NativeMoneroWalletJni_nativePrepareMfwNameTransition(
     request.priority = toStdString(env, priority);
     request.accountIndex = toUInt32(accountIndex, "accountIndex");
     request.mfwNameExtraNonce = record.extraNonce;
-    const auto prepared = walletEngine().prepareTransaction(request);
+    const auto prepared = sendPlans().withLegacyPreparation(
+        sendPlanCallbacks(env), request,
+        [&] { return walletEngine().prepareTransaction(request); });
     std::fill(record.extraNonce.begin(), record.extraNonce.end(), 0);
     return toJavaMap(env, prepared);
   } catch (const std::exception& error) {
@@ -3667,13 +3880,15 @@ Java_com_monerowallet_NativeMoneroWalletJni_nativeCommitTransaction(
     JNIEnv* env,
     jclass,
     jstring walletId,
-    jstring pendingId) {
+    jstring pendingId,
+    jlong expectedGeneration) {
   try {
     return toJavaMap(
         env,
-        walletEngine().commitTransaction(
+        sendPlans().commitLegacyReview(
             toStdString(env, walletId),
-            toStdString(env, pendingId)));
+            toStdString(env, pendingId),
+            sendPlanCallbacks(env, expectedGeneration)));
   } catch (const std::exception& error) {
     throwJavaError(env, error);
     return nullptr;
@@ -3685,13 +3900,15 @@ Java_com_monerowallet_NativeMoneroWalletJni_nativeExportPendingTransaction(
     JNIEnv* env,
     jclass,
     jstring walletId,
-    jstring pendingId) {
+    jstring pendingId,
+    jlong expectedGeneration) {
   try {
-    return toJavaMap(
-        env,
-        walletEngine().exportPendingTransaction(
-            toStdString(env, walletId),
-            toStdString(env, pendingId)));
+    const auto callbacks = sendPlanCallbacks(env, expectedGeneration);
+    if (!callbacks.isAuthorized()) throw WalletEngineError("The native app session changed before export authorization");
+    const auto prepared = walletEngine().exportPendingTransaction(
+        toStdString(env, walletId), toStdString(env, pendingId));
+    if (!callbacks.isAuthorized()) throw WalletEngineError("The native app session changed during the local export");
+    return toJavaMap(env, prepared);
   } catch (const std::exception& error) {
     throwJavaError(env, error);
     return nullptr;

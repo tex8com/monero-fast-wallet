@@ -4,6 +4,22 @@ import {
 } from '../MfwNameAvailabilityService';
 import type { MfwNameResolution } from '../PrivateRecipientResolution';
 import {NativeModules} from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { saveMfwResolverPreference } from '../MfwResolverSettings';
+
+const mockStoredValues = new Map<string, string>();
+
+jest.mock('@react-native-async-storage/async-storage', () => ({
+  getItem: jest.fn(async (key: string) => mockStoredValues.get(key) ?? null),
+  setItem: jest.fn(async (key: string, value: string) => {
+    mockStoredValues.set(key, value);
+  }),
+}));
+
+const tex8Origin =
+  'http://fastrelayrpcf3hbc4qvykjgbpwpmcuq5dpcsdxoe7gwfh2zxdib3eid.onion';
+const communityOrigin =
+  'http://quietportrpccujodzxhwcfefbmhftof5i6oiq7rrx5tnzna7rxirhqd.onion';
 
 const hex = (value: string) => value.repeat(64);
 
@@ -39,6 +55,7 @@ function lookup(value: MfwNameResolution) {
 
 describe('MFW name availability', () => {
   beforeEach(() => {
+    mockStoredValues.clear();
     NativeModules.EmbeddedTor = {
       request: jest.fn(async (url: string, method: string, headers: Record<string, string>, body: string | null) => {
         const result = await globalThis.fetch(url, {method, headers, body: body ?? undefined});
@@ -118,26 +135,42 @@ describe('MFW name availability', () => {
     ).rejects.toThrow('contains a record');
   });
 
-  it('uses the pinned public resolver in the enabled development release', async () => {
-    const current = response('not_found') as unknown as Record<string, unknown>;
-    delete current.ownerPublicKeyHex;
-    delete current.sequence;
-    delete current.signingOwnerPublicKeyHex;
-    const fetcher = jest.spyOn(globalThis, 'fetch').mockResolvedValue({
-      ok: true,
-      status: 200,
-      text: async () => JSON.stringify(current),
-    } as Response);
-    await expect(
-      checkConfiguredMfwNameAvailability({
-        name: 'alice',
-        network: 'mainnet',
-      }),
-    ).resolves.toMatchObject({ status: 'available' });
-    expect(fetcher).toHaveBeenCalledWith(
-      'http://fastrelayrpcf3hbc4qvykjgbpwpmcuq5dpcsdxoe7gwfh2zxdib3eid.onion/v1/mfw/names/alice.mfw',
-      expect.any(Object),
-    );
-    fetcher.mockRestore();
-  });
+  it.each([
+    [undefined, [tex8Origin, communityOrigin]],
+    ['both', [tex8Origin, communityOrigin]],
+    ['tex8', [tex8Origin]],
+    ['community', [communityOrigin]],
+    ['http://other.example', [tex8Origin, communityOrigin]],
+  ] as const)(
+    'requests only the pinned availability origins for saved choice %s',
+    async (preference, expectedOrigins) => {
+      if (preference === 'http://other.example') {
+        await AsyncStorage.setItem('monero-fast-wallet.mfw-resolver.v1', preference);
+      } else if (preference !== undefined) {
+        await saveMfwResolverPreference(preference);
+      }
+      const current = response('not_found') as unknown as Record<string, unknown>;
+      delete current.ownerPublicKeyHex;
+      delete current.sequence;
+      delete current.signingOwnerPublicKeyHex;
+      const fetcher = jest.spyOn(globalThis, 'fetch').mockResolvedValue({
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify(current),
+      } as Response);
+      try {
+        await expect(
+          checkConfiguredMfwNameAvailability({
+            name: 'alice',
+            network: 'mainnet',
+          }),
+        ).resolves.toMatchObject({ status: 'available' });
+        expect(fetcher.mock.calls.map(([url]) => url)).toEqual(
+          expectedOrigins.map(origin => `${origin}/v1/mfw/names/alice.mfw`),
+        );
+      } finally {
+        fetcher.mockRestore();
+      }
+    },
+  );
 });

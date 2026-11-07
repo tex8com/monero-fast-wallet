@@ -47,3 +47,30 @@ delivery, because another Fast Wallet may still use that installation.
 The planner does not implement a network client and does not attest a Gateway
 response. Each platform's secure storage and authorized transport adapter must
 prove the corresponding input predicate before executing its returned action.
+
+## Payments across accounts and selected wallets
+
+`src/send_plan.rs` is the shared payment planner for Tauri, Android and iOS.
+It enumerates native accounts, allocates a fixed amount or MAX, and derives
+amounts and fees exclusively from native pending transactions. Additional
+physical wallets are explicit sources; duplicate seed aliases are rejected.
+
+Mobile binds the synchronous C ABI in `include/mfw_send_plan.h`. The host owns
+native wallet sessions, encrypted durable journal storage and OS authorization.
+Private claim tokens never cross the renderer bridge. One aggregate native
+confirmation binds the exact recipient, amounts, fees, transactions and sources.
+The selected app protection mode controls fresh biometric/password approval.
+
+The journal is written before every network attempt. Ambiguous or partially
+broadcast payments remain receipts rather than executable retry instructions.
+After restart only positive, confirmed native outgoing history can resolve
+uncertain transaction IDs; absent history never proves a payment was not sent.
+Status/list operations cannot broadcast. The journal key is reserved from
+general renderer secret and metadata APIs. Payment payloads never enter the
+diagnostic recorder.
+
+Run planner and native-dispatch fixtures without opening a product wallet:
+
+```sh
+cargo test --manifest-path native/product-core/Cargo.toml send_plan
+```

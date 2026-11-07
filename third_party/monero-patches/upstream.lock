@@ -115,14 +115,16 @@ upstream_tree=c592d864569be294d2bdca25b674cd17f78614e5
 # password changes only after fresh validation over the current transport.
 # A cache at a prior verified tree may advance in place; a fresh checkout must
 # apply the complete series and reach `patched_tree` below.
-previous_patched_tree=a8908a19fb5bed793049e3b167ddc61fb8e13b46
-previous_patch_count=98
+previous_patched_tree=501b20bc7997954ad08cc24fad57eebfa4a559f2
+previous_patch_count=105
 # Patch 0100 rejects already confirmed pool transactions, preserves confirmed
 # spend heights through pending timeouts, and repairs stale local spend/pool
 # metadata only from confirmed transaction hashes, rings and known Key Images.
 # Its per-pool history indexes are transient; reorg rollback remains authoritative.
 # A stopped/joined API refresh worker cannot be reactivated by transaction helpers.
-patched_tree=37d6a1a4a39c2fd128fdf9befd82381339951c58
+# Patch 0105 retries freed spool quota without waiting for unrelated RAM slots.
+# Patch 0106 repairs a stalled historical gRPC stripe without restarting healthy lanes.
+patched_tree=bb95b273f017713e4487054b7dcb64ab0183d5ef
 
 # The applied patch files in series are the source of truth. `git am` creates
 # a new local integration commit on every fresh checkout, so its SHA must not

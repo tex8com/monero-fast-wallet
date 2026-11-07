@@ -3,6 +3,7 @@
 #include "WalletEngineTypes.h"
 
 #include <memory>
+#include <functional>
 #include <initializer_list>
 #include <string>
 #include <vector>
@@ -42,6 +43,11 @@ class WalletEngine {
   static void clearLedgerBleTransportCallbacks();
   static bool ledgerBleTransportAvailable();
 
+  // Installed only by a trusted native payment-plan host. No renderer can
+  // supply or disable this callback. The desktop host owns its existing guard.
+  void setTransactionPreparationGuard(
+      std::function<void(const WalletId&)> guard);
+
   WalletId createWallet(const CreateWalletRequest& request);
   WalletId restoreWallet(const RestoreWalletRequest& request);
   WalletId openWallet(const OpenWalletRequest& request);
@@ -51,6 +57,12 @@ class WalletEngine {
   // Reuses the already-approved private view key held by an open encrypted
   // view-only companion. The key never crosses the native WalletEngine API.
   void primeHardwareWalletFromViewOnly(
+      const WalletId& hardwareWalletId,
+      const WalletId& viewOnlyWalletId);
+  // Authenticate and install only the protected view capability. This does
+  // not copy scan state or certify spend readiness; the strict method above
+  // must still complete before a signing wallet can use companion state.
+  void primeHardwareWalletViewKeyFromViewOnly(
       const WalletId& hardwareWalletId,
       const WalletId& viewOnlyWalletId);
   // Destructively rebuilds only the open Ledger signing cache from an
@@ -148,6 +160,10 @@ class WalletEngine {
       const WalletId& walletId,
       uint32_t accountIndex = 0) const;
   WalletSnapshot snapshot(const WalletId& walletId) const;
+  NetworkType walletNetwork(const WalletId& walletId) const;
+  std::vector<WalletId> openWalletIds() const;
+  std::vector<std::string> pendingTransactionIds(const WalletId& walletId) const;
+  std::vector<WalletAccountBalance> accounts(const WalletId& walletId) const;
   std::vector<WalletTransaction> getTransactions(
       const WalletId& walletId,
       uint32_t limit = 25) const;
@@ -168,6 +184,13 @@ class WalletEngine {
   PreparedTransaction commitTransaction(
       const WalletId& walletId,
       const std::string& pendingId);
+  // Idempotent cleanup never exports or relays transaction bytes.
+  bool discardTransaction(const WalletId& walletId, const std::string& pendingId);
+  // Reports known and uncertain relay outcomes without discarding unsent
+  // signed transactions. Repeated calls retain the same transaction hashes.
+  PreparedTransaction commitTransactionReport(
+      const WalletId& walletId,
+      const std::string& pendingId);
   PreparedTransaction exportPendingTransaction(
       const WalletId& walletId,
       const std::string& pendingId);
@@ -182,6 +205,7 @@ class WalletEngine {
  private:
   class Impl;
   std::unique_ptr<Impl> impl_;
+  std::shared_ptr<const std::function<void(const WalletId&)>> transactionPreparationGuard_;
 };
 
 } // namespace tex8::wallet

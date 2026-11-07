@@ -40,15 +40,18 @@ export async function loadWalletAddresses(
 export async function upsertWalletAddress(
   address: WalletAddressRecord,
 ): Promise<WalletAddressRecord[]> {
-  const normalized = normalize(address);
+  await upsertWalletAddresses([address]);
+  return loadWalletAddresses(address.walletId);
+}
+
+export async function upsertWalletAddresses(
+  incoming: readonly WalletAddressRecord[],
+): Promise<void> {
+  const normalized = incoming.map(normalize);
   const registry = await loadRegistry();
-  const addresses = registry.addresses.some(item => item.id === normalized.id)
-    ? registry.addresses.map(item =>
-        item.id === normalized.id ? normalized : item,
-      )
-    : [...registry.addresses, normalized];
-  await saveRegistry({ version: 1, addresses });
-  return loadWalletAddresses(normalized.walletId);
+  const addresses = new Map(registry.addresses.map(item => [item.id, item]));
+  normalized.forEach(item => addresses.set(item.id, item));
+  await saveRegistry({ version: 1, addresses: [...addresses.values()] });
 }
 
 export async function removeWalletAddresses(walletId: string): Promise<void> {

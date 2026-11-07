@@ -1,0 +1,452 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: TEX8 Monero Patch Integrator <monero-patches@tex8.local>
+Date: Tue, 3 Nov 2026 14:00:00 -0500
+Subject: [PATCH] wallet: bound public distribution transport recovery
+
+Retry only typed incomplete public RPC transport operations, at most once
+inside the original job deadline. Preserve exact proxy/auth/TLS binding.
+Malformed payloads, bounds, chain identity, payment, and cancellation remain
+fail closed. Report only a fixed job-owned failure stage to send callers.
+Keep the existing per-read and connection time limits unchanged.
+
+---
+diff --git a/src/wallet/rct_distribution_cache.h b/src/wallet/rct_distribution_cache.h
+--- a/src/wallet/rct_distribution_cache.h
++++ b/src/wallet/rct_distribution_cache.h
+@@ -21,13 +21,53 @@
+ constexpr size_t max_wire_bytes = 32 * 1024 * 1024;
+ constexpr size_t max_decoded_bytes = 96 * 1024 * 1024;
+ 
++// Codes are fixed public-operation stages, never raw transport errors.
++enum class failure_stage {
++  none, connect, anchor_read, anchor_response, distribution_read,
++  distribution_response, wire_limit, network_validation,
++  chain_validation, snapshot_validation, cancelled, expired,
++  payment_required, worker_start, unknown
++};
++inline const char* failure_stage_code(failure_stage stage) {
++  switch (stage) {
++    case failure_stage::none: return "none";
++    case failure_stage::connect: return "connect";
++    case failure_stage::anchor_read: return "anchor-read";
++    case failure_stage::anchor_response: return "anchor-response";
++    case failure_stage::distribution_read: return "distribution-read";
++    case failure_stage::distribution_response: return "distribution-response";
++    case failure_stage::wire_limit: return "wire-limit";
++    case failure_stage::network_validation: return "network-validation";
++    case failure_stage::chain_validation: return "chain-validation";
++    case failure_stage::snapshot_validation: return "snapshot-validation";
++    case failure_stage::cancelled: return "cancelled";
++    case failure_stage::expired: return "expired";
++    case failure_stage::payment_required: return "payment-required";
++    case failure_stage::worker_start: return "worker-start";
++    default: return "unknown";
++  }
++}
++class cache_failure : public std::runtime_error {
++public:
++  explicit cache_failure(failure_stage value)
++    : std::runtime_error(failure_stage_code(value)), stage(value) {}
++  const failure_stage stage;
++};
++// Only an incomplete public transport operation is eligible for one retry.
++// Valid but malformed/untrusted responses never use this exception type.
++class transport_failure final : public cache_failure {
++public:
++  explicit transport_failure(failure_stage value): cache_failure(value) {}
++};
++
+ struct cancellation {
+   std::atomic<bool> stopped{false};
+   const std::chrono::steady_clock::time_point deadline;
+   explicit cancellation(std::chrono::milliseconds budget): deadline(std::chrono::steady_clock::now() + budget) {}
+   void check() const {
+-    if (stopped.load() || std::chrono::steady_clock::now() >= deadline)
+-      throw std::runtime_error("public distribution work cancelled or expired");
++    if (stopped.load()) throw cache_failure(failure_stage::cancelled);
++    if (std::chrono::steady_clock::now() >= deadline)
++      throw cache_failure(failure_stage::expired);
+   }
+ };
+ struct payment_required : std::runtime_error { payment_required(): std::runtime_error("public RPC requires payment") {} };
+@@ -131,17 +171,27 @@
+     if ((!job_ || job_->done) && now - last_attempt_ < delay) return true;
+     return start_locked();
+   }
+-  bool get(uint64_t& start, std::vector<uint64_t>& cumulative) {
++  bool get(uint64_t& start, std::vector<uint64_t>& cumulative,
++           failure_stage* failed_stage = nullptr) {
+     std::unique_lock<std::mutex> lock(mutex_);
+-    if (payment_required_ || !start_locked()) return false;
++    const auto failed = [&](failure_stage stage) {
++      if (failed_stage) *failed_stage = stage;
++      return false;
++    };
++    if (failed_stage) *failed_stage = failure_stage::none;
++    if (payment_required_) return failed(failure_stage::payment_required);
++    if (!start_locked()) return failed(failure_stage::worker_start);
+     const auto own_job = job_;
+     const auto deadline = own_job->token->deadline + std::chrono::seconds(6);
+     if (!condition_.wait_until(lock, deadline, [&] { return own_job->done; })) {
+       own_job->token->stopped = true; own_job->done = true; own_job->success = false;
++      own_job->failed_stage = failure_stage::expired;
+       if (job_ == own_job) ++generation_;
+-      condition_.notify_all(); return false;
+-    }
+-    if (!own_job->success || own_job->token->stopped || !own_job->result) return false;
++      condition_.notify_all(); return failed(own_job->failed_stage);
++    }
++    if (!own_job->success || own_job->token->stopped || !own_job->result)
++      return failed(own_job->failed_stage == failure_stage::none
++          ? failure_stage::unknown : own_job->failed_stage);
+     start = own_job->result->start;
+     cumulative = own_job->result->cumulative;
+     return true;
+@@ -151,6 +201,7 @@
+     std::lock_guard<std::mutex> lock(mutex_);
+     if (job_ && !job_->done) {
+       job_->token->stopped = true; job_->done = true; job_->success = false;
++      job_->failed_stage = failure_stage::cancelled;
+     }
+     ++generation_; last_success_ = false; last_attempt_ = {};
+     condition_.notify_all();
+@@ -161,6 +212,7 @@
+     std::shared_ptr<const snapshot> result;
+     uint64_t generation;
+     bool done = false, success = false;
++    failure_stage failed_stage = failure_stage::none;
+   };
+   bool start_locked() {
+     if (job_ && !job_->done) return true;
+@@ -176,10 +228,10 @@
+   }
+   std::shared_ptr<const snapshot> refresh(source& rpc, const std::shared_ptr<cancellation>& token, bool& changed) {
+     token->check();
+-    if (rpc.hash(0) != genesis_) throw std::runtime_error("public distribution network mismatch");
++    if (rpc.hash(0) != genesis_) throw cache_failure(failure_stage::network_validation);
+     token->check();
+     const uint64_t height = rpc.height();
+-    if (height == 0 || height > max_entries) throw std::runtime_error("invalid daemon height");
++    if (height == 0 || height > max_entries) throw cache_failure(failure_stage::anchor_response);
+     const uint64_t end = height - 1;
+     std::shared_ptr<const snapshot> previous;
+     { std::lock_guard<std::mutex> lock(mutex_); previous = value_; }
+@@ -189,7 +241,7 @@
+     }
+     token->check();
+     const std::string end_hash = rpc.hash(end);
+-    if (!hash_shape(end_hash)) throw std::runtime_error("invalid daemon block hash");
++    if (!hash_shape(end_hash)) throw cache_failure(failure_stage::anchor_response);
+     bool retain = previous && previous->end <= end && rpc.hash(previous->end) == previous->end_hash;
+     if (retain && previous->end == end) {
+       token->check();
+@@ -210,12 +262,12 @@
+         || response.cumulative.back() > max_outputs
+         || !std::is_sorted(response.cumulative.begin(), response.cumulative.end())
+         || (retain && response.base != previous->cumulative.back()))
+-      throw std::runtime_error("invalid cumulative distribution response");
++      throw cache_failure(failure_stage::distribution_response);
+     // to_height is fixed to the observed tip. Check its hash after the body,
+     // as well as the retained prefix anchor, before publishing any bytes.
+     if (rpc.height() <= end || rpc.hash(end) != end_hash
+         || (retain && rpc.hash(previous->end) != previous->end_hash))
+-      throw std::runtime_error("public distribution chain changed");
++      throw cache_failure(failure_stage::chain_validation);
+     token->check();
+     auto result = std::make_shared<snapshot>();
+     result->profile = profile_; result->genesis = genesis_; result->end_hash = end_hash; result->end = end;
+@@ -227,36 +279,57 @@
+       result->start = response.start; result->base = response.base;
+       result->cumulative = std::move(response.cumulative);
+     }
+-    validate(*result);
++    try { validate(*result); }
++    catch (...) { throw cache_failure(failure_stage::snapshot_validation); }
+     return result;
+   }
+   void run(const std::shared_ptr<job>& work) {
+     try {
+       const auto& token = work->token;
+-      token->check();
+-      auto rpc = factory_(token);
+-      bool changed = true;
+-      auto next = refresh(*rpc, token, changed);
+-      token->check();
+-      std::unique_ptr<staged_file> staged;
+-      if (changed && disk_.stage) { try { staged = disk_.stage(encode(*next, digest_)); } catch (...) {} }
+-      std::lock_guard<std::mutex> lock(mutex_);
+-      token->check();
+-      if (generation_ != work->generation || work->done) return;
+-      // Result ownership is per job: a later refresh cannot turn a successful
+-      // waiter's result into a false error before that waiter wakes up.
+-      if (staged) staged->commit();
+-      value_ = next; work->result = std::move(next);
+-      work->success = true; work->done = true; last_success_ = true;
+-      condition_.notify_all();
++      // A retry replaces only this job's keyless client. It retains the exact
++      // profile and original deadline; no partial result is ever published.
++      for (unsigned attempt = 0; ; ++attempt) {
++        try {
++          token->check();
++          auto rpc = factory_(token);
++          bool changed = true;
++          auto next = refresh(*rpc, token, changed);
++          token->check();
++          std::unique_ptr<staged_file> staged;
++          if (changed && disk_.stage) { try { staged = disk_.stage(encode(*next, digest_)); } catch (...) {} }
++          std::lock_guard<std::mutex> lock(mutex_);
++          token->check();
++          if (generation_ != work->generation || work->done) return;
++          // Result ownership is per job: a later refresh cannot turn a successful
++          // waiter's result into a false error before that waiter wakes up.
++          if (staged) staged->commit();
++          value_ = next; work->result = std::move(next);
++          work->success = true; work->done = true; last_success_ = true;
++          condition_.notify_all();
++          return;
++        } catch (const transport_failure&) {
++          token->check();
++          // Do not start a new 30-second connection allowance when the
++          // original job has less time left; preserve the last transport stage.
++          if (attempt != 0 || token->deadline - std::chrono::steady_clock::now() < std::chrono::seconds(30)) throw;
++        }
++      }
+     } catch (const payment_required&) {
+       std::lock_guard<std::mutex> lock(mutex_);
+       work->done = true; work->success = false;
++      work->failed_stage = failure_stage::payment_required;
+       if (job_ == work && work->generation == generation_ && !work->token->stopped) { payment_required_ = true; last_success_ = false; }
++      condition_.notify_all();
++    } catch (const cache_failure& failure) {
++      std::lock_guard<std::mutex> lock(mutex_);
++      work->done = true; work->success = false;
++      work->failed_stage = failure.stage;
++      if (job_ == work) last_success_ = false;
+       condition_.notify_all();
+     } catch (...) {
+       std::lock_guard<std::mutex> lock(mutex_);
+       work->done = true; work->success = false;
++      work->failed_stage = failure_stage::unknown;
+       if (job_ == work) last_success_ = false;
+       condition_.notify_all();
+     }
+diff --git a/src/wallet/rct_distribution_rpc.cpp b/src/wallet/rct_distribution_rpc.cpp
+--- a/src/wallet/rct_distribution_rpc.cpp
++++ b/src/wallet/rct_distribution_rpc.cpp
+@@ -80,29 +80,47 @@
+ class bounded_client : public net::http::client {
+ public:
+   explicit bounded_client(std::shared_ptr<cancellation> token): token_(std::move(token)) {}
+-  void begin(size_t limit) { token_->check(); received_ = 0; raw_received_ = 0; header_.clear(); header_done_ = false; aborted_ = false; limit_ = limit; }
++  void begin(size_t limit) { token_->check(); received_ = 0; raw_received_ = 0; header_.clear(); header_done_ = false; aborted_ = false; limit_exceeded_ = false; transport_received_ = false; http_status_ = 0; limit_ = limit; }
++  bool invoke(const boost::string_ref uri, const boost::string_ref method,
++              const boost::string_ref body, std::chrono::milliseconds timeout,
++              const epee::net_utils::http::http_response_info** response = nullptr,
++              const epee::net_utils::http::fields_list& params = epee::net_utils::http::fields_list()) override {
++    transport_received_ = net::http::client::invoke(uri, method, body, timeout, response, params);
++    return transport_received_;
++  }
++  bool transport_received() const { return transport_received_; }
++  bool limit_exceeded() const { return limit_exceeded_; }
++  unsigned http_status() const { return http_status_; }
+   bool on_response_chunk(const std::string& piece) override {
+-    if (!alive() || piece.size() > limit_ + 65536 - raw_received_) { aborted_ = true; return false; }
++    if (!alive()) { aborted_ = true; return false; }
++    if (piece.size() > limit_ + 65536 - raw_received_) { limit_exceeded_ = aborted_ = true; return false; }
+     raw_received_ += piece.size();
+     if (!header_done_) {
+       header_.append(piece, 0, std::min<size_t>(piece.size(), 65536 - header_.size()));
+       header_done_ = header_.find("\r\n\r\n") != std::string::npos;
+-      if (!header_done_ && header_.size() == 65536) { aborted_ = true; return false; }
++      if (!header_done_ && header_.size() == 65536) { limit_exceeded_ = aborted_ = true; return false; }
+     }
+     return true;
+   }
+   bool handle_target_data(std::string& piece) override {
+-    if (!alive() || piece.size() > limit_ - received_) { aborted_ = true; return false; }
++    if (!alive()) { aborted_ = true; return false; }
++    if (piece.size() > limit_ - received_) { limit_exceeded_ = aborted_ = true; return false; }
+     received_ += piece.size();
+     return net::http::client::handle_target_data(piece);
+   }
+-  bool on_header(const epee::net_utils::http::http_response_info&) override { if (!alive()) aborted_ = true; return !aborted_; }
++  bool on_header(const epee::net_utils::http::http_response_info& response) override {
++    http_status_ = response.m_response_code;
++    if (!alive()) aborted_ = true;
++    return !aborted_;
++  }
+   bool aborted() const { return aborted_; }
+ private:
+   bool alive() const { try { token_->check(); return true; } catch (...) { return false; } }
+   std::shared_ptr<cancellation> token_;
+   std::string header_;
+   bool header_done_ = false, aborted_ = false;
++  bool limit_exceeded_ = false, transport_received_ = false;
++  unsigned http_status_ = 0;
+   size_t received_ = 0, raw_received_ = 0, limit_ = max_wire_bytes;
+ };
+ std::string bounded_inflate(const std::string& bytes, const std::shared_ptr<cancellation>& token) {
+@@ -130,17 +148,20 @@
+ public:
+   rpc_source(profile config, std::shared_ptr<cancellation> token): token_(std::move(token)), client_(token_) {
+     if (!client_.set_proxy(config.proxy) || !client_.set_server(config.address, config.login, config.ssl))
+-      throw std::runtime_error("distribution transport configuration failed");
++      throw cache_failure(failure_stage::connect);
+     // SOCKS/Onion setup has a separate bounded allowance; body reads stay
+     // short so cancellation can stop slow/trickled responses promptly.
+-    if (!client_.connect(std::chrono::seconds(30))) throw std::runtime_error("distribution transport connection failed");
++    if (!client_.connect(std::chrono::seconds(30))) {
++      token_->check();
++      throw transport_failure(failure_stage::connect);
++    }
+     token_->check();
+   }
+   uint64_t height() override {
+     cryptonote::COMMAND_RPC_GET_INFO::request request{};
+     cryptonote::COMMAND_RPC_GET_INFO::response response{};
+     json("get_info", request, response);
+-    if (response.height == 0 || response.height > max_entries) throw std::runtime_error("distribution tip outside limits");
++    if (response.height == 0 || response.height > max_entries) throw cache_failure(failure_stage::anchor_response);
+     return response.height;
+   }
+   std::string hash(uint64_t height) override {
+@@ -149,7 +170,7 @@
+     request.height = height; request.fill_pow_hash = false;
+     json("get_block_header_by_height", request, response);
+     if (response.block_header.height != height || response.block_header.orphan_status
+-        || !hash_shape(response.block_header.hash)) throw std::runtime_error("invalid distribution block anchor");
++        || !hash_shape(response.block_header.hash)) throw cache_failure(failure_stage::anchor_response);
+     return response.block_header.hash;
+   }
+   distribution fetch(uint64_t from, uint64_t to) override {
+@@ -163,23 +184,36 @@
+     if (!epee::serialization::store_t_to_binary(request, body, 1024)) throw std::runtime_error("distribution request encoding failed");
+     client_.begin(max_wire_bytes);
+     const epee::net_utils::http::http_response_info* response = nullptr;
+-    if (!client_.invoke("/get_output_distribution.bin", "POST",
+-        boost::string_ref(reinterpret_cast<const char*>(body.data()), body.size()), std::chrono::seconds(5), &response)
+-        || client_.aborted() || !response || response->m_response_code != 200 || response->m_body.size() > max_wire_bytes)
+-      throw std::runtime_error("public distribution request failed");
++    const bool received = client_.invoke("/get_output_distribution.bin", "POST",
++        boost::string_ref(reinterpret_cast<const char*>(body.data()), body.size()), std::chrono::seconds(5), &response);
+     token_->check();
+-    std::string bytes = response->m_header_info.m_content_encoding.find("gzip") != std::string::npos
+-      ? bounded_inflate(response->m_body, token_) : response->m_body;
+-    token_->check();
+-    return wire_reader(bytes).read(to, request.cumulative);
++    if (client_.limit_exceeded()) throw cache_failure(failure_stage::wire_limit);
++    if (!received && client_.http_status() != 0 && client_.http_status() != 200)
++      throw cache_failure(failure_stage::distribution_response);
++    if (!received) throw transport_failure(failure_stage::distribution_read);
++    if (client_.aborted() || !response || response->m_response_code != 200 || response->m_body.size() > max_wire_bytes)
++      throw cache_failure(failure_stage::distribution_response);
++    try {
++      std::string bytes = response->m_header_info.m_content_encoding.find("gzip") != std::string::npos
++        ? bounded_inflate(response->m_body, token_) : response->m_body;
++      token_->check();
++      return wire_reader(bytes).read(to, request.cumulative);
++    } catch (const payment_required&) { throw; }
++    catch (const cache_failure&) { throw; }
++    catch (...) { throw cache_failure(failure_stage::distribution_response); }
+   }
+ private:
+   template<class Request, class Response> void json(const char* method, Request& request, Response& response) {
+     token_->check(); client_.begin(256 * 1024);
+     const bool received = epee::net_utils::invoke_http_json_rpc("/json_rpc", method, request, response, client_, std::chrono::seconds(5));
++    token_->check();
++    if (client_.limit_exceeded()) throw cache_failure(failure_stage::wire_limit);
+     if (received && !client_.aborted() && response.status == CORE_RPC_STATUS_PAYMENT_REQUIRED) throw payment_required();
+-    if (!received || client_.aborted() || response.status != CORE_RPC_STATUS_OK) throw std::runtime_error("distribution anchor RPC failed");
+-    token_->check();
++    if (!received && client_.http_status() != 0 && client_.http_status() != 200)
++      throw cache_failure(failure_stage::anchor_response);
++    if (!received && !client_.transport_received()) throw transport_failure(failure_stage::anchor_read);
++    if (!received || client_.aborted() || response.status != CORE_RPC_STATUS_OK)
++      throw cache_failure(failure_stage::anchor_response);
+   }
+   std::shared_ptr<cancellation> token_;
+   bounded_client client_;
+diff --git a/src/wallet/wallet2.cpp b/src/wallet/wallet2.cpp
+--- a/src/wallet/wallet2.cpp
++++ b/src/wallet/wallet2.cpp
+@@ -5940,18 +5940,27 @@
+   if (cache) cache->cancel();
+ }
+ //----------------------------------------------------------------------------------------------------
+-bool wallet2::get_rct_distribution(uint64_t &start_height, std::vector<uint64_t> &distribution)
+-{
++bool wallet2::get_rct_distribution(uint64_t &start_height, std::vector<uint64_t> &distribution, std::string* failure_code)
++{
++  const auto failed = [&](const char* code) {
++    if (failure_code) *failure_code = code;
++    return false;
++  };
++  if (failure_code) failure_code->clear();
+   try {
+     auto cache = rct_distribution_service();
+     if (cache) {
+-      if (cache->get(start_height, distribution)) return true;
++      rct_cache::failure_stage stage = rct_cache::failure_stage::unknown;
++      if (cache->get(start_height, distribution, &stage)) return true;
++      if (failure_code) *failure_code = rct_cache::failure_stage_code(stage);
+       // Preserve upstream's signed/accounted RPC-payment path only when the
+       // cache explicitly encountered PAYMENT_REQUIRED. Invalid hash, wire,
+       // disk, timeout or cancellation errors never activate this exception.
+       if (!cache->requires_payment()) return false;
+     }
+-  } catch (...) { return false; }
++  } catch (const rct_cache::cache_failure& failure) {
++    return failed(rct_cache::failure_stage_code(failure.stage));
++  } catch (...) { return failed("cache-setup"); }
+   MDEBUG("Requesting rct distribution");
+ 
+   cryptonote::COMMAND_RPC_GET_OUTPUT_DISTRIBUTION::request req = AUTO_VAL_INIT(req);
+@@ -5974,17 +5983,17 @@
+   }
+   catch(...)
+   {
+-    return false;
++    return failed("legacy-rpc");
+   }
+   if (res.distributions.size() != 1)
+   {
+     MWARNING("Failed to request output distribution: not the expected single result");
+-    return false;
++    return failed("legacy-response");
+   }
+   if (res.distributions[0].amount != 0)
+   {
+     MWARNING("Failed to request output distribution: results are not for amount 0");
+-    return false;
++    return failed("legacy-response");
+   }
+   for (size_t i = 1; i < res.distributions[0].data.distribution.size(); ++i)
+     res.distributions[0].data.distribution[i] += res.distributions[0].data.distribution[i-1];
+@@ -10884,8 +10893,11 @@
+       }
+ 
+     if (has_rct && rct_offsets.empty()) {
+-      THROW_WALLET_EXCEPTION_IF(!get_rct_distribution(rct_start_height, rct_offsets),
+-          error::get_output_distribution, "Could not obtain output distribution.");
++      std::string distribution_failure;
++      THROW_WALLET_EXCEPTION_IF(!get_rct_distribution(rct_start_height, rct_offsets, &distribution_failure),
++          error::get_output_distribution,
++          std::string("Could not obtain output distribution. stage=") +
++              (distribution_failure.empty() ? "unknown" : distribution_failure));
+     }
+ 
+     if (has_rct)
+diff --git a/src/wallet/wallet2.h b/src/wallet/wallet2.h
+--- a/src/wallet/wallet2.h
++++ b/src/wallet/wallet2.h
+@@ -2039,7 +2039,7 @@
+     void register_devices();
+     hw::device& lookup_device(const std::string & device_descriptor);
+ 
+-    bool get_rct_distribution(uint64_t &start_height, std::vector<uint64_t> &distribution);
++    bool get_rct_distribution(uint64_t &start_height, std::vector<uint64_t> &distribution, std::string* failure_code = nullptr);
+     std::shared_ptr<rct_cache::service> rct_distribution_service();
+ 
+     uint64_t get_segregation_fork_height() const;
+-- 
+2.54.0

@@ -417,6 +417,8 @@
 					"$(SRCROOT)/../../../native/community-matrix-core/include",
 					"$(SRCROOT)/../../../native/community-runtime-core/include",
 					"$(SRCROOT)/../../../native/monero-bridge/cpp",
+					"$(SRCROOT)/../../../native/product-core/include",
+					"$(MONERO_SOURCE_DIR)/external/rapidjson/include",
 					"$(MONERO_SOURCE_DIR)/src/wallet/api",
 					"$(MONERO_SODIUM_INCLUDE_DIR)",
 				);
@@ -509,6 +511,8 @@
 					"$(SRCROOT)/../../../native/community-matrix-core/include",
 					"$(SRCROOT)/../../../native/community-runtime-core/include",
 					"$(SRCROOT)/../../../native/monero-bridge/cpp",
+					"$(SRCROOT)/../../../native/product-core/include",
+					"$(MONERO_SOURCE_DIR)/external/rapidjson/include",
 					"$(MONERO_SOURCE_DIR)/src/wallet/api",
 					"$(MONERO_SODIUM_INCLUDE_DIR)",
 				);

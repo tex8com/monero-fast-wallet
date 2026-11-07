@@ -7,9 +7,10 @@ import {
   type ConnectivityRouteState,
 } from '../services/ConnectivityState';
 import { useWalletState } from '../services/WalletState';
-import { walletSnapshotIsSynchronized } from '../services/WalletSynchronization';
+import { useI18n } from '../i18n';
 import { colors } from '../theme/colors';
 import MoneroLogo from './MoneroLogo';
+import { blockSyncTransportVisual } from './BlockSyncTransportStatus';
 
 type ConnectionVisual = {
   color: string;
@@ -42,16 +43,14 @@ export default function AppTopBar({
   onStatusPress: () => void;
 }) {
   const insets = useSafeAreaInsets();
+  const { t } = useI18n();
   const connectivity = useConnectivityState();
-  const { snapshot, status } = useWalletState();
+  const { networkSyncStatus, status } = useWalletState();
+  const transportVisual = blockSyncTransportVisual(networkSyncStatus, t);
   const syncVisual: ConnectionVisual =
-    walletSnapshotIsSynchronized(snapshot)
-    ? { color: colors.success, stateLabel: 'synchronized' }
-    : status === 'error'
-    ? { color: colors.error, stateLabel: 'failed' }
-    : snapshot || status === 'opening' || status === 'syncing'
-    ? { color: colors.warning, stateLabel: 'synchronizing' }
-    : { color: colors.textSecondary, stateLabel: 'idle' };
+    status === 'error'
+    ? { color: colors.error, stateLabel: t('sync.transport.unavailable') }
+    : { color: transportVisual.color, stateLabel: transportVisual.label };
   const statuses = [
     {
       label: 'Tor',
@@ -96,6 +95,7 @@ export default function AppTopBar({
             return (
               <View
                 key={routeLabel}
+                testID={routeLabel === 'Sync' ? 'top-bar-sync-status' : 'top-bar-tor-status'}
                 style={[s.status, { borderColor: `${visual.color}55` }]}
               >
                 <View

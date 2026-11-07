@@ -99,3 +99,9 @@
 0098-wallet-cache-zero-fork-heights.patch
 0099-wallet-cache-public-rct-distributions.patch
 0100-wallet-preserve-confirmed-spend-state.patch
+0101-wallet-separate-ledger-view-capability-from-scan-adoption.patch
+0102-wallet-classify-legacy-grpc-chunk-timeouts.patch
+0103-wallet-bound-public-distribution-recovery.patch
+0104-wallet-expose-canonical-balance-unlock-status.patch
+0105-wallet-retry-freed-spool-quota-without-ram-drain.patch
+0106-wallet-repair-stalled-grpc-stripes.patch

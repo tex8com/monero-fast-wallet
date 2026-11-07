@@ -57,8 +57,14 @@ extra = r'''
 #include <iomanip>
 #include <iostream>
 #include <sstream>
+#include <utility>
+namespace boost { using string_ref = std::string; }
 namespace epee { namespace net_utils {
-namespace http { struct http_response_info {}; struct url_content { std::string host,schema; unsigned port=0; }; }
+namespace http {
+struct http_response_info { unsigned m_response_code=200; };
+using fields_list=std::vector<std::pair<std::string,std::string>>;
+struct url_content { std::string host,schema; unsigned port=0; };
+}
 bool parse_url(const std::string& value,http::url_content& url) {
  auto delimiter=value.find("://");
  auto authority=delimiter==std::string::npos?value:value.substr(delimiter+3);
@@ -70,6 +76,10 @@ bool parse_url(const std::string& value,http::url_content& url) {
 namespace net { namespace http {
 class client { public:
  virtual ~client()=default;
+ virtual bool invoke(const boost::string_ref, const boost::string_ref,
+     const boost::string_ref, std::chrono::milliseconds,
+     const epee::net_utils::http::http_response_info** = nullptr,
+     const epee::net_utils::http::fields_list& = epee::net_utils::http::fields_list()) { return true; }
  virtual bool handle_target_data(std::string& piece) { piece.clear(); return true; }
  virtual bool on_header(const epee::net_utils::http::http_response_info&) { return true; }
  virtual bool on_response_chunk(const std::string&) { return true; }
@@ -118,21 +128,28 @@ int main() {
  {
   auto token=std::make_shared<cancellation>(std::chrono::seconds(1));bounded_client client(token);client.begin(1024*1024);
   assert(client.on_response_chunk("HTTP/1.1 200 OK\r\nX: partial\r"));token->stopped=true;
-  assert(!client.on_response_chunk("") && client.aborted());
+  assert(!client.on_response_chunk("") && client.aborted() && !client.limit_exceeded());
  }
  {
   auto token=std::make_shared<cancellation>(std::chrono::milliseconds(10));bounded_client client(token);client.begin(1024*1024);
   assert(client.on_response_chunk("HTTP/1.1 200 OK\r\n\r\n"));std::this_thread::sleep_for(std::chrono::milliseconds(20));
-  assert(!client.on_response_chunk("trickled chunk head") && client.aborted());
+  assert(!client.on_response_chunk("trickled chunk head") && client.aborted() && !client.limit_exceeded());
  }
  {
   auto token=std::make_shared<cancellation>(std::chrono::seconds(1));bounded_client client(token);client.begin(1024*1024);
-  assert(!client.on_response_chunk(std::string(65536,'H')) && client.aborted());
+  assert(!client.on_response_chunk(std::string(65536,'H')) && client.aborted() && client.limit_exceeded());
  }
  {
   auto token=std::make_shared<cancellation>(std::chrono::seconds(1));bounded_client client(token);client.begin(4);
   assert(client.on_response_chunk("HTTP/1.1 200 OK\r\n\r\n"));std::string body="12345";
-  assert(!client.handle_target_data(body) && client.aborted());
+  assert(!client.handle_target_data(body) && client.aborted() && client.limit_exceeded());
+ }
+ {
+  auto token=std::make_shared<cancellation>(std::chrono::seconds(1));bounded_client client(token);client.begin(1024);
+  epee::net_utils::http::http_response_info response;response.m_response_code=401;
+  assert(client.on_header(response) && client.http_status()==401 && !client.limit_exceeded());
+  assert(client.invoke("/public-test", "POST", "", std::chrono::seconds(5)) && client.transport_received());
+  client.begin(1024);assert(client.http_status()==0 && !client.transport_received());
  }
  std::cout<<"PASS actual receive callbacks: cancel, absolute deadline, partial-header bound and body cap without raw payload publication\n";
 }

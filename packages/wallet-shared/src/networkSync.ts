@@ -6,6 +6,7 @@
  * infer the node connection or shared download phase from that snapshot.
  */
 export type NetworkSyncSource = {
+  network?: string;
   state: string;
   phase: string;
   downloadStartHeight?: number;
@@ -15,6 +16,10 @@ export type NetworkSyncSource = {
   transportStarts: number;
   joinedWallets: number;
   stalledWallets: number;
+  providerGeneration?: number;
+  /** Actual native downloader path, never the configured endpoint or a probe. */
+  blockTransport?: string;
+  blockTransportReason?: string;
   lastNonEmptyBlockFetchMs?: number;
   lastNonEmptyNetworkBytes?: number;
   lastNonEmptyPayloadBytes?: number;
@@ -118,17 +123,20 @@ export type NetworkSyncByteSample = {
 };
 
 /**
- * Samples the coordinator-wide cumulative counter. Unlike the legacy latest
- * batch value, its delta includes every lane whose completed data reached the
- * shared downloader during the observation window.
+ * Samples the coordinator-wide cumulative counter, including all lanes. gRPC
+ * uses received application payload: the HTTP client's byte counter can move
+ * for control RPCs while streamed payload is already arriving independently.
  */
 export function networkSyncByteSample(
   status: NetworkSyncSource | null | undefined,
   observedAt: number,
 ): NetworkSyncByteSample | undefined {
+  if (!status) return undefined;
   const networkBytes = status?.networkBytesReceived ?? 0;
   const payloadBytes = status?.payloadBytesReceived ?? 0;
-  const source = networkBytes > 0 ? "network" : "payload";
+  const source = status.blockTransport === "grpc" ? "payload"
+    : status.blockTransport === "rpc" ? "network"
+    : payloadBytes > 0 || networkBytes <= 0 ? "payload" : "network";
   const totalBytes = source === "network" ? networkBytes : payloadBytes;
   return Number.isFinite(observedAt) && Number.isFinite(totalBytes) && totalBytes >= 0
     ? { observedAt, source, totalBytes }
@@ -144,6 +152,49 @@ export function networkSyncWindowMegabitsPerSecond(
   const bytes = last.totalBytes - first.totalBytes;
   if (elapsedMs <= 0 || bytes <= 0) return undefined;
   return (bytes * 8) / (elapsedMs * 1_000);
+}
+
+export type NetworkSyncRateWindow = {
+  lastTransferAt?: number;
+  network?: string;
+  providerGeneration?: number;
+  rate?: number;
+  samples: NetworkSyncByteSample[];
+};
+
+export const NETWORK_SYNC_RATE_WINDOW_MS = 3_000;
+const NETWORK_RATE_MAX_SAMPLE_GAP_MS = 2_500;
+
+/**
+ * Live throughput from observed cumulative-byte deltas only. Never seed or
+ * replace it with a completed-batch duration: that batch may have been read
+ * from RAM/disk after its network transfer already finished.
+ */
+export function updateNetworkSyncRateWindow(
+  previous: NetworkSyncRateWindow,
+  status: NetworkSyncSource | null | undefined,
+  observedAt: number,
+): NetworkSyncRateWindow {
+  const sample = networkSyncByteSample(status, observedAt);
+  if (!sample || !status || status.joinedWallets <= 0) return { samples: [] };
+  const providerGeneration = status.providerGeneration;
+  const network = status.network;
+  const prior = previous.samples.at(-1);
+  if (!prior || previous.network !== network || previous.providerGeneration !== providerGeneration ||
+      prior.source !== sample.source || prior.totalBytes > sample.totalBytes ||
+      sample.observedAt <= prior.observedAt ||
+      sample.observedAt - prior.observedAt > NETWORK_RATE_MAX_SAMPLE_GAP_MS) {
+    return { network, providerGeneration, samples: [sample] };
+  }
+
+  const samples = [...previous.samples, sample];
+  const cutoff = sample.observedAt - NETWORK_SYNC_RATE_WINDOW_MS;
+  while (samples.length > 1 && samples[0].observedAt < cutoff) samples.shift();
+  const lastTransferAt = sample.totalBytes > prior.totalBytes
+    ? observedAt : previous.lastTransferAt;
+  const rate = lastTransferAt !== undefined && observedAt - lastTransferAt < NETWORK_SYNC_RATE_WINDOW_MS
+    ? networkSyncWindowMegabitsPerSecond(samples[0], sample) : undefined;
+  return { lastTransferAt, network, providerGeneration, rate, samples };
 }
 
 /**
@@ -217,6 +268,8 @@ export type NetworkSyncPresentation = {
   connected: boolean;
   busy: boolean;
   ready: boolean;
+  /** Completion of the public download, independent of wallet and mempool work. */
+  downloadComplete: boolean;
   failed: boolean;
   downloadStartHeight: number | undefined;
   downloadedHeight: number | undefined;
@@ -233,6 +286,15 @@ const FAILED_PHASES = new Set([
   "provider-backoff",
   "retrying",
   "scanner-backoff",
+]);
+
+const ESTABLISHED_DOWNLOAD_PHASES = new Set<NetworkSyncPresentationPhase>([
+  "selecting-provider",
+  "fetching-blocks",
+  "scanning-wallets",
+  "checking-mempool",
+  "checkpointing-wallets",
+  "waiting-next-batch",
 ]);
 
 /**
@@ -309,6 +371,7 @@ export function presentNetworkSync(
       connected: false,
       busy: false,
       ready: false,
+      downloadComplete: false,
       failed: false,
       downloadStartHeight: undefined,
       downloadedHeight: undefined,
@@ -384,6 +447,11 @@ export function presentNetworkSync(
     status.transportStarts > 0 &&
     !failed &&
     phase !== "reconnecting";
+  const downloadComplete =
+    (ready || (connected && ESTABLISHED_DOWNLOAD_PHASES.has(phase))) &&
+    targetHeight !== undefined &&
+    downloadedHeight !== undefined &&
+    downloadedHeight >= targetHeight;
   const downloadRange =
     downloadStartHeight !== undefined && targetHeight !== undefined
       ? Math.max(0, targetHeight - downloadStartHeight)
@@ -406,6 +474,7 @@ export function presentNetworkSync(
     connected,
     busy,
     ready,
+    downloadComplete,
     failed,
     downloadStartHeight,
     downloadedHeight,
@@ -418,5 +487,36 @@ export function presentNetworkSync(
         : undefined,
     joinedWallets: Math.max(0, Math.floor(status.joinedWallets || 0)),
     stalledWallets: Math.max(0, Math.floor(status.stalledWallets || 0)),
+  };
+}
+
+export type NetworkSyncTransportPresentation = {
+  transport: "unknown" | "grpc" | "rpc";
+  tone: "success" | "warning" | "error" | "neutral";
+  slowFallback: boolean;
+};
+
+/**
+ * A reachable gRPC endpoint does not prove that blocks still use gRPC. Only
+ * native transport telemetry may turn the fast-path indicator green. Legacy
+ * clients and startup stay unknown, regardless of old counters or probe data.
+ * Wallet scan completion remains independent of this connection indicator.
+ */
+export function networkSyncTransportPresentation(
+  status: NetworkSyncSource | null | undefined,
+): NetworkSyncTransportPresentation {
+  const sync = presentNetworkSync(status);
+  const transport = status?.blockTransport === "grpc" || status?.blockTransport === "rpc"
+    ? status.blockTransport
+    : "unknown";
+  const slowFallback = transport === "rpc" && status?.blockTransportReason === "rpc-fallback";
+  if (sync.failed) return { transport, tone: "error", slowFallback };
+  if (!sync.connected || sync.phase === "idle" || sync.phase === "stopped") {
+    return { transport: "unknown", tone: "neutral", slowFallback: false };
+  }
+  return {
+    transport,
+    tone: transport === "grpc" ? "success" : transport === "rpc" ? "warning" : "neutral",
+    slowFallback,
   };
 }

@@ -187,6 +187,7 @@ target_include_directories(monero_wallet_bridge_jni
     "${REPO_ROOT}/native/monero-bridge/cpp"
     "${REPO_ROOT}/native/fast-wallet-protocol/include"
     "${REPO_ROOT}/native/product-core/generated/c"
+    "${REPO_ROOT}/native/product-core/include"
 )
 
 if(NOT MONERO_FAST_WALLET_PROTOCOL_LIBRARY AND MONERO_FAST_WALLET_PROTOCOL_ROOT)
@@ -206,6 +207,20 @@ if(NOT MONERO_FAST_WALLET_PROTOCOL_LIBRARY OR
     "Set MONERO_FAST_WALLET_PROTOCOL_LIBRARY or "
     "MONERO_FAST_WALLET_PROTOCOL_ROOT to a built Fast Wallet protocol archive")
 endif()
+
+execute_process(
+  COMMAND "${CMAKE_NM}" --defined-only -g "${MONERO_FAST_WALLET_PROTOCOL_LIBRARY}"
+  RESULT_VARIABLE product_core_symbols_result
+  OUTPUT_VARIABLE product_core_symbols
+  ERROR_QUIET
+)
+if(NOT product_core_symbols_result EQUAL 0 OR
+   NOT product_core_symbols MATCHES "mfw_send_plan_execute_v1")
+  message(FATAL_ERROR
+    "The mobile Rust protocol archive lacks the shared payment core. "
+    "Rebuild native/fast-wallet-protocol/build-mobile.sh for this Android ABI.")
+endif()
+unset(product_core_symbols)
 
 if(NOT MONERO_COMMUNITY_MATRIX_LIBRARY AND MONERO_COMMUNITY_MATRIX_ROOT)
   foreach(candidate IN ITEMS

@@ -1,8 +1,9 @@
 import React from 'react';
-import { Text, TextInput, TouchableOpacity } from 'react-native';
+import { Platform, StyleSheet, Text, TextInput, TouchableOpacity } from 'react-native';
 import ReactTestRenderer from 'react-test-renderer';
 import { useFocusEffect } from '@react-navigation/native';
-import type { WalletSnapshot } from '../../services/NativeMoneroWallet';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import type { PreparedTransaction, WalletSnapshot } from '../../services/NativeMoneroWallet';
 
 import { useWalletState } from '../../services/WalletState';
 import { walletService } from '../../services/WalletService';
@@ -10,6 +11,11 @@ import { createPaymentLinkSendPreset } from '../../services/IncomingPaymentLink'
 import { IncomingPaymentLinkAcknowledgementProvider } from '../../services/IncomingPaymentLinkController';
 import SendScreen from '../SendScreen';
 import WalletSelector from '../../components/WalletSelector';
+import LedgerSigningModal from '../../components/LedgerSigningModal';
+import type { LedgerSigningControl } from '../../services/LedgerSigningFlow';
+import { colors } from '../../theme/colors';
+import * as mfwNameResolution from '../../services/MfwNameResolutionService';
+import { saveMfwResolverPreference } from '../../services/MfwResolverSettings';
 
 jest.mock('@react-navigation/native', () => ({
   useFocusEffect: jest.fn(),
@@ -67,6 +73,13 @@ jest.mock('../../services/WalletService', () => ({
     })),
     loadFastReceiveIdentitiesForActiveNode: jest.fn(async () => []),
     prepareTransaction: jest.fn(),
+    prepareSendPlan: jest.fn(),
+    sendSourceIdentity: jest.fn(async session => `${session.network}:physical-${session.walletId}`),
+    cancelLedgerOperation: jest.fn(async () => undefined),
+    commitSendPlan: jest.fn(),
+    discardSendPlan: jest.fn(async () => undefined),
+    sendPlanStatus: jest.fn(),
+    listSendPlans: jest.fn(async () => []),
     validateRecipientAddress: jest.fn(async address => address),
   },
 }));
@@ -106,6 +119,24 @@ async function prepareMaxTransaction(
     .findAllByType(TouchableOpacity)
     .find(node => node.props.accessibilityLabel === 'Send XMR');
   await ReactTestRenderer.act(async () => sendButton!.props.onPress());
+}
+
+
+function wholeWalletPrepared(tx: PreparedTransaction) {
+  return { ...tx, sendPlan: {
+    id: tx.id, status: 'ok' as const, phase: 'prepared' as const,
+    amountAtomic: tx.amountAtomic, feeAtomic: tx.feeAtomic,
+    totalAtomic: (BigInt(tx.amountAtomic) + BigInt(tx.feeAtomic)).toString(),
+    txCount: tx.txCount, txIds: tx.txIds, address: '4'.repeat(95),
+    broadcastAttempted: false, leaseHeld: true, broadcastedTotalsKnown: true,
+    broadcastedTxIds: [], uncertainTxIds: [], remainingTxIds: tx.txIds,
+    broadcastedAmountAtomic: '0', broadcastedFeeAtomic: '0',
+  } };
+}
+function completedPlan(tx: PreparedTransaction) {
+  return { ...wholeWalletPrepared(tx).sendPlan, phase: 'complete' as const,
+    leaseHeld: false, broadcastAttempted: true, broadcastedTxIds: tx.txIds,
+    remainingTxIds: [], broadcastedAmountAtomic: tx.amountAtomic, broadcastedFeeAtomic: tx.feeAtomic };
 }
 
 describe('SendScreen', () => {
@@ -176,8 +207,8 @@ describe('SendScreen', () => {
         accessibilityLabel: 'send.useThisRecipient',
       }),
     ).toBeDefined();
-    expect(mockedWalletService.prepareTransaction).not.toHaveBeenCalled();
-    expect(mockedWalletService.commitTransaction).not.toHaveBeenCalled();
+    expect(mockedWalletService.prepareSendPlan).not.toHaveBeenCalled();
+    expect(mockedWalletService.commitSendPlan).not.toHaveBeenCalled();
     expect(acknowledgePaymentLink).toHaveBeenCalledWith(preset.flowId);
     expect(setParams).toHaveBeenCalledWith({
       paymentLinkSendPreset: undefined,
@@ -240,8 +271,8 @@ describe('SendScreen', () => {
     expect(setParams).toHaveBeenCalledWith({
       paymentLinkSendPreset: undefined,
     });
-    expect(mockedWalletService.prepareTransaction).not.toHaveBeenCalled();
-    expect(mockedWalletService.commitTransaction).not.toHaveBeenCalled();
+    expect(mockedWalletService.prepareSendPlan).not.toHaveBeenCalled();
+    expect(mockedWalletService.commitSendPlan).not.toHaveBeenCalled();
   });
 
   it('consumes an already expired payment-link route without validating or sending', async () => {
@@ -291,11 +322,12 @@ describe('SendScreen', () => {
       paymentLinkSendPreset: undefined,
     });
     expect(mockedWalletService.validateRecipientAddress).not.toHaveBeenCalled();
-    expect(mockedWalletService.prepareTransaction).not.toHaveBeenCalled();
-    expect(mockedWalletService.commitTransaction).not.toHaveBeenCalled();
+    expect(mockedWalletService.prepareSendPlan).not.toHaveBeenCalled();
+    expect(mockedWalletService.commitSendPlan).not.toHaveBeenCalled();
   });
 
-  it('shows name lookup progress and disables Continue while resolving', async () => {
+  it('refreshes the resolved recipient after changing the resolver on a mounted tab', async () => {
+    jest.useFakeTimers();
     mockedUseWalletState.mockReturnValue({
       error: undefined,
       registeredWallet: {
@@ -352,7 +384,47 @@ describe('SendScreen', () => {
       disabled: true,
     });
 
-    await ReactTestRenderer.act(async () => renderer!.unmount());
+    const firstAddress = `4${'1'.repeat(94)}`;
+    const secondAddress = `4${'2'.repeat(94)}`;
+    const resolveName = jest
+      .spyOn(mfwNameResolution, 'resolveConfiguredMfwNameForPayment')
+      .mockResolvedValueOnce(firstAddress)
+      .mockResolvedValueOnce(secondAddress);
+    const suggestions = jest
+      .spyOn(mfwNameResolution, 'fetchConfiguredMfwNameSuggestions')
+      .mockResolvedValue([]);
+    const savePreference = jest
+      .spyOn(AsyncStorage, 'setItem')
+      .mockResolvedValue(undefined);
+    const hasAddress = (value: string) =>
+      renderer!.root
+        .findAllByType(Text)
+        .some(node => node.props.children === value);
+
+    try {
+      await ReactTestRenderer.act(async () => {
+        jest.advanceTimersByTime(250);
+      });
+      expect(hasAddress(firstAddress)).toBe(true);
+
+      await ReactTestRenderer.act(async () => {
+        await saveMfwResolverPreference('tex8');
+      });
+      expect(hasAddress(firstAddress)).toBe(false);
+      expect(continueButton!.props.disabled).toBe(true);
+
+      await ReactTestRenderer.act(async () => {
+        jest.advanceTimersByTime(250);
+      });
+      expect(resolveName).toHaveBeenCalledTimes(2);
+      expect(hasAddress(secondAddress)).toBe(true);
+    } finally {
+      await ReactTestRenderer.act(async () => renderer!.unmount());
+      resolveName.mockRestore();
+      suggestions.mockRestore();
+      savePreference.mockRestore();
+      jest.useRealTimers();
+    }
   });
 
   it('prepares MAX as sweep-all and commits with one review tap', async () => {
@@ -394,7 +466,7 @@ describe('SendScreen', () => {
       transactions: [],
       walletSnapshots: {},
     } as unknown as ReturnType<typeof useWalletState>);
-    mockedWalletService.prepareTransaction.mockResolvedValue({
+    mockedWalletService.prepareSendPlan.mockResolvedValue(wholeWalletPrepared({
       id: 'pending-max',
       approvalExpiresAtMs: Date.now() + 120_000,
       status: 'ok',
@@ -406,8 +478,8 @@ describe('SendScreen', () => {
       txIds: ['prepared-id'],
       subaddrAccounts: [0],
       subaddrIndices: [0],
-    });
-    mockedWalletService.commitTransaction.mockResolvedValue({
+    }));
+    mockedWalletService.commitSendPlan.mockResolvedValue(completedPlan({
       id: 'pending-max',
       status: 'ok',
       error: '',
@@ -418,7 +490,7 @@ describe('SendScreen', () => {
       txIds: ['ab'.repeat(32)],
       subaddrAccounts: [0],
       subaddrIndices: [0],
-    });
+    }));
 
     let renderer: ReactTestRenderer.ReactTestRenderer | undefined;
     await ReactTestRenderer.act(async () => {
@@ -458,8 +530,8 @@ describe('SendScreen', () => {
       .find(node => node.props.accessibilityLabel === 'Send XMR');
     await ReactTestRenderer.act(async () => sendButton!.props.onPress());
 
-    expect(mockedWalletService.prepareTransaction).toHaveBeenCalledWith(
-      expect.objectContaining({ walletId: 'wallet-1' }),
+    expect(mockedWalletService.prepareSendPlan).toHaveBeenCalledWith(
+      [expect.objectContaining({ walletId: 'wallet-1' })],
       {
         address: recipientAddress,
         amountAtomic: undefined,
@@ -478,21 +550,14 @@ describe('SendScreen', () => {
       await Promise.resolve();
     });
 
-    expect(mockedWalletService.commitTransaction).toHaveBeenCalledTimes(1);
-    expect(mockedWalletService.commitTransaction).toHaveBeenCalledWith(
-      expect.objectContaining({ walletId: 'wallet-1' }),
+    expect(mockedWalletService.commitSendPlan).toHaveBeenCalledTimes(1);
+    expect(mockedWalletService.commitSendPlan).toHaveBeenCalledWith(
       'pending-max',
     );
     expect(connectLedgerForSigning).not.toHaveBeenCalled();
     expect(reconcileLedgerBalance).not.toHaveBeenCalled();
     expect(restoreLedgerViewAfterSigning).not.toHaveBeenCalled();
-    expect(publishPendingOutgoing).toHaveBeenCalledWith(
-      expect.objectContaining({
-        hash: 'ab'.repeat(32),
-        pending: true,
-        direction: 'out',
-      }),
-    );
+    expect(publishPendingOutgoing).not.toHaveBeenCalled();
     expect(refreshSnapshot).toHaveBeenCalledTimes(1);
     expect(refreshTransactions).toHaveBeenCalledTimes(1);
   });
@@ -536,7 +601,7 @@ describe('SendScreen', () => {
       transactions: [],
       walletSnapshots: {},
     } as unknown as ReturnType<typeof useWalletState>);
-    mockedWalletService.prepareTransaction.mockRejectedValueOnce(
+    mockedWalletService.prepareSendPlan.mockRejectedValueOnce(
       new Error('Read-only wallets cannot sign transactions.'),
     );
 
@@ -550,8 +615,8 @@ describe('SendScreen', () => {
 
     expect(reconcileLedgerBalance).not.toHaveBeenCalled();
     expect(connectLedgerForSigning).not.toHaveBeenCalled();
-    expect(mockedWalletService.prepareTransaction).toHaveBeenCalledWith(
-      readOnlySoftwareSession,
+    expect(mockedWalletService.prepareSendPlan).toHaveBeenCalledWith(
+      [readOnlySoftwareSession],
       expect.objectContaining({ sweepAll: true }),
     );
   });
@@ -610,7 +675,7 @@ describe('SendScreen', () => {
       transactions: [],
       walletSnapshots: {},
     } as unknown as ReturnType<typeof useWalletState>);
-    mockedWalletService.prepareTransaction.mockResolvedValue({
+    mockedWalletService.prepareSendPlan.mockResolvedValue(wholeWalletPrepared({
       id: 'pending-ledger',
       approvalExpiresAtMs: Date.now() + 120_000,
       status: 'ok',
@@ -622,8 +687,8 @@ describe('SendScreen', () => {
       txIds: ['prepared-ledger'],
       subaddrAccounts: [0],
       subaddrIndices: [0],
-    });
-    mockedWalletService.commitTransaction.mockResolvedValue({
+    }));
+    mockedWalletService.commitSendPlan.mockResolvedValue(completedPlan({
       id: 'pending-ledger',
       status: 'ok',
       error: '',
@@ -634,7 +699,7 @@ describe('SendScreen', () => {
       txIds: ['cd'.repeat(32)],
       subaddrAccounts: [0],
       subaddrIndices: [0],
-    });
+    }));
 
     let renderer: ReactTestRenderer.ReactTestRenderer | undefined;
     await ReactTestRenderer.act(async () => {
@@ -681,24 +746,18 @@ describe('SendScreen', () => {
 
     expect(reconcileLedgerBalance).toHaveBeenCalledTimes(1);
     expect(connectLedgerForSigning).toHaveBeenCalledTimes(1);
-    expect(mockedWalletService.prepareTransaction).toHaveBeenCalledWith(
-      signingSession,
+    expect(mockedWalletService.prepareSendPlan).toHaveBeenCalledWith(
+      [signingSession],
       expect.objectContaining({ sweepAll: true }),
     );
-    expect(mockedWalletService.prepareTransaction).not.toHaveBeenCalledWith(
-      stalePhysicalSession,
+    expect(mockedWalletService.prepareSendPlan).not.toHaveBeenCalledWith(
+      [stalePhysicalSession],
       expect.anything(),
     );
     expect(restoreLedgerViewAfterSigning).toHaveBeenCalledTimes(1);
-    expect(publishPendingOutgoing).toHaveBeenCalledWith(
-      expect.objectContaining({
-        hash: 'cd'.repeat(32),
-        pending: true,
-        direction: 'out',
-      }),
-    );
+    expect(publishPendingOutgoing).not.toHaveBeenCalled();
     expect(
-      mockedWalletService.commitTransaction.mock.invocationCallOrder[0],
+      mockedWalletService.commitSendPlan.mock.invocationCallOrder[0],
     ).toBeLessThan(
       restoreLedgerViewAfterSigning.mock.invocationCallOrder[0],
     );
@@ -712,14 +771,14 @@ describe('SendScreen', () => {
       .flatMap(node => node.props.children)
       .filter((value): value is string => typeof value === 'string');
     expect(renderedText).toContain(
-      'send.transactionBroadcastRefreshPending',
+      'send.planOutcome.complete',
     );
     expect(renderedText).not.toContain('post-broadcast refresh failed');
   });
 });
 
 
-describe('Send account balance and All feedback', () => {
+describe('Whole-wallet balance and All feedback', () => {
   const recipientAddress = `4${'5'.repeat(94)}`;
   const liveSnapshot = {
     id: 'wallet-1', path: '/synthetic/wallet', primaryAddress: recipientAddress,
@@ -735,6 +794,7 @@ describe('Send account balance and All feedback', () => {
   beforeEach(() => {
     jest.useFakeTimers();
     jest.clearAllMocks();
+    mockedWalletService.sendSourceIdentity.mockImplementation(async source => `${source.network}:physical-${source.walletId}`);
     mockedWalletService.validateRecipientAddress.mockImplementation(async address => address);
     const wallet = {
       id: 'primary', kind: 'fast', walletName: 'Fast Wallet', network: 'mainnet',
@@ -789,49 +849,49 @@ describe('Send account balance and All feedback', () => {
       .map(node => node.props.children);
   }
 
-  it('shows account-scoped available funds and previews All without broadcasting', async () => {
+  it('shows all-account available funds and previews All without broadcasting', async () => {
     await openAmount();
-    expect(texts('send-available-balance')).toContain('1.25 XMR');
-    expect(texts('send-available-balance')).not.toContain('9 XMR');
+    expect(texts('send-available-balance')).toContain('9 XMR');
+    expect(texts('send-available-balance')).not.toContain('1.25 XMR');
     await ReactTestRenderer.act(async () => allButton().props.onPress());
     expect(allButton().props.accessibilityState.selected).toBe(true);
-    expect(amountInput().props.value).toBe('1.25');
+    expect(amountInput().props.value).toBe('9');
     expect(texts('send-sweep-all-notice')).toContain('send.sweepAll');
-    expect(mockedWalletService.prepareTransaction).not.toHaveBeenCalled();
-    expect(mockedWalletService.commitTransaction).not.toHaveBeenCalled();
+    expect(mockedWalletService.prepareSendPlan).not.toHaveBeenCalled();
+    expect(mockedWalletService.commitSendPlan).not.toHaveBeenCalled();
     await ReactTestRenderer.act(async () => amountInput().props.onChangeText('0.5'));
     expect(allButton().props.accessibilityState.selected).toBe(false);
     expect(tree!.root.findAllByProps({ testID: 'send-sweep-all-notice' })).toHaveLength(0);
   });
 
-  it('does not use aggregate funds when a synchronized account scope is missing', async () => {
+  it('uses the authoritative whole-wallet balance without a legacy account scope', async () => {
     await openAmount({
       spendAccountIndex: undefined, spendPrimaryAddress: undefined,
       spendBalanceAtomic: undefined, spendUnlockedBalanceAtomic: undefined,
     });
-    expect(texts('send-available-balance')).toContain('home.loadingBalance');
-    expect(allButton().props.disabled).toBe(true);
+    expect(texts('send-available-balance')).toContain('9 XMR');
+    expect(allButton().props.disabled).toBe(false);
     await ReactTestRenderer.act(async () => amountInput().props.onChangeText('1'));
-    expect(tree!.root.findByProps({ accessibilityLabel: 'Send XMR' }).props.disabled).toBe(true);
-    expect(mockedWalletService.prepareTransaction).not.toHaveBeenCalled();
+    expect(tree!.root.findByProps({ accessibilityLabel: 'Send XMR' }).props.disabled).toBe(false);
+    expect(mockedWalletService.prepareSendPlan).not.toHaveBeenCalled();
   });
 
   it('distinguishes locked incoming funds from a missing balance', async () => {
-    await openAmount({ spendUnlockedBalanceAtomic: '0' });
+    await openAmount({ unlockedBalanceAtomic: '0' });
     expect(texts('send-available-balance')).toContain('0 XMR');
-    expect(texts('send-locked-balance')).toContain('Locked: 2 XMR');
+    expect(texts('send-locked-balance')).toContain('Locked: 10 XMR');
     expect(allButton().props.disabled).toBe(true);
     expect(tree!.root.findByProps({ accessibilityLabel: 'Send XMR' }).props.disabled).toBe(true);
   });
 
-  it('enables All after a complete fresh account scope is published', async () => {
-    await openAmount({ spendUnlockedBalanceAtomic: undefined });
+  it('enables All after a synchronized whole-wallet snapshot is published', async () => {
+    await openAmount({ synchronized: false });
     expect(allButton().props.disabled).toBe(true);
     state = { ...state, snapshot: liveSnapshot };
     await ReactTestRenderer.act(async () => {
       tree!.update(<SendScreen navigation={{ navigate: jest.fn() }} />);
     });
-    expect(texts('send-available-balance')).toContain('1.25 XMR');
+    expect(texts('send-available-balance')).toContain('9 XMR');
     expect(allButton().props.disabled).toBe(false);
   });
 
@@ -847,14 +907,124 @@ describe('Send account balance and All feedback', () => {
     cleanup?.();
   });
 
+  it('updates the MAX preview when the complete wallet snapshot changes', async () => {
+    await openAmount();
+    await ReactTestRenderer.act(async () => allButton().props.onPress());
+    state = { ...state, snapshot: { ...liveSnapshot, balanceAtomic: '12000000000000', unlockedBalanceAtomic: '11000000000000' } };
+    await ReactTestRenderer.act(async () => { tree!.update(<SendScreen navigation={{ navigate: jest.fn() }} />); });
+    expect(amountInput().props.value).toBe('11');
+    expect(mockedWalletService.prepareSendPlan).not.toHaveBeenCalled();
+  });
+
+  it('includes an additional physical wallet only after explicit selection for a fixed payment', async () => {
+    const extra = { ...state.registeredWallet!, id: 'extra', kind: 'software' as const, walletName: 'Extra', network: 'mainnet' as const };
+    const extraSession = { walletId: 'session-extra', registrationId: 'extra', network: 'mainnet' as const };
+    state = { ...state,
+      registeredWallets: [...state.registeredWallets, extra],
+      getRegisteredWalletSession: jest.fn(id => id === 'extra' ? extraSession : state.session),
+      walletSnapshots: { extra: { ...liveSnapshot, id: 'session-extra', primaryAddress: '8'.repeat(95), balanceAtomic: '3000000000000', unlockedBalanceAtomic: '3000000000000' } },
+    } as ReturnType<typeof useWalletState>;
+    await openAmount();
+    await ReactTestRenderer.act(async () => amountInput().props.onChangeText('10'));
+    expect(tree!.root.findByProps({ accessibilityLabel: 'Send XMR' }).props.disabled).toBe(true);
+    expect(mockedWalletService.prepareSendPlan).not.toHaveBeenCalled();
+    await ReactTestRenderer.act(async () => tree!.root.findByProps({ testID: 'send-add-wallet' }).props.onPress());
+    const checkbox = tree!.root.findByProps({ testID: 'send-source-extra' });
+    expect(checkbox.props.accessibilityState.checked).toBe(false);
+    await ReactTestRenderer.act(async () => checkbox.props.onPress());
+    expect(texts('send-available-balance')).toContain('12 XMR');
+    mockedWalletService.prepareSendPlan.mockResolvedValueOnce(wholeWalletPrepared({
+      id: 'two-wallet-plan', status: 'ok', error: '', amountAtomic: '10000000000000',
+      feeAtomic: '40000000', dustAtomic: '0', txCount: 2, txIds: ['tx-one', 'tx-two'],
+      subaddrAccounts: [], subaddrIndices: [],
+    }));
+    await ReactTestRenderer.act(async () => tree!.root.findByProps({ accessibilityLabel: 'Send XMR' }).props.onPress());
+    expect(mockedWalletService.prepareSendPlan).toHaveBeenCalledWith([
+      expect.objectContaining({ walletId: 'wallet-1' }), extraSession,
+    ], expect.objectContaining({ amountAtomic: '10000000000000', sweepAll: false }));
+    expect(mockedWalletService.commitSendPlan).not.toHaveBeenCalled();
+  });
+
+  it('discovers held native receipts after a renderer restart without a cached plan identifier', async () => {
+    const receipt = { id: 'recovered-plan', status: 'uncertain' as const, phase: 'interrupted' as const,
+      address: '8'.repeat(95), txCount: 2, txIds: ['saved-one', 'saved-two'], leaseHeld: true,
+      broadcastAttempted: true, broadcastedTotalsKnown: false,
+      broadcastedAmountAtomic: null, broadcastedFeeAtomic: null, uncertainTxIds: ['saved-one'] };
+    mockedWalletService.listSendPlans.mockResolvedValueOnce([receipt]);
+    await ReactTestRenderer.act(async () => { tree = ReactTestRenderer.create(<SendScreen navigation={{ navigate: jest.fn() }} />); });
+    const savedReceiptFocus = (useFocusEffect as jest.Mock).mock.calls[1][0];
+    await ReactTestRenderer.act(async () => { savedReceiptFocus(); await Promise.resolve(); });
+    await ReactTestRenderer.act(async () => tree!.root.findByProps({ testID: 'send-saved-plan-recovered-plan' }).props.onPress());
+    expect(tree!.root.findByProps({ testID: 'send-plan-receipt' })).toBeDefined();
+    expect(tree!.root.findAllByProps({ accessibilityLabel: 'Send Now' })).toHaveLength(0);
+    expect(mockedWalletService.prepareSendPlan).not.toHaveBeenCalled();
+    expect(mockedWalletService.commitSendPlan).not.toHaveBeenCalled();
+  });
+
+  it('excludes a restored-seed alias using native master identity and keeps a genuinely different master selectable', async () => {
+    const alias = { ...state.registeredWallet!, id: 'alias', walletName: 'Restored alias' };
+    const other = { ...state.registeredWallet!, id: 'other-master', walletName: 'Different master' };
+    const otherNetwork = { ...state.registeredWallet!, id: 'other-network', network: 'testnet' as const };
+    const sessions = {
+      alias: { walletId: 'session-alias', registrationId: 'alias', network: 'mainnet' as const },
+      'other-master': { walletId: 'session-other', registrationId: 'other-master', network: 'mainnet' as const },
+      'other-network': { walletId: 'session-testnet', registrationId: 'other-network', network: 'testnet' as const },
+    };
+    mockedWalletService.sendSourceIdentity.mockImplementation(async source =>
+      `${source.network}:${source.walletId === 'session-other' ? 'native-master-b' : 'native-master-a'}`);
+    state = { ...state,
+      registeredWallets: [...state.registeredWallets, alias, other, otherNetwork],
+      getRegisteredWalletSession: jest.fn(id => sessions[id as keyof typeof sessions]),
+      walletSnapshots: {
+        // Cached account addresses deliberately disagree with physical identity.
+        alias: { ...liveSnapshot, primaryAddress: '8'.repeat(95) },
+        'other-master': { ...liveSnapshot, primaryAddress: liveSnapshot.primaryAddress,
+          balanceAtomic: '3000000000000', unlockedBalanceAtomic: '3000000000000' },
+        'other-network': liveSnapshot,
+      },
+    };
+    await openAmount();
+    await ReactTestRenderer.act(async () => tree!.root.findByProps({ testID: 'send-add-wallet' }).props.onPress());
+    expect(tree!.root.findAllByProps({ testID: 'send-source-alias' })).toHaveLength(0);
+    expect(tree!.root.findAllByProps({ testID: 'send-source-other-network' })).toHaveLength(0);
+    expect(texts('send-available-balance')).toContain('9 XMR');
+    await ReactTestRenderer.act(async () => tree!.root.findByProps({ testID: 'send-source-other-master' }).props.onPress());
+    expect(texts('send-available-balance')).toContain('12 XMR');
+    expect(mockedWalletService.prepareSendPlan).not.toHaveBeenCalled();
+    expect(mockedWalletService.sendSourceIdentity.mock.calls.some(([source]) => source.walletId === 'session-testnet')).toBe(false);
+  });
+
+  it('ignores an old master-identity response after selecting another primary wallet', async () => {
+    const extra = { ...state.registeredWallet!, id: 'extra-identity' };
+    const extraSession = { walletId: 'identity-extra', network: 'mainnet' as const };
+    let resolveOldPrimary!: (identity: string) => void;
+    mockedWalletService.sendSourceIdentity.mockImplementation(async source => source.walletId === 'wallet-1'
+      ? new Promise(resolve => { resolveOldPrimary = resolve; }) : 'mainnet:shared-master');
+    state = { ...state, registeredWallets: [...state.registeredWallets, extra],
+      getRegisteredWalletSession: jest.fn(() => extraSession),
+      walletSnapshots: { 'extra-identity': liveSnapshot },
+    };
+    await openAmount();
+    const nextWallet = { ...state.registeredWallet!, id: 'next-primary' };
+    state = { ...state, registeredWallet: nextWallet, registeredWallets: [nextWallet, extra],
+      session: { walletId: 'next-native-session', network: 'mainnet' },
+      snapshot: { ...liveSnapshot, balanceAtomic: '2000000000000', unlockedBalanceAtomic: '2000000000000' },
+    };
+    await ReactTestRenderer.act(async () => { tree!.update(<SendScreen navigation={{ navigate: jest.fn() }} />); });
+    expect(tree!.root.findAllByProps({ testID: 'send-add-wallet' })).toHaveLength(0);
+    await ReactTestRenderer.act(async () => resolveOldPrimary('mainnet:old-different-master'));
+    expect(tree!.root.findAllByProps({ testID: 'send-add-wallet' })).toHaveLength(0);
+    expect(texts('send-available-balance')).toContain('2 XMR');
+  });
+
 
   function prepared(id = 'software-prepared') {
-    return {
-      id, status: 'ok' as const, error: '', amountAtomic: '1249970000000',
+    return wholeWalletPrepared({
+      id, status: 'ok' as const, error: '', amountAtomic: '8999970000000',
       dustAtomic: '0', feeAtomic: '30000000', txCount: 1,
       txIds: ['ab'.repeat(32)], subaddrAccounts: [1], subaddrIndices: [0],
       approvalExpiresAtMs: Date.now() + 120_000,
-    };
+    });
   }
 
   async function selectAllAndPrepare() {
@@ -865,10 +1035,118 @@ describe('Send account balance and All feedback', () => {
     });
   }
 
+  async function openPendingLedgerDiscovery() {
+    let resolveConnection!: (value: ReturnType<typeof useWalletState>['session']) => void;
+    let control!: LedgerSigningControl;
+    state = { ...state,
+      registeredWallet: { ...state.registeredWallet!, kind: 'hardware' },
+      session: { ...state.session!, readOnly: true, hardwareDevice: { name: 'Ledger', type: 'ledger' } },
+      connectLedgerForSigning: jest.fn(next => {
+        control = next!;
+        return new Promise(resolve => { resolveConnection = resolve; });
+      }),
+      restoreLedgerViewAfterSigning: jest.fn(async () => true),
+    };
+    await openAmount();
+    await ReactTestRenderer.act(async () => allButton().props.onPress());
+    let work: Promise<void> | undefined;
+    await ReactTestRenderer.act(async () => {
+      work = tree!.root.findByProps({ accessibilityLabel: 'Send XMR' }).props.onPress();
+    });
+    return { control, resolveConnection, work };
+  }
+
+  it('cancels iOS discovery cooperatively without calling an unavailable native selector', async () => {
+    const platform = jest.replaceProperty(Platform, 'OS', 'ios');
+    try {
+      const flow = await openPendingLedgerDiscovery();
+      const modal = tree!.root.findByType(LedgerSigningModal);
+      expect(modal.props.canCancel).toBe(true);
+      await ReactTestRenderer.act(async () => modal.props.onCancel());
+      expect(flow.control.isCancelled!()).toBe(true);
+      expect(mockedWalletService.cancelLedgerOperation).not.toHaveBeenCalled();
+      expect(mockedWalletService.prepareSendPlan).not.toHaveBeenCalled();
+      await ReactTestRenderer.act(async () => { flow.resolveConnection(undefined); await flow.work; });
+      expect(mockedWalletService.prepareSendPlan).not.toHaveBeenCalled();
+    } finally { platform.restore(); }
+  });
+
+  it('ignores an old iOS discovery cancel callback after native Ledger work has started', async () => {
+    const platform = jest.replaceProperty(Platform, 'OS', 'ios');
+    try {
+      const flow = await openPendingLedgerDiscovery();
+      const oldCancel = tree!.root.findByType(LedgerSigningModal).props.onCancel;
+      await ReactTestRenderer.act(async () => flow.control.onProgress!({ phase: 'synchronizing-wallet' }));
+      expect(tree!.root.findByType(LedgerSigningModal).props.canCancel).toBe(false);
+      await ReactTestRenderer.act(async () => oldCancel());
+      expect(flow.control.isCancelled!()).toBe(false);
+      expect(mockedWalletService.cancelLedgerOperation).not.toHaveBeenCalled();
+      let finishPreparation!: (value: ReturnType<typeof prepared>) => void;
+      mockedWalletService.prepareSendPlan.mockReturnValueOnce(new Promise(resolve => { finishPreparation = resolve; }));
+      await ReactTestRenderer.act(async () => flow.resolveConnection({
+        ...state.session!, walletId: 'ledger-signing', readOnly: false,
+      }));
+      expect(tree!.root.findByType(LedgerSigningModal).props.canCancel).toBe(false);
+      await ReactTestRenderer.act(async () => oldCancel());
+      expect(flow.control.isCancelled!()).toBe(false);
+      await ReactTestRenderer.act(async () => { finishPreparation(prepared()); await flow.work; });
+      expect(tree!.root.findByProps({ accessibilityLabel: 'Send Now' })).toBeDefined();
+      expect(mockedWalletService.cancelLedgerOperation).not.toHaveBeenCalled();
+    } finally { platform.restore(); }
+  });
+
+  it('keeps actual Android transport cancellation available during Ledger work', async () => {
+    const platform = jest.replaceProperty(Platform, 'OS', 'android');
+    try {
+      const flow = await openPendingLedgerDiscovery();
+      await ReactTestRenderer.act(async () => flow.control.onProgress!({ phase: 'synchronizing-wallet' }));
+      const modal = tree!.root.findByType(LedgerSigningModal);
+      expect(modal.props.canCancel).toBe(true);
+      await ReactTestRenderer.act(async () => modal.props.onCancel());
+      expect(flow.control.isCancelled!()).toBe(true);
+      expect(mockedWalletService.cancelLedgerOperation).toHaveBeenCalledTimes(1);
+      await ReactTestRenderer.act(async () => { flow.resolveConnection(undefined); await flow.work; });
+      expect(mockedWalletService.prepareSendPlan).not.toHaveBeenCalled();
+    } finally { platform.restore(); }
+  });
+
+  it.each(['success', 'failure'] as const)(
+    'bounds hardware status polling and ignores a late dialog reply after preparation %s',
+    async outcome => {
+      const flow = await openPendingLedgerDiscovery();
+      let finishPreparation!: (value: ReturnType<typeof prepared>) => void;
+      let rejectPreparation!: (reason: Error) => void;
+      mockedWalletService.prepareSendPlan.mockReturnValueOnce(new Promise((resolve, reject) => {
+        finishPreparation = resolve;
+        rejectPreparation = reject;
+      }));
+      let finishStatus!: (value: Awaited<ReturnType<typeof walletService.getHardwareWalletStatus>>) => void;
+      mockedWalletService.getHardwareWalletStatus.mockReturnValueOnce(new Promise(resolve => {finishStatus = resolve;}));
+      await ReactTestRenderer.act(async () => flow.resolveConnection({
+        ...state.session!, walletId: 'ledger-signing', readOnly: false,
+      }));
+      expect(tree!.root.findByType(LedgerSigningModal).props.progress.phase).toBe('preparing-transaction');
+      await ReactTestRenderer.act(async () => {jest.advanceTimersByTime(5_000);});
+      expect(mockedWalletService.getHardwareWalletStatus).toHaveBeenCalledTimes(1);
+      await ReactTestRenderer.act(async () => {
+        if (outcome === 'success') finishPreparation(prepared());
+        else rejectPreparation(new Error('unexpected error: Fee denied on device.'));
+        await flow.work;
+      });
+      await ReactTestRenderer.act(async () => {
+        finishStatus({requiresUserAction: true} as unknown as Awaited<ReturnType<typeof walletService.getHardwareWalletStatus>>);
+        jest.advanceTimersByTime(5_000);
+      });
+      expect(tree!.root.findAllByProps({testID: 'ledger-signing-modal'})).toHaveLength(0);
+      expect(mockedWalletService.getHardwareWalletStatus).toHaveBeenCalledTimes(1);
+      expect(mockedWalletService.commitSendPlan).not.toHaveBeenCalled();
+    },
+  );
+
   it('shows preparation immediately, measures a long wait, and blocks duplicate taps until Review', async () => {
     let resolvePreparation!: (value: ReturnType<typeof prepared>) => void;
     const pending = new Promise<ReturnType<typeof prepared>>(resolve => { resolvePreparation = resolve; });
-    mockedWalletService.prepareTransaction.mockReturnValueOnce(pending);
+    mockedWalletService.prepareSendPlan.mockReturnValueOnce(pending);
     await openAmount();
     await ReactTestRenderer.act(async () => allButton().props.onPress());
     const press = tree!.root.findByProps({ accessibilityLabel: 'Send XMR' }).props.onPress;
@@ -877,7 +1155,7 @@ describe('Send account balance and All feedback', () => {
       work = press();
       press();
     });
-    expect(mockedWalletService.prepareTransaction).toHaveBeenCalledTimes(1);
+    expect(mockedWalletService.prepareSendPlan).toHaveBeenCalledTimes(1);
     expect(texts('send-preparation-progress')).toContain('Preparing transaction. Review before sending. 0s elapsed');
     expect(tree!.root.findByProps({ accessibilityLabel: 'Send XMR' }).props.disabled).toBe(true);
     expect(amountInput().props.editable).toBe(false);
@@ -898,26 +1176,26 @@ describe('Send account balance and All feedback', () => {
         id: 'other-wallet', label: 'Other', kind: 'fast', meta: 'mainnet',
       });
     });
-    expect(amountInput().props.value).toBe('1.25');
+    expect(amountInput().props.value).toBe('9');
     expect(allButton().props.accessibilityState.selected).toBe(true);
     expect(state.setActiveRegisteredWallet).not.toHaveBeenCalled();
     await ReactTestRenderer.act(async () => { jest.advanceTimersByTime(80_000); });
     expect(texts('send-preparation-progress')).toContain('Preparing transaction. Review before sending. 80s elapsed');
-    expect(mockedWalletService.commitTransaction).not.toHaveBeenCalled();
+    expect(mockedWalletService.commitSendPlan).not.toHaveBeenCalled();
     await ReactTestRenderer.act(async () => {
       resolvePreparation(prepared());
       await work;
     });
     expect(tree!.root.findByProps({ accessibilityLabel: 'Send Now' })).toBeDefined();
-    expect(texts('send-approval-countdown')).toContain('Approval expires in 120s');
+    expect(tree!.root.findAllByProps({ testID: 'send-approval-countdown' })).toHaveLength(0);
     expect(tree!.root.findAllByProps({ testID: 'send-preparation-progress' })).toHaveLength(0);
-    expect(mockedWalletService.prepareTransaction).toHaveBeenCalledTimes(1);
-    expect(mockedWalletService.commitTransaction).not.toHaveBeenCalled();
+    expect(mockedWalletService.prepareSendPlan).toHaveBeenCalledTimes(1);
+    expect(mockedWalletService.commitSendPlan).not.toHaveBeenCalled();
   });
 
   it('discards a late prepared result when the selected native session changed', async () => {
     let resolvePreparation!: (value: ReturnType<typeof prepared>) => void;
-    mockedWalletService.prepareTransaction.mockReturnValueOnce(new Promise(resolve => { resolvePreparation = resolve; }));
+    mockedWalletService.prepareSendPlan.mockReturnValueOnce(new Promise(resolve => { resolvePreparation = resolve; }));
     await openAmount();
     await ReactTestRenderer.act(async () => allButton().props.onPress());
     let work: Promise<void> | undefined;
@@ -935,12 +1213,12 @@ describe('Send account balance and All feedback', () => {
     expect(tree!.root.findAllByProps({ testID: 'send-preparation-progress' })).toHaveLength(0);
     expect(amountInput().props.editable).toBe(true);
     expect(tree!.root.findAllByType(Text).map(node => node.props.children)).toContain('send.preparationChanged');
-    expect(mockedWalletService.prepareTransaction).toHaveBeenCalledTimes(1);
-    expect(mockedWalletService.commitTransaction).not.toHaveBeenCalled();
+    expect(mockedWalletService.prepareSendPlan).toHaveBeenCalledTimes(1);
+    expect(mockedWalletService.commitSendPlan).not.toHaveBeenCalled();
   });
 
   it('does not submit a retained review from the previous wallet after an external selection', async () => {
-    mockedWalletService.prepareTransaction.mockResolvedValueOnce(prepared());
+    mockedWalletService.prepareSendPlan.mockResolvedValueOnce(prepared());
     await selectAllAndPrepare();
     const priorWalletSend = tree!.root.findByProps({ accessibilityLabel: 'Send Now' }).props.onPress;
     state = {
@@ -951,15 +1229,15 @@ describe('Send account balance and All feedback', () => {
     await ReactTestRenderer.act(async () => { tree!.update(<SendScreen navigation={{ navigate: jest.fn() }} />); });
     // A callback queued by the previous render must also check current refs.
     await ReactTestRenderer.act(async () => { await priorWalletSend(); });
-    expect(mockedWalletService.commitTransaction).not.toHaveBeenCalled();
-    expect(mockedWalletService.prepareTransaction).toHaveBeenCalledTimes(1);
+    expect(mockedWalletService.commitSendPlan).not.toHaveBeenCalled();
+    expect(mockedWalletService.prepareSendPlan).toHaveBeenCalledTimes(1);
     expect(tree!.root.findAllByProps({ accessibilityLabel: 'Send Now' })).toHaveLength(0);
     expect(tree!.root.findByProps({ accessibilityLabel: 'Prepare again' })).toBeDefined();
     expect(tree!.root.findAllByType(Text).map(node => node.props.children)).toContain('send.preparationChanged');
   });
 
   it('does not submit an old review after a new payment route clears its pending transaction', async () => {
-    mockedWalletService.prepareTransaction.mockResolvedValueOnce(prepared());
+    mockedWalletService.prepareSendPlan.mockResolvedValueOnce(prepared());
     await selectAllAndPrepare();
     const priorReviewSend = tree!.root.findByProps({ accessibilityLabel: 'Send Now' }).props.onPress;
     const preset = createPaymentLinkSendPreset({
@@ -972,80 +1250,74 @@ describe('Send account balance and All feedback', () => {
         route={{ params: { paymentLinkSendPreset: preset } }} />);
     });
     await ReactTestRenderer.act(async () => { await priorReviewSend(); });
-    expect(mockedWalletService.commitTransaction).not.toHaveBeenCalled();
-    expect(mockedWalletService.prepareTransaction).toHaveBeenCalledTimes(1);
+    expect(mockedWalletService.commitSendPlan).not.toHaveBeenCalled();
+    expect(mockedWalletService.prepareSendPlan).toHaveBeenCalledTimes(1);
     expect(tree!.root.findAllByProps({ accessibilityLabel: 'Send Now' })).toHaveLength(0);
     expect(tree!.root.findAllByType(Text).map(node => node.props.children)).toContain('send.preparationChanged');
   });
 
-  it('rejects an approval that expires between the last timer tick and Send Now', async () => {
-    mockedWalletService.prepareTransaction.mockResolvedValueOnce(prepared());
+  it('keeps the native group approval authoritative instead of inventing a JavaScript expiry', async () => {
+    mockedWalletService.prepareSendPlan.mockResolvedValueOnce(prepared());
     await selectAllAndPrepare();
-    const staleSend = tree!.root.findByProps({ accessibilityLabel: 'Send Now' }).props.onPress;
-    jest.setSystemTime(Date.now() + 120_001);
-    await ReactTestRenderer.act(async () => { await staleSend(); });
-    expect(mockedWalletService.commitTransaction).not.toHaveBeenCalled();
-    expect(tree!.root.findByProps({ accessibilityLabel: 'Prepare again' })).toBeDefined();
-    expect(tree!.root.findAllByProps({ accessibilityLabel: 'Send Now' })).toHaveLength(0);
-    expect(mockedWalletService.prepareTransaction).toHaveBeenCalledTimes(1);
-
-    // A stale prepared signing session must not survive the retry. The next
-    // user action starts preparation against the current selected session.
-    state = { ...state, session: { walletId: 'reopened-software', network: 'mainnet' } };
-    await ReactTestRenderer.act(async () => { tree!.update(<SendScreen navigation={{ navigate: jest.fn() }} />); });
-    mockedWalletService.prepareTransaction.mockResolvedValueOnce(prepared('fresh-approval'));
-    await ReactTestRenderer.act(async () => {
-      await tree!.root.findByProps({ accessibilityLabel: 'Prepare again' }).props.onPress();
-    });
-    expect(mockedWalletService.prepareTransaction).toHaveBeenCalledTimes(2);
-    expect(mockedWalletService.prepareTransaction).toHaveBeenLastCalledWith(
-      expect.objectContaining({ walletId: 'reopened-software' }),
-      expect.objectContaining({ sweepAll: true }),
-    );
-    expect(mockedWalletService.commitTransaction).not.toHaveBeenCalled();
-  });
-
-  it('counts down normal approvals and discards them at the native deadline without automatic preparation', async () => {
-    mockedWalletService.prepareTransaction.mockResolvedValueOnce(prepared());
-    await selectAllAndPrepare();
-    await ReactTestRenderer.act(async () => { jest.advanceTimersByTime(1_000); });
-    expect(texts('send-approval-countdown')).toContain('Approval expires in 119s');
-    await ReactTestRenderer.act(async () => { jest.advanceTimersByTime(119_000); });
-    expect(tree!.root.findByProps({ accessibilityLabel: 'Prepare again' })).toBeDefined();
+    await ReactTestRenderer.act(async () => { jest.advanceTimersByTime(125_000); });
     expect(tree!.root.findAllByProps({ testID: 'send-approval-countdown' })).toHaveLength(0);
-    expect(mockedWalletService.prepareTransaction).toHaveBeenCalledTimes(1);
-    expect(mockedWalletService.commitTransaction).not.toHaveBeenCalled();
+    expect(tree!.root.findByProps({ accessibilityLabel: 'Send Now' })).toBeDefined();
+    expect(mockedWalletService.prepareSendPlan).toHaveBeenCalledTimes(1);
+    expect(mockedWalletService.commitSendPlan).not.toHaveBeenCalled();
   });
 
-  it('returns to explicit preparation when a queued native commit rejects an expired approval', async () => {
-    mockedWalletService.prepareTransaction.mockResolvedValueOnce(prepared());
+  it('retains an unknown native result and offers status checks without a blind resend', async () => {
+    mockedWalletService.prepareSendPlan.mockResolvedValueOnce(prepared());
     let rejectCommit!: (error: Error) => void;
-    mockedWalletService.commitTransaction.mockReturnValueOnce(new Promise((_resolve, reject) => { rejectCommit = reject; }));
+    mockedWalletService.commitSendPlan.mockReturnValueOnce(new Promise((_resolve, reject) => { rejectCommit = reject; }));
     await selectAllAndPrepare();
     const confirm = tree!.root.findByProps({ accessibilityLabel: 'Send Now' }).props.onPress;
     let submission: Promise<void> | undefined;
     await ReactTestRenderer.act(async () => { submission = confirm(); confirm(); });
-    expect(mockedWalletService.commitTransaction).toHaveBeenCalledTimes(1);
+    expect(mockedWalletService.commitSendPlan).toHaveBeenCalledTimes(1);
     await ReactTestRenderer.act(async () => { jest.advanceTimersByTime(125_000); });
-    // A timer must not claim that an in-flight native commit was cancelled.
     expect(tree!.root.findByProps({ accessibilityLabel: 'Send Now' }).props.disabled).toBe(true);
-    await ReactTestRenderer.act(async () => {
-      rejectCommit(Object.assign(new Error('Transaction approval is missing, expired, or already used. Prepare it again.'), {
-        code: 'monero_wallet_android_transaction_approval_missing',
-      }));
-      await submission;
-    });
-    expect(tree!.root.findByProps({ accessibilityLabel: 'Prepare again' }).props.disabled).toBe(false);
+    await ReactTestRenderer.act(async () => { rejectCommit(new Error('Status unavailable')); await submission; });
     expect(tree!.root.findAllByProps({ accessibilityLabel: 'Send Now' })).toHaveLength(0);
-    expect(mockedWalletService.prepareTransaction).toHaveBeenCalledTimes(1);
-    expect(mockedWalletService.commitTransaction).toHaveBeenCalledTimes(1);
+    expect(tree!.root.findByProps({ testID: 'send-plan-refresh' })).toBeDefined();
+    expect(tree!.root.findAllByProps({ testID: 'send-plan-discard' })).toHaveLength(0);
+    expect(mockedWalletService.prepareSendPlan).toHaveBeenCalledTimes(1);
+    expect(mockedWalletService.commitSendPlan).toHaveBeenCalledTimes(1);
   });
 
   it('clears preparation progress and busy state after a native preparation error', async () => {
-    mockedWalletService.prepareTransaction.mockRejectedValueOnce(new Error('Native preparation failed'));
+    mockedWalletService.prepareSendPlan.mockRejectedValueOnce(new Error('Native preparation failed'));
     await selectAllAndPrepare();
     expect(tree!.root.findAllByProps({ testID: 'send-preparation-progress' })).toHaveLength(0);
     expect(tree!.root.findByProps({ accessibilityLabel: 'Send XMR' }).props.disabled).toBe(false);
-    expect(mockedWalletService.commitTransaction).not.toHaveBeenCalled();
+    expect(mockedWalletService.commitSendPlan).not.toHaveBeenCalled();
+  });
+
+  it.each(['Fee denied on device.', 'Transaction denied on device.'])(
+    'treats the intentional Ledger preparation rejection %s as a status notice',
+    async denial => {
+      mockedWalletService.prepareSendPlan.mockRejectedValueOnce(new Error(`unexpected error: ${denial}`));
+      await selectAllAndPrepare();
+      const notice = tree!.root.findByProps({testID: 'send-status-message'});
+      expect(notice.props.children).toBe('send.preparationCancelledLedger');
+      expect(StyleSheet.flatten(notice.props.style).color).not.toBe(colors.error);
+      expect(tree!.root.findAllByType(Text).some(node => node.props.children === denial)).toBe(false);
+      expect(tree!.root.findByProps({accessibilityLabel: 'Send XMR'}).props.disabled).toBe(false);
+      expect(mockedWalletService.commitSendPlan).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    ['RPC error: get_output_distribution', 'send.preparationNodeFailed'],
+    ['Ledger output binding failed at index 25', 'send.preparationLedgerVerificationFailed'],
+    ['Native error at /private/wallet/path', 'send.preparationUnknownFailed'],
+  ])('shows a safe preparation explanation for %s', async (nativeError, key) => {
+    mockedWalletService.prepareSendPlan.mockRejectedValueOnce(new Error(nativeError));
+    await selectAllAndPrepare();
+    const content = tree!.root.findAllByType(Text).map(node => node.props.children);
+    expect(content).toContain(key);
+    expect(content).not.toContain(nativeError);
+    expect(content).not.toContain('send.preparationCancelledLedger');
+    expect(mockedWalletService.commitSendPlan).not.toHaveBeenCalled();
   });
 });

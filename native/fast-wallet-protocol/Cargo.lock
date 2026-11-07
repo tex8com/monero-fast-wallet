@@ -285,9 +285,9 @@ dependencies = [
 
 [[package]]
 name = "ctutils"
-version = "0.4.2"
+version = "0.4.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7d5515a3834141de9eafb9717ad39eea8247b5674e6066c404e8c4b365d2a29e"
+checksum = "12218662ccac37d9714f2191252553d67585b97df8c839cbe49e0bde278dc865"
 dependencies = [
  "cmov",
 ]
@@ -513,6 +513,7 @@ dependencies = [
  "hex",
  "hpke",
  "libc",
+ "mfw-product-core",
  "mfw-recipient-protocol",
  "monero-address",
  "rayon",
@@ -885,6 +886,19 @@ dependencies = [
  "byteorder",
  "keccak",
  "rand_core 0.6.4",
+ "zeroize",
+]
+
+[[package]]
+name = "mfw-product-core"
+version = "0.1.0"
+dependencies = [
+ "argon2",
+ "getrandom 0.2.17",
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
  "zeroize",
 ]
 

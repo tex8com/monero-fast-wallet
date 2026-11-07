@@ -17,6 +17,38 @@ function snapshot(overrides: Record<string, unknown> = {}) {
 }
 
 describe('presentWalletSync', () => {
+  it('does not count a bootstrap cursor below the native restore boundary as scanned history', () => {
+    const boot = snapshot({walletHeight: 1, daemonHeight: 1,
+      daemonTargetHeight: 1, refreshFromHeight: 1_182_748});
+    const baseline = nextWalletSyncStartHeight(undefined, boot);
+    expect(baseline).toBe(1_182_748);
+    const live = snapshot({walletHeight: 1_183_004, daemonHeight: 3_798_589,
+      daemonTargetHeight: 3_798_589, refreshFromHeight: 1_182_748});
+    const held = nextWalletSyncStartHeight(baseline, live);
+    expect(presentWalletSync(live, {startHeight: held}).scannedBlocks).toBe(256);
+    expect(presentWalletSync(live, {startHeight: held}).progress).toBe(0);
+    expect(nextWalletSyncStartHeight(1, live)).toBe(1_182_748);
+  });
+
+  it('retains advanced cached/session cursors even across a temporary bootstrap snapshot', () => {
+    const live = snapshot({walletHeight: 3_789_205, refreshFromHeight: 1_182_748});
+    const baseline = nextWalletSyncStartHeight(undefined, live);
+    expect(baseline).toBe(3_789_205);
+    expect(nextWalletSyncStartHeight(baseline, {...live, walletHeight: 1,
+      daemonHeight: 1, daemonTargetHeight: 1})).toBe(baseline);
+    expect(nextWalletSyncStartHeight(baseline, {...live, walletHeight: 3_790_029})).toBe(baseline);
+  });
+
+  it('waits through uninitialized 1/1 but preserves a real genesis scan once the target is known', () => {
+    const boot = snapshot({walletHeight: 1, daemonHeight: 1,
+      daemonTargetHeight: 1, refreshFromHeight: 0});
+    expect(nextWalletSyncStartHeight(undefined, boot)).toBeUndefined();
+    expect(nextWalletSyncStartHeight(1, boot)).toBeUndefined();
+    const genesis = {...boot, daemonHeight: 10_000, daemonTargetHeight: 10_000};
+    expect(nextWalletSyncStartHeight(undefined, genesis)).toBe(1);
+    expect(nextWalletSyncStartHeight(1, {...genesis, walletHeight: 2_000})).toBe(1);
+  });
+
   it('measures a reopened wallet from the remaining live range, not its historical restore height', () => {
     const initial = snapshot({
       walletHeight: 3_789_205,

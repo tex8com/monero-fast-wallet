@@ -20,6 +20,7 @@ import Svg, {
 } from 'react-native-svg';
 import { colors, radius } from '../theme/colors';
 import SyncStatusBar from '../components/SyncStatusBar';
+import BalanceAvailability from '../components/BalanceAvailability';
 import TransactionRow, {
   transactionRowKey,
 } from '../components/TransactionRow';
@@ -42,15 +43,15 @@ import {
 import MoneroCoinBg from '../components/MoneroCoinBg';
 import { useLocalAdvertisement } from '../data/advertisements';
 import { v1ReleaseFeatures } from '../../../../packages/wallet-shared/src/v1ReleaseFeatures';
-import { ledgerBalanceIsVerified } from '../../../../packages/wallet-shared/src/walletSync';
+import {
+  ledgerBalanceIsVerified,
+  ledgerBalanceSnapshotForDisplay,
+} from '../../../../packages/wallet-shared/src/walletSync';
 import { useI18n } from '../i18n';
 import { useWalletState } from '../services/WalletState';
 import { logWalletEvent } from '../services/WalletLogger';
 import { useConnectivityState } from '../services/ConnectivityState';
-import {
-  ledgerBalanceNeedsVerification,
-  walletDisplayName,
-} from '../services/WalletRegistry';
+import { walletDisplayName } from '../services/WalletRegistry';
 import {
   atomicXmrToNumber,
   formatAtomicXmr,
@@ -380,62 +381,45 @@ export default function HomeScreen({ navigation }: any) {
   const activeWalletSnapshot = registeredWallet
     ? walletSnapshotMap[registeredWallet.id]
     : snapshot;
-  const activeLedgerNeedsVerification = Boolean(
-    registeredWallet &&
-      ledgerBalanceNeedsVerification(
-        registeredWallet,
-        activeWalletSnapshot?.pendingOutputKeyImageCount,
-        transactions.length,
-      ),
-  );
-
-  const totalBalanceAtomic = toAtomicBigInt(
-    activeWalletSnapshot?.balanceAtomic,
-  );
-  const totalUnlockedAtomic = activeLedgerNeedsVerification
-    ? 0n
-    : toAtomicBigInt(activeWalletSnapshot?.unlockedBalanceAtomic);
-  const lockedAtomic = totalBalanceAtomic - totalUnlockedAtomic;
-  const lockedXmr = formatAtomicXmr(lockedAtomic, {
-    maxFractionDigits: 12,
-    minFractionDigits: 4,
-  });
-  const showLocked = lockedAtomic > 0n;
-  const hasUnverifiedLedgerBalance = activeLedgerNeedsVerification;
+  const ledgerWallet = registeredWallet?.kind === 'hardware' && registeredWallet.role !== 'fast';
+  const companionSnapshot = session?.readOnly &&
+    session.registrationId === registeredWallet?.id &&
+    workingSnapshot?.id === session.walletId
+    ? workingSnapshot : undefined;
+  const balanceSnapshot = ledgerWallet
+    ? ledgerBalanceSnapshotForDisplay(activeWalletSnapshot, companionSnapshot)
+    : activeWalletSnapshot;
+  const showingDetectedLedgerBalance = Boolean(balanceSnapshot && balanceSnapshot !== activeWalletSnapshot);
   const hasProvisionalLedgerBalance = Boolean(
-    registeredWallet?.kind === 'hardware' &&
-      registeredWallet.role !== 'fast' &&
-      activeWalletSnapshot &&
-      !ledgerBalanceIsVerified(
-        activeWalletSnapshot,
-        Boolean(registeredWallet.ledgerKeyImagesVerifiedAt),
-      ),
+    ledgerWallet && balanceSnapshot && (showingDetectedLedgerBalance ||
+      !ledgerBalanceIsVerified(balanceSnapshot, Boolean(registeredWallet.ledgerKeyImagesVerifiedAt))),
   );
-  // A view wallet sees received outputs before Ledger-derived key images tell
-  // it which ones were spent. Showing that intermediate sum as real balance
-  // is financially misleading, so hide it until reconciliation completes.
-  const totalBalanceXmr = hasUnverifiedLedgerBalance
-    ? '—'
-    : formatAtomicXmr(totalBalanceAtomic, {
+  const showingLastVerifiedLedgerBalance = Boolean(
+    ledgerWallet && balanceSnapshot && !hasProvisionalLedgerBalance && walletReadinessPhase !== 'ready',
+  );
+  const balanceLabel = hasProvisionalLedgerBalance
+    ? 'home.provisionalBalance'
+    : showingLastVerifiedLedgerBalance ? 'home.lastVerifiedBalance' : 'home.totalBalance';
+  const totalBalanceAtomic = toAtomicBigInt(balanceSnapshot?.balanceAtomic);
+  const totalBalanceXmr = balanceSnapshot
+    ? formatAtomicXmr(totalBalanceAtomic, {
         maxFractionDigits: 4,
         minFractionDigits: 2,
-      });
+      }) : '—';
   const totalBalanceUsd =
-    !hasUnverifiedLedgerBalance && price > 0
+    balanceSnapshot && price > 0
       ? xmrToUsd(atomicXmrToNumber(totalBalanceAtomic), price)
       : '—';
   useEffect(() => {
     logWalletEvent('HomeScreen', 'balance.displayState', {
-      available: Boolean(activeWalletSnapshot),
-      displayedBalancePositive:
-        !hasUnverifiedLedgerBalance && totalBalanceAtomic > 0n,
+      available: Boolean(balanceSnapshot),
+      displayedBalancePositive: totalBalanceAtomic > 0n,
       workingBalancePositive:
         toAtomicBigInt(workingSnapshot?.balanceAtomic) > 0n,
-      snapshotRevision: Number(activeWalletSnapshot?.snapshotRevision ?? 0),
+      snapshotRevision: Number(balanceSnapshot?.snapshotRevision ?? 0),
     });
   }, [
-    activeWalletSnapshot,
-    hasUnverifiedLedgerBalance,
+    balanceSnapshot,
     totalBalanceAtomic,
     workingSnapshot,
   ]);
@@ -615,7 +599,7 @@ export default function HomeScreen({ navigation }: any) {
 
         {/* Balance Card */}
         <View style={s.balCard}>
-          <Text style={s.balLabel}>{t('home.totalBalance')}</Text>
+          <Text style={s.balLabel}>{t(balanceLabel)}</Text>
           <View style={s.balRow}>
             <Text style={s.balXmr}>
               {registeredWallets.length > 0
@@ -623,26 +607,21 @@ export default function HomeScreen({ navigation }: any) {
                 : t('home.noWallet')}
             </Text>
             <Text style={s.balUsd}>
-              {registeredWallets.length > 0 ? `$${totalBalanceUsd}` : ''}
+              {registeredWallets.length > 0 && totalBalanceUsd !== '—' ? `$${totalBalanceUsd}` : ''}
             </Text>
           </View>
-          {hasProvisionalLedgerBalance && !hasUnverifiedLedgerBalance && (
+          {hasProvisionalLedgerBalance && (
             <View style={s.pendRow}>
               <Text style={s.pendTxt}>
-                {t('home.ledgerBalanceProvisional')}
+                {t(showingDetectedLedgerBalance ? 'home.ledgerAvailabilityProvisional' : 'home.ledgerBalanceProvisional')}
               </Text>
             </View>
           )}
-          {showLocked &&
-            !hasUnverifiedLedgerBalance &&
-            !hasProvisionalLedgerBalance && (
-              <View style={s.pendRow}>
-                <View style={s.pendDot} />
-                <Text style={s.pendTxt}>
-                  {t('home.lockedBalance', { amount: lockedXmr })}
-                </Text>
-              </View>
-            )}
+          {registeredWallets.length > 0 && !showingDetectedLedgerBalance && !showingLastVerifiedLedgerBalance ? <BalanceAvailability
+            snapshot={balanceSnapshot}
+            live={Boolean(hasOpenWallet && snapshot && balanceSnapshot === snapshot)}
+            provisional={hasProvisionalLedgerBalance}
+          /> : null}
           {registeredWallets.length === 0 ? (
             <TouchableOpacity style={s.balOpenButton} onPress={openWalletSetup}>
               <Text style={s.balOpenButtonText}>

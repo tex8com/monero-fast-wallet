@@ -7,7 +7,15 @@ export type WalletSnapshot = {
   primaryAddress: string;
   balanceAtomic: string;
   unlockedBalanceAtomic: string;
+  /** Canonical Core maturity metadata; absent in older native modules. */
+  lockedBalanceAtomic?: string;
+  unlockBlocksRemaining?: number;
+  unlockTimeRemainingSeconds?: number;
+  /** unlocked | blocks | timestamp | mixed | pending | unknown */
+  unlockState?: string;
   walletHeight: number;
+  /** Canonical native restore boundary; optional for older modules. */
+  refreshFromHeight?: number;
   daemonHeight: number;
   daemonTargetHeight: number;
   // Optional during a staged native-core upgrade. Missing means the app uses
@@ -55,6 +63,10 @@ export type NetworkSyncStatus = {
   network: string;
   state: string;
   phase: string;
+  /** Last successful native block-download path; absent on older clients. */
+  blockTransport?: string;
+  /** Fixed native reason; no endpoints, errors or wallet material. */
+  blockTransportReason?: string;
   lastError: string;
   consecutiveFailures: number;
   phaseSequence: number;
@@ -92,6 +104,7 @@ export type NetworkSyncStatus = {
   downloadStartHeight: number;
   downloadedHeight: number;
   chainHeight: number;
+  priorityWalletId?: string;
   priorityWalletHeight: number;
   targetHeight: number;
   transportStarts: number;
@@ -294,6 +307,12 @@ export type WalletSubaddress = {
   balanceAtomic: string;
   address: string;
   label: string;
+};
+
+export type WalletAccount = {
+  accountIndex: number;
+  balanceAtomic: string;
+  unlockedBalanceAtomic: string;
 };
 
 export type PrivatePhoneVerificationChallenge = {
@@ -819,6 +838,9 @@ export interface Spec extends TurboModule {
     accountIndex: number,
   ): Promise<ReadonlyArray<WalletSubaddress>>;
 
+  /** Core-created or discovered accounts, including accounts with no balance. */
+  getAccounts(walletId: string): Promise<ReadonlyArray<WalletAccount>>;
+
   presentRecoverySeed(walletId: string, reason: string): Promise<boolean>;
 
   getBalance(walletId: string, accountIndex: number): Promise<string>;
@@ -853,6 +875,17 @@ export interface Spec extends TurboModule {
     fullSpendOutputScan: boolean,
     nodeOnlyRetry: boolean,
   ): Promise<LedgerKeyImageSyncResult>;
+
+  prepareSendPlan(inputJson: string): Promise<string>;
+
+  /** Native confirmation and fresh authorization keep the claim token off JS. */
+  commitSendPlan(planId: string): Promise<string>;
+
+  sendPlanStatus(planId: string): Promise<string>;
+
+  listSendPlans(): Promise<string>;
+
+  discardSendPlan(planId: string): Promise<void>;
 
   prepareTransaction(
     walletId: string,

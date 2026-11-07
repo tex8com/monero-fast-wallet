@@ -77,7 +77,7 @@ describe('process-wide connectivity lifecycle', () => {
     expect(activity).toContain('ConnectivityForegroundService.start(this)');
   });
 
-  it('keeps Tor native while deriving Sync from the selected wallet', () => {
+  it('keeps Tor native while deriving Sync from the actual shared downloader', () => {
     const state = source('src', 'services', 'ConnectivityState.tsx');
     const topBar = source('src', 'components', 'AppTopBar.tsx');
 
@@ -89,7 +89,8 @@ describe('process-wide connectivity lifecycle', () => {
       "tor: {...current.tor, phase: 'checking', connected: false}",
     );
     expect(topBar).toContain('connectivity.tor');
-    expect(topBar).toContain('walletSnapshotIsSynchronized(snapshot)');
+    expect(topBar).toContain('blockSyncTransportVisual(networkSyncStatus, t)');
+    expect(topBar).not.toContain('walletSnapshotIsSynchronized(snapshot)');
     expect(topBar).not.toContain('connectivity.clearnet');
     expect(topBar).not.toContain('nodeConnectionStatus');
   });

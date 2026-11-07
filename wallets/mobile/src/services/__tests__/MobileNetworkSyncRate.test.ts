@@ -100,7 +100,7 @@ describe('mobile blockchain data rate', () => {
     expect(window.rate).toBe(48);
   });
 
-  it('starts a fresh window after resume and keeps the real native batch rate', () => {
+  it('starts a fresh window after resume without substituting a local batch-read rate', () => {
     let window = updateMobileNetworkSyncRateWindow(
       { samples: [] },
       status(),
@@ -118,8 +118,52 @@ describe('mobile blockchain data rate', () => {
       status({ payloadBytesReceived: 16_100_000 }),
       30_000,
     );
-    expect(window.rate).toBe(32);
+    expect(window.rate).toBeUndefined();
     expect(window.samples).toHaveLength(1);
+    window = updateMobileNetworkSyncRateWindow(window,
+      status({payloadBytesReceived: 16_200_000}), 30_750);
+    expect(window.rate).toBeCloseTo(1.0666667);
+  });
+
+  it('does not seed a live rate from a historical batch and expires after the observed bytes leave the window', () => {
+    let window = updateMobileNetworkSyncRateWindow({samples: []}, status(), 0);
+    expect(window.rate).toBeUndefined();
+    window = updateMobileNetworkSyncRateWindow(window,
+      status({payloadBytesReceived: 16_000_000}), 750);
+    expect(window.rate).toBe(64);
+    for (const observedAt of [1_500, 2_250, 3_000, 3_750]) {
+      window = updateMobileNetworkSyncRateWindow(window,
+        status({payloadBytesReceived: 16_000_000}), observedAt);
+    }
+    expect(window.rate).toBeUndefined();
+    window = updateMobileNetworkSyncRateWindow(window,
+      status({payloadBytesReceived: 16_000_000, state: 'synced'}), 4_500);
+    expect(window.rate).toBeUndefined();
+  });
+
+  it('resets independently for provider, route, counter rewind and timer reversal', () => {
+    const first = updateMobileNetworkSyncRateWindow({samples: []}, status(), 0);
+    const measured = updateMobileNetworkSyncRateWindow(first,
+      status({payloadBytesReceived: 16_000_000}), 750);
+    expect(measured.rate).toBe(64);
+    for (const next of [
+      status({payloadBytesReceived: 17_000_000, providerGeneration: 2}),
+      status({payloadBytesReceived: 17_000_000, network: 'stagenet'}),
+      status({payloadBytesReceived: 17_000_000, blockTransport: 'rpc'}),
+      status({payloadBytesReceived: 1}),
+    ]) {
+      expect(updateMobileNetworkSyncRateWindow(measured, next, 1_500).rate).toBeUndefined();
+    }
+    expect(updateMobileNetworkSyncRateWindow(measured, status(), 500).rate).toBeUndefined();
+    expect(updateMobileNetworkSyncRateWindow(measured, undefined, 1_500).rate).toBeUndefined();
+  });
+
+  it('measures RPC bytes after an explicit route switch instead of retaining an earlier gRPC payload counter', () => {
+    let window = updateMobileNetworkSyncRateWindow({samples: []},
+      status({blockTransport: 'rpc', networkBytesReceived: 1_000_000}), 0);
+    window = updateMobileNetworkSyncRateWindow(window,
+      status({blockTransport: 'rpc', networkBytesReceived: 1_750_000}), 750);
+    expect(window.rate).toBe(8);
   });
 
   it('never formats a small positive measurement as 0.00', () => {

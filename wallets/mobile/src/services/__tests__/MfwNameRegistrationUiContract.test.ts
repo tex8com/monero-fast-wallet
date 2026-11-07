@@ -187,6 +187,14 @@ describe('MFW name registration UI contract', () => {
       /!registeredWallet\s*\|\|[\s\S]{0,80}!v1ReleaseFeatures\.mfwNameRegistration/,
     );
     expect(names).toContain("availability.value.status !== 'available'");
+    expect(names).toContain(
+      'availabilityResult.value.canonicalName !== enteredCanonicalName',
+    );
+    expect(names).toContain('availabilityResult.network !== availabilityNetwork');
+    expect(names).toContain('setAvailabilityRetry(retry => retry + 1)');
+    expect(names).toMatch(
+      /\[\s*name,\s*availabilityNetwork,\s*availabilityRetry,\s*renewingName,\s*updatingName,\s*resolverRevision,\s*\]/,
+    );
     expect(names).toContain("record.ownerAuthority !== 'recovery-required'");
     expect(names).toContain('beginRenewal(record)');
     expect(names).toContain('continueRenewal');
@@ -240,6 +248,11 @@ describe('MFW name registration UI contract', () => {
     expect(names).toContain("currentStage === 'reveal-ready'");
     expect(names).toContain('walletService.cancelLedgerOperation()');
     expect(send).toContain('walletService.cancelLedgerOperation()');
+    for (const screen of [names, send]) {
+      expect(screen).toContain('canCancel={ledgerFlowCancellationAllowed(Platform.OS, ledgerSigningProgress?.phase)}');
+      expect(screen).toContain('ledgerFlowCancellationAllowed(Platform.OS, ledgerSigningProgressRef.current?.phase)');
+      expect(screen).toContain('if (ledgerNativeCancellationSupported(Platform.OS))');
+    }
     expect(androidNative).toContain('LedgerAndroidTransport.cancelActiveExchange()');
   });
 

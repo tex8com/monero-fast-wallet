@@ -15,12 +15,17 @@ import {
 } from '../services/NetworkSyncFailure';
 import { colors, radius } from '../theme/colors';
 import {
+  nextWalletSyncStartHeight,
   presentWalletSync,
   updateWalletSyncEta,
+  walletScanBacklog,
+  walletSyncSampleIsFresh,
+  WALLET_SYNC_SAMPLE_MAX_AGE_MS,
   type WalletReadinessPhase,
   type WalletSyncEtaState,
 } from '../../../../packages/wallet-shared/src/walletSync';
 import {
+  NETWORK_SYNC_RATE_WINDOW_MS,
   displaySyncPercent,
   formatSyncPercent,
   formatWalletDerivationRate,
@@ -32,6 +37,7 @@ import {
   updateMobileNetworkSyncRateWindow,
   type MobileNetworkSyncRateWindow,
 } from '../services/MobileNetworkSyncRate';
+import {blockSyncTransportVisual} from './BlockSyncTransportStatus';
 
 type SyncStatusBarProps = {
   compact?: boolean;
@@ -65,11 +71,10 @@ export default function SyncStatusBar({
   walletName,
 }: SyncStatusBarProps) {
   const { dateLocale, t } = useI18n();
-  const presentationSnapshot = snapshotWithNetworkScanProgress(
-    snapshot,
-    networkStatus,
-  );
-  const presentationStartHeight = syncStartHeight ?? snapshot?.walletHeight;
+  const walletScanStatus = matchingWalletScanStatus(snapshot, networkStatus);
+  const presentationSnapshot = snapshotWithNetworkScanProgress(snapshot, networkStatus);
+  const walletIdentity = snapshot?.id ?? walletName ?? 'wallet';
+  const presentationStartHeight = syncStartHeight ?? nextWalletSyncStartHeight(undefined, snapshot);
   const presentation = presentWalletSync(presentationSnapshot, {
     // A shared downloader may serve wallets with different restore heights.
     // Only the selected wallet's own first snapshot is a valid fallback
@@ -77,27 +82,41 @@ export default function SyncStatusBar({
     startHeight: presentationStartHeight,
   });
   const network = presentNetworkSync(networkStatus);
+  const transportVisual = blockSyncTransportVisual(networkStatus, t);
   const networkRate = useAggregateNetworkRate(networkStatus);
   const walletDerivationRate = walletSyncDerivationsPerSecond(networkStatus);
   const networkFailure = networkSyncFailureCode(networkStatus);
-  const etaSeconds = useSyncEta(presentation, networkStatus);
+  const { etaSeconds, stale: walletScanStale } = useSyncEta(
+    presentation,
+    walletIdentity,
+    snapshot,
+    walletScanStatus && walletScanStatus.priorityWalletHeight >= (snapshot?.walletHeight ?? 0)
+      ? walletScanStatus : snapshot,
+    networkStatus,
+  );
   const connectionElapsedSeconds = useElapsedSeconds(
     Boolean(networkStatus && !network.ready && !network.failed && network.busy),
   );
   const hasSyncError =
     status === 'error' || Boolean(error) || network.failed ||
     readinessPhase === 'recoverable-error';
-  // The live Core snapshot can finish before the matching snapshot/history
-  // publication. Use the same completion gate for text, percentage and LED.
+  const ledgerStatus =
+    readinessPhase === 'waiting-ledger'
+      ? t('sync.waitingLedger')
+      : readinessPhase === 'connecting-ledger'
+      ? t('sync.connectingLedger')
+      : readinessPhase === 'scanning-spend-outputs'
+      ? t('sync.spendOutputsChecking')
+      : readinessPhase === 'retrying-spent-output-node'
+      ? t('sync.spendOutputsNodeRetry')
+      : readinessPhase === 'persisting-wallet'
+      ? t('sync.persistingWallet')
+      : undefined;
+  // An outstanding Ledger check affects balance verification, not scanning.
   const walletConfirmed =
     presentation.coreConfirmed &&
-    (readinessPhase === undefined || readinessPhase === 'ready');
-  const spendOutputPhase =
-    readinessPhase === 'scanning-spend-outputs' ||
-    readinessPhase === 'retrying-spent-output-node';
-  const walletProgress = spendOutputPhase
-    ? undefined
-    : walletConfirmed
+    (readinessPhase === undefined || readinessPhase === 'ready' || ledgerStatus !== undefined);
+  const walletProgress = walletConfirmed
     ? 100
     : presentation.coreConfirmed || presentation.phase === 'finalizing'
     ? undefined
@@ -111,9 +130,11 @@ export default function SyncStatusBar({
     network.downloadedHeight && network.downloadedHeight > 0
       ? network.downloadedHeight
       : network.chainHeight;
-  const blockchainProgress = network.ready
+  const blockchainProgress = network.downloadComplete
     ? 100
     : network.progress ?? 0;
+  const blockchainTransport = network.downloadComplete && transportVisual.transport === 'unknown'
+    ? undefined : transportVisual;
   const blockchainConnected = network.ready || network.connected;
   const torReady = !torStatus || torStatus.connected;
   const torConnecting = Boolean(
@@ -132,18 +153,10 @@ export default function SyncStatusBar({
   const showWalletSync =
     blockchainConnected && walletOpened && network.targetHeight !== undefined;
   const walletDetail =
-    readinessPhase === 'retrying-spent-output-node'
-      ? t('sync.spendOutputsNodeRetry')
-      : readinessPhase === 'scanning-spend-outputs'
-      ? t('sync.spendOutputsChecking')
-      : readinessPhase === 'waiting-ledger'
-      ? t('sync.waitingLedger')
-      : readinessPhase === 'connecting-ledger'
-      ? t('sync.connectingLedger')
-      : readinessPhase === 'persisting-wallet'
-      ? t('sync.persistingWallet')
-      : readinessPhase === 'recovering-session'
+    readinessPhase === 'recovering-session'
       ? t('sync.recoveringSession')
+      : walletScanStale
+      ? t('sync.updatingWalletScan')
       : presentation.coreConfirmed && !walletConfirmed
       ? t('sync.verifyingRecent')
       : resolveDetail(
@@ -155,7 +168,7 @@ export default function SyncStatusBar({
           t,
         );
   const blockchainDetail =
-    network.ready
+    network.downloadComplete
       ? t('sync.synced')
       : resolveNetworkDetail(network.phase, network.failed, networkFailure, t);
   const blockchainExtra =
@@ -163,21 +176,27 @@ export default function SyncStatusBar({
       ? t('sync.retryAttempt', {
           count: networkStatus?.consecutiveFailures ?? 0,
         })
-      : network.phase === 'selecting-provider' ||
-        network.phase === 'initializing-transport'
+      : !network.downloadComplete && (network.phase === 'selecting-provider' ||
+        network.phase === 'initializing-transport')
       ? t('sync.startingConnectionElapsed', {
           seconds: connectionElapsedSeconds,
         })
       : undefined;
-  const walletEta =
-    presentation.phase === 'syncing' ? formatSyncEta(etaSeconds, t) : undefined;
+  const backlog = !walletScanStale && presentation.phase === 'syncing'
+    ? walletScanBacklog(presentation.walletHeight, network.downloadedHeight, network.downloadStartHeight)
+    : undefined;
+  const walletEta = presentation.phase === 'syncing' && !walletScanStale
+    ? [
+        backlog ? t('sync.walletScanBacklog', {count: formatBlockCount(backlog)}) : undefined,
+        etaSeconds || !backlog ? formatSyncEta(etaSeconds, t) : undefined,
+      ].filter(Boolean).join(' · ')
+    : undefined;
   const fullySynced =
     showWalletSync &&
     walletConfirmed &&
-    (networkStatus ? network.ready : true) &&
+    (networkStatus ? network.downloadComplete : true) &&
     torReady &&
     !hasSyncError;
-  const walletIdentity = snapshot?.id ?? walletName ?? 'wallet';
   const [internalExpanded, setInternalExpanded] = React.useState(
     () => !fullySynced,
   );
@@ -205,7 +224,7 @@ export default function SyncStatusBar({
     ? torConnecting ? t('topBar.connectingTor') : t('sync.torUnavailable')
     : fullySynced
     ? t('sync.synced')
-    : networkStatus && !network.ready && !showWalletSync
+    : networkStatus && !network.downloadComplete && !showWalletSync
     ? blockchainDetail
     : !walletConfirmed
     ? walletDetail
@@ -249,7 +268,7 @@ export default function SyncStatusBar({
             numberOfLines={1}
             style={[
               s.compactStatus,
-              fullySynced && s.compactStatusReady,
+              fullySynced && transportVisual.tone === 'success' && s.compactStatusReady,
               hasSyncError && s.compactStatusError,
             ]}
           >
@@ -262,29 +281,37 @@ export default function SyncStatusBar({
                 : !torReady
                 ? t('sync.torUnavailable')
                 : fullySynced
-                ? t('sync.synced')
+                ? [t('sync.synced'), blockchainTransport?.label].filter(Boolean).join('. ')
                 : connected
-                ? compactStatus
+                ? `${compactStatus}. ${transportVisual.label}`
                 : connecting
                 ? t('sync.connectingNode')
                 : t('sync.nodeOffline')
             }
             style={[
               s.statusLed,
-              fullySynced && s.statusLedReady,
-              !connected && !connecting && s.statusLedOffline,
+              fullySynced && transportVisual.tone === 'success' && s.statusLedReady,
+              fullySynced && transportVisual.tone === 'neutral' && {backgroundColor: colors.textMuted},
+              (hasSyncError || (!connected && !connecting)) && s.statusLedOffline,
             ]}
             testID="sync-connection-led"
           />
           <Text style={s.toggleChevron}>{expanded ? '−' : '+'}</Text>
         </Pressable>
       </View>
+      {ledgerStatus ? (
+        <Text style={s.ledgerStatus} testID="ledger-verification-status">
+          {ledgerStatus}
+        </Text>
+      ) : null}
       {expanded ? (
         <View style={s.expandedBody} testID="sync-status-details">
           <SyncProgressRow
             current={blockchainCurrent}
-            detail={blockchainDetail}
-            confirmedComplete={network.ready}
+            detail={blockchainDetail !== compactStatus &&
+              ![t('sync.downloadingAndScanning'), t('sync.synced')].includes(blockchainDetail)
+              ? blockchainDetail : undefined}
+            confirmedComplete={network.downloadComplete}
             extra={blockchainExtra}
             label={t('sync.blockchainData')}
             percent={blockchainProgress}
@@ -296,6 +323,7 @@ export default function SyncStatusBar({
                   })
             }
             target={network.targetHeight}
+            transport={blockchainTransport}
             testID="blockchain-progress"
             variant="blockchain"
           />
@@ -305,18 +333,19 @@ export default function SyncStatusBar({
               <SyncProgressRow
                 current={presentation.walletHeight}
                 confirmedComplete={walletConfirmed}
-                detail={walletDetail}
+                detail={walletDetail !== compactStatus &&
+                  ![t('sync.synced'), t('sync.scanningBlocks'), t('sync.checkingBlocks')].includes(walletDetail)
+                  ? walletDetail : undefined}
                 extra={
                   presentation.phase === 'finalizing'
-                    ? t('sync.coreConfirming')
+                    ? walletDetail === t('sync.verifyingRecent')
+                      ? undefined : t('sync.coreConfirming')
                     : walletEta
                 }
-                label={
-                  spendOutputPhase ? t('sync.spendOutputs') : t('sync.wallet')
-                }
+                label={t('sync.wallet')}
                 percent={walletProgress}
                 rate={
-                  walletDerivationRate === undefined
+                  walletScanStale || walletDerivationRate === undefined
                     ? undefined
                     : t('sync.derivationRate', {
                         rate: formatWalletDerivationRate(
@@ -325,7 +354,7 @@ export default function SyncStatusBar({
                         ),
                       })
                 }
-                target={presentation.targetHeight}
+                target={walletScanStale ? undefined : presentation.targetHeight}
                 testID="wallet-progress"
                 variant="wallet"
               />
@@ -348,16 +377,22 @@ export default function SyncStatusBar({
  * committed cursor for presentation; the shared chain cursor can belong to a
  * different restore range. Persisted wallet state remains Core-owned.
  */
-export function snapshotWithNetworkScanProgress(
+function matchingWalletScanStatus(
   snapshot: WalletSnapshot | undefined,
   networkStatus: NetworkSyncStatus | undefined,
+): NetworkSyncStatus | undefined {
+  return snapshot?.id && networkStatus?.priorityWalletId === snapshot.id &&
+    networkStatus.joinedWallets > 0 && networkStatus.priorityWalletHeight > 0 &&
+    ['fetching-blocks', 'fanout', 'scanning'].includes(networkStatus.state)
+    ? networkStatus : undefined;
+}
+
+export function snapshotWithNetworkScanProgress(
+  snapshot: WalletSnapshot | undefined,
+  status: NetworkSyncStatus | undefined,
 ): WalletSnapshot | undefined {
-  if (
-    !snapshot ||
-    !networkStatus ||
-    networkStatus.joinedWallets < 1 ||
-    !['fetching-blocks', 'fanout', 'scanning'].includes(networkStatus.state)
-  ) {
+  const networkStatus = matchingWalletScanStatus(snapshot, status);
+  if (!snapshot || !networkStatus) {
     return snapshot
       ? {
           ...snapshot,
@@ -405,17 +440,19 @@ function SyncProgressRow({
   rate,
   target,
   testID,
+  transport,
   variant,
 }: {
   confirmedComplete: boolean;
   current?: number;
-  detail: string;
+  detail?: string;
   extra?: string;
   label: string;
   percent?: number;
   rate?: string;
   target?: number;
   testID: string;
+  transport?: ReturnType<typeof blockSyncTransportVisual>;
   variant: 'blockchain' | 'wallet';
 }) {
   const { t } = useI18n();
@@ -430,10 +467,17 @@ function SyncProgressRow({
     <View style={s.progressSection} testID={testID}>
       <View style={s.topRow}>
         <View style={s.titleGroup}>
-          <Text style={s.label}>{label}</Text>
-          <Text style={s.detail} numberOfLines={2}>
+          <View style={s.labelRow}>
+            <Text style={s.label}>{label}</Text>
+            {transport ? <Text
+              accessibilityLabel={`${transport.label}. ${transport.description}`}
+              style={[s.transportBadge, {color: transport.color}]}
+              testID="sync-transport-badge"
+            >{transport.shortLabel}</Text> : null}
+          </View>
+          {detail ? <Text style={s.detail}>
             {detail}
-          </Text>
+          </Text> : null}
         </View>
         <Text style={[s.percent, normalizedPercent === 100 && s.percentReady]}>
           {normalizedPercent === undefined
@@ -456,7 +500,7 @@ function SyncProgressRow({
         <View style={s.metrics}>
           <View style={s.metricsPrimary}>
             {blocksRemaining !== undefined ? (
-              <Text style={s.metric} numberOfLines={1}>
+              <Text style={s.metric}>
                 {t('sync.blocksRemaining', {
                   count: formatBlockCount(blocksRemaining),
                 })}
@@ -502,10 +546,18 @@ function resolveNetworkDetail(
 
 function useSyncEta(
   presentation: ReturnType<typeof presentWalletSync>,
+  walletIdentity: string,
+  snapshot: WalletSnapshot | undefined,
+  observation: WalletSnapshot | NetworkSyncStatus | undefined,
   networkStatus?: NetworkSyncStatus,
 ) {
   const sampleRef = React.useRef<WalletSyncEtaState | undefined>(undefined);
+  const observationRef = React.useRef<{
+    walletIdentity: string;
+    observedAt: WeakMap<WalletSnapshot | NetworkSyncStatus, number>;
+  } | undefined>(undefined);
   const [etaSeconds, setEtaSeconds] = React.useState<number | undefined>();
+  const [stale, setStale] = React.useState(false);
   const etaActive =
     !networkStatus ||
     ['fetching-blocks', 'scanning-wallets', 'waiting-next-batch'].includes(
@@ -513,6 +565,16 @@ function useSyncEta(
     );
 
   React.useEffect(() => {
+    if (observationRef.current?.walletIdentity !== walletIdentity) {
+      observationRef.current = {walletIdentity, observedAt: new WeakMap()};
+      sampleRef.current = undefined;
+    }
+    const now = Date.now();
+    const observations = observationRef.current.observedAt;
+    if (snapshot && !observations.has(snapshot)) observations.set(snapshot, now);
+    if (observation && !observations.has(observation)) {
+      observations.set(observation, now);
+    }
     if (
       presentation.phase !== 'syncing' ||
       presentation.remainingBlocks === undefined ||
@@ -521,13 +583,21 @@ function useSyncEta(
     ) {
       sampleRef.current = undefined;
       setEtaSeconds(undefined);
+      setStale(false);
+      return;
+    }
+
+    const observedAt = observation && observations.get(observation);
+    if (observedAt === undefined || !walletSyncSampleIsFresh(observedAt, now)) {
+      setEtaSeconds(undefined);
+      setStale(true);
       return;
     }
 
     const estimate = updateWalletSyncEta(
       sampleRef.current,
       presentation.remainingBlocks,
-      Date.now(),
+      observedAt,
       {
         active: etaActive,
         providerGeneration: networkStatus?.providerGeneration,
@@ -535,15 +605,24 @@ function useSyncEta(
     );
     sampleRef.current = estimate.state;
     setEtaSeconds(estimate.etaSeconds);
+    setStale(false);
+    const timeout = setTimeout(() => {
+      setEtaSeconds(undefined);
+      setStale(true);
+    }, observedAt + WALLET_SYNC_SAMPLE_MAX_AGE_MS - now);
+    return () => clearTimeout(timeout);
   }, [
     etaActive,
     networkStatus?.providerGeneration,
+    observation,
     presentation.phase,
     presentation.remainingBlocks,
     presentation.scannedBlocks,
+    snapshot,
+    walletIdentity,
   ]);
 
-  return etaSeconds;
+  return {etaSeconds, stale};
 }
 
 function useElapsedSeconds(active: boolean) {
@@ -586,6 +665,14 @@ function useAggregateNetworkRate(status?: NetworkSyncStatus) {
       Date.now(),
     );
     setRate(windowRef.current.rate);
+    const {lastTransferAt, rate: nextRate} = windowRef.current;
+    if (nextRate === undefined || lastTransferAt === undefined) return;
+    // Expire even if the next native status read stalls. This timer never
+    // creates a byte sample or substitutes a historical batch measurement.
+    const timer = setTimeout(() => setRate(undefined), Math.max(
+      0, lastTransferAt + NETWORK_SYNC_RATE_WINDOW_MS - Date.now(),
+    ));
+    return () => clearTimeout(timer);
   }, [status]);
 
   return rate;
@@ -675,7 +762,7 @@ const s = StyleSheet.create({
     borderColor: colors.border,
     backgroundColor: 'rgba(255,255,255,0.045)',
     paddingHorizontal: 11,
-    paddingVertical: 9,
+    paddingVertical: 8,
     marginBottom: 11,
   },
   wrapCompact: {
@@ -692,7 +779,7 @@ const s = StyleSheet.create({
     gap: 12,
   },
   expandedBody: {
-    marginTop: 8,
+    marginTop: 5,
   },
   connectionTitle: {
     flex: 1,
@@ -738,7 +825,7 @@ const s = StyleSheet.create({
   divider: {
     height: StyleSheet.hairlineWidth,
     backgroundColor: colors.border,
-    marginVertical: 10,
+    marginVertical: 6,
   },
   topRow: {
     flexDirection: 'row',
@@ -750,9 +837,23 @@ const s = StyleSheet.create({
     flex: 1,
     minWidth: 0,
   },
+  labelRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    gap: 6,
+  },
+  transportBadge: {
+    fontSize: 10,
+    fontWeight: '800',
+    borderRadius: radius.sm,
+    backgroundColor: 'rgba(255,255,255,0.05)',
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+  },
   label: {
     color: colors.textPrimary,
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: '800',
   },
   detail: {
@@ -766,7 +867,7 @@ const s = StyleSheet.create({
   },
   percent: {
     color: colors.warning,
-    fontSize: 16,
+    fontSize: 14,
     fontWeight: '900',
     minWidth: 52,
     textAlign: 'right',
@@ -805,36 +906,42 @@ const s = StyleSheet.create({
     height: 4,
     borderRadius: radius.full,
     backgroundColor: 'rgba(255,255,255,0.08)',
-    marginTop: 8,
+    marginTop: 5,
     overflow: 'hidden',
   },
   metrics: {
-    marginTop: 8,
-    gap: 2,
+    marginTop: 4,
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    columnGap: 8,
+    rowGap: 2,
   },
   metricsPrimary: {
+    flexGrow: 1,
     flexDirection: 'row',
+    flexWrap: 'wrap',
     alignItems: 'center',
     justifyContent: 'space-between',
     gap: 8,
   },
   metric: {
     color: colors.textMuted,
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: '600',
-    lineHeight: 17,
+    lineHeight: 15,
   },
   metricStrong: {
     color: colors.textSecondary,
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: '800',
-    lineHeight: 17,
+    lineHeight: 15,
   },
   metricExtra: {
     color: colors.textSecondary,
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: '800',
-    lineHeight: 17,
+    lineHeight: 15,
   },
   fill: {
     height: '100%',
@@ -857,6 +964,12 @@ const s = StyleSheet.create({
     fontSize: 12,
     lineHeight: 17,
     marginTop: 8,
+  },
+  ledgerStatus: {
+    color: colors.warning,
+    fontSize: 12,
+    lineHeight: 17,
+    marginTop: 4,
   },
   readyWrap: {
     marginBottom: 14,

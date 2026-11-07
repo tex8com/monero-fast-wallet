@@ -1,4 +1,4 @@
-import manifest from '../../../../config/v1-release-features.json';
+import { mfwResolverOrigins } from '../../../../packages/wallet-shared/src/mfwResolverPreference';
 import {
   requireV1ReleaseFeature,
   v1ReleaseFeatures,
@@ -7,6 +7,7 @@ import type { MoneroNetwork } from './NativeMoneroWallet';
 import { MfwNameResolverQuorum } from './MfwNameResolverClient';
 import { canonicalMfwName } from './MfwNameRegistration';
 import type { MfwNameResolution } from './PrivateRecipientResolution';
+import { loadMfwResolverPreference } from './MfwResolverSettings';
 
 const HEX_32 = /^[0-9a-f]{64}$/;
 
@@ -33,7 +34,7 @@ export interface MfwNameAvailabilityLookup {
 
 /**
  * Checks whether a fresh claim is currently admissible at the configured
- * resolver tip. The development release currently pins one public resolver.
+ * resolver tip.
  */
 export async function inspectMfwNameAvailability(
   input: {
@@ -109,7 +110,7 @@ export async function checkConfiguredMfwNameAvailability(input: {
   network: MoneroNetwork;
 }): Promise<MfwNameAvailability> {
   requireV1ReleaseFeature('mfwNameRegistration');
-  const origins: readonly string[] = manifest.parameters.mfwNameResolverOrigins;
+  const origins = mfwResolverOrigins(await loadMfwResolverPreference());
   if (!v1ReleaseFeatures.mfwNameRegistration || origins.length < 1) {
     throw new Error('MFW name availability is not configured for this release');
   }

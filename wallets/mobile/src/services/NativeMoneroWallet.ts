@@ -1,4 +1,6 @@
 import NativeMoneroWalletTurbo from '../../specs/NativeMoneroWallet';
+import { Platform } from 'react-native';
+import { ledgerNativeCancellationSupported, UnsupportedLedgerCancellationError } from './LedgerCancellation';
 import { parseFastWalletHostingView, type FastWalletHostingView } from '../../../../packages/wallet-shared/src/fastWalletHosting';
 import type {
   AppProtectionStatus,
@@ -22,6 +24,7 @@ import type {
   PrivatePhoneVerificationChallenge,
   PrivatePhoneVerificationResult,
   PreparedTransaction,
+  WalletAccount,
   WalletTransaction,
   WalletSnapshot,
 } from '../../specs/NativeMoneroWallet';
@@ -273,6 +276,7 @@ export type {
   PrivatePhoneVerificationChallenge,
   PrivatePhoneVerificationResult,
   PreparedTransaction,
+  WalletAccount,
   WalletTransaction,
   WalletSnapshot,
 };
@@ -483,6 +487,7 @@ export interface NativeMoneroWalletModule {
     walletId: string,
     accountIndex?: number,
   ): Promise<WalletSubaddress[]>;
+  getAccounts(walletId: string): Promise<WalletAccount[]>;
   presentRecoverySeed(walletId: string, reason: string): Promise<boolean>;
   getBalance(walletId: string, accountIndex?: number): Promise<string>;
   getUnlockedBalance(walletId: string, accountIndex?: number): Promise<string>;
@@ -506,6 +511,11 @@ export interface NativeMoneroWalletModule {
     fullSpendOutputScan: boolean,
     nodeOnlyRetry: boolean,
   ): Promise<LedgerKeyImageSyncResult>;
+  prepareSendPlan(inputJson: string): Promise<string>;
+  commitSendPlan(planId: string): Promise<string>;
+  sendPlanStatus(planId: string): Promise<string>;
+  listSendPlans(): Promise<string>;
+  discardSendPlan(planId: string): Promise<void>;
   prepareTransaction(
     input: PrepareTransactionInput,
   ): Promise<PreparedTransaction>;
@@ -566,7 +576,12 @@ const nativeModule: NativeMoneroWalletModule | undefined = turboModule
       getLedgerTransportStatus: () => turboModule.getLedgerTransportStatus(),
       requestLedgerTransportAccess: () =>
         turboModule.requestLedgerTransportAccess(),
-      cancelLedgerOperation: () => turboModule.cancelLedgerOperation(),
+      cancelLedgerOperation: () => {
+        if (!ledgerNativeCancellationSupported(Platform.OS)) {
+          return Promise.reject(new UnsupportedLedgerCancellationError());
+        }
+        return turboModule.cancelLedgerOperation();
+      },
       beginSystemUiInterruption: (reason, timeoutMs) =>
         turboModule.beginSystemUiInterruption(reason, timeoutMs),
       endSystemUiInterruption: token =>
@@ -926,6 +941,8 @@ const nativeModule: NativeMoneroWalletModule | undefined = turboModule
         turboModule.listSubaddresses(walletId, accountIndex) as Promise<
           WalletSubaddress[]
         >,
+      getAccounts: walletId =>
+        turboModule.getAccounts(walletId) as Promise<WalletAccount[]>,
       presentRecoverySeed: (walletId, reason) =>
         turboModule.presentRecoverySeed(walletId, reason),
       getBalance: (walletId, accountIndex = 0) =>
@@ -962,6 +979,11 @@ const nativeModule: NativeMoneroWalletModule | undefined = turboModule
           fullSpendOutputScan,
           nodeOnlyRetry,
         ),
+      prepareSendPlan: inputJson => turboModule.prepareSendPlan(inputJson),
+      commitSendPlan: planId => turboModule.commitSendPlan(planId),
+      sendPlanStatus: planId => turboModule.sendPlanStatus(planId),
+      listSendPlans: () => turboModule.listSendPlans(),
+      discardSendPlan: planId => turboModule.discardSendPlan(planId),
       prepareTransaction: input =>
         turboModule.prepareTransaction(
           input.walletId,

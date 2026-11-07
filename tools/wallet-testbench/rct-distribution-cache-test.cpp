@@ -65,12 +65,16 @@ bool memory_file::commit() {
   std::lock_guard<std::mutex> lock(disk->mutex); disk->bytes = bytes; ++disk->commits; return true;
 }
 
-enum class fault { none, bad_base, nonmonotonic, truncated, wire_error };
+enum class fault { none, bad_base, nonmonotonic, truncated, wire_error,
+  wrong_genesis, chain_changed, payment, cancelled };
 struct fake_state {
   std::mutex mutex; std::condition_variable cv;
   uint64_t height = 5, full_start = 0, fork_start = UINT64_MAX, branch = 0;
   fault fail = fault::none;
   int created = 0, destroyed = 0, block_fetch = -1;
+  int connect_failures_remaining = 0, transport_failures_remaining = 0;
+  std::vector<std::shared_ptr<cancellation>> factory_tokens;
+  std::vector<std::string> factory_profiles;
   std::vector<std::pair<uint64_t,uint64_t>> requests;
   std::vector<uint64_t> hash_reads;
   std::shared_ptr<latch> fetch_latch;
@@ -84,6 +88,13 @@ struct fake_state {
   }
   void set_fault(fault f) { std::lock_guard<std::mutex> lock(mutex); fail = f; }
   size_t fetch_count() { std::lock_guard<std::mutex> lock(mutex); return requests.size(); }
+  size_t factory_count() { std::lock_guard<std::mutex> lock(mutex); return factory_tokens.size(); }
+  void check_same_retry_identity() {
+    std::lock_guard<std::mutex> lock(mutex);
+    CHECK(factory_tokens.size() == 2 && factory_tokens[0] == factory_tokens[1]);
+    CHECK(factory_tokens[0]->deadline == factory_tokens[1]->deadline);
+    CHECK(factory_profiles.size() == 2 && factory_profiles[0] == profile && factory_profiles[1] == profile);
+  }
   std::pair<uint64_t,uint64_t> last_request() { std::lock_guard<std::mutex> lock(mutex); return requests.back(); }
   void wait_destroyed(int count) {
     std::unique_lock<std::mutex> lock(mutex);
@@ -99,10 +110,15 @@ struct fake_source : source {
   uint64_t height() override { std::lock_guard<std::mutex> lock(state->mutex); return state->height; }
   std::string hash(uint64_t index) override {
     std::lock_guard<std::mutex> lock(state->mutex);
-    CHECK(index < state->height); state->hash_reads.push_back(index); return state->hash_at(index);
+    CHECK(index < state->height); state->hash_reads.push_back(index);
+    if (index == 0 && state->fail == fault::wrong_genesis) return test_digest("other network");
+    if (index != 0 && state->fail == fault::chain_changed &&
+        std::count(state->hash_reads.begin(), state->hash_reads.end(), index) > 1)
+      return test_digest("changed chain anchor");
+    return state->hash_at(index);
   }
   distribution fetch(uint64_t from, uint64_t to) override {
-    distribution result; bool block; fault f;
+    distribution result; bool block, transport_fails; fault f;
     {
       std::lock_guard<std::mutex> lock(state->mutex);
       state->requests.emplace_back(from, to); block = int(state->requests.size()) == state->block_fetch;
@@ -110,28 +126,48 @@ struct fake_source : source {
       result.base = from ? state->count(from - 1) : 0;
       for (uint64_t i = result.start; i <= to; ++i) result.cumulative.push_back(state->count(i));
       f = state->fail;
+      transport_fails = state->transport_failures_remaining > 0;
+      if (transport_fails) --state->transport_failures_remaining;
     }
     // Deliberately ignores cancellation: the service must reject late work itself.
     if (block) state->fetch_latch->block();
+    // The receiver staged some bytes, but no complete response escaped the
+    // source boundary. A retry must not publish this partial candidate.
+    if (transport_fails) throw transport_failure(failure_stage::distribution_read);
+    if (f == fault::payment) throw payment_required();
+    if (f == fault::cancelled) { token->stopped = true; token->check(); }
     if (f == fault::bad_base) ++result.base;
     if (f == fault::nonmonotonic && result.cumulative.size() > 1) result.cumulative.back() = result.cumulative.front() - 1;
     if (f == fault::truncated) result.cumulative.pop_back();
-    if (f == fault::wire_error) return wire_reader(std::string("not an EPEE response")).read(to, true);
+    if (f == fault::wire_error) {
+      try { return wire_reader(std::string("not an EPEE response")).read(to, true); }
+      catch (...) { throw cache_failure(failure_stage::distribution_response); }
+    }
     return result;
   }
 };
 struct fixture {
   std::shared_ptr<fake_state> state = std::make_shared<fake_state>();
   std::shared_ptr<memory_disk> disk = std::make_shared<memory_disk>();
-  std::shared_ptr<service> make() {
+  std::shared_ptr<service> make(ms budget = std::chrono::seconds(3)) {
     auto shared = state;
+    const auto exact_profile = profile;
     return std::make_shared<service>(profile, genesis,
-      [shared](std::shared_ptr<cancellation> token) { return std::unique_ptr<source>(new fake_source(shared, token)); },
-      test_digest, disk->store(), std::chrono::seconds(3));
+      [shared, exact_profile](std::shared_ptr<cancellation> token) {
+        bool fail_connect;
+        {
+          std::lock_guard<std::mutex> lock(shared->mutex);
+          shared->factory_tokens.push_back(token); shared->factory_profiles.push_back(exact_profile);
+          fail_connect = shared->connect_failures_remaining > 0;
+          if (fail_connect) --shared->connect_failures_remaining;
+        }
+        if (fail_connect) throw transport_failure(failure_stage::connect);
+        return std::unique_ptr<source>(new fake_source(shared, token));
+      }, test_digest, disk->store(), budget);
   }
 };
-struct result { bool ok; uint64_t start; std::vector<uint64_t> cumulative; };
-result get(const std::shared_ptr<service>& svc) { result r{false, UINT64_MAX, {}}; r.ok = svc->get(r.start, r.cumulative); return r; }
+struct result { bool ok; uint64_t start; std::vector<uint64_t> cumulative; failure_stage stage; };
+result get(const std::shared_ptr<service>& svc) { result r{false, UINT64_MAX, {}, failure_stage::none}; r.ok = svc->get(r.start, r.cumulative, &r.stage); return r; }
 template<class Fn> void rejects(Fn fn) { bool threw = false; try { fn(); } catch (const std::exception&) { threw = true; } CHECK(threw); }
 
 void full_ram_disk() {
@@ -223,6 +259,108 @@ void cancel_staged_restart() {
   CHECK(get(svc).cumulative == fresh.cumulative);
 }
 
+// Every new case below is a source-only regression fixture until explicitly
+// built by the test driver. It uses no sockets, real credentials or wallets.
+struct release_on_exit {
+  std::shared_ptr<latch> value;
+  ~release_on_exit() { if (value) value->release(); }
+};
+void connect_retry_keeps_factory_token_and_deadline() {
+  fixture f; f.state->connect_failures_remaining = 1;
+  auto svc = f.make(std::chrono::seconds(180));
+  auto r = get(svc);
+  CHECK(r.ok && r.stage == failure_stage::none);
+  CHECK(f.state->factory_count() == 2 && f.state->fetch_count() == 1);
+  f.state->check_same_retry_identity();
+  CHECK(f.disk->commit_count() == 1);
+}
+void partial_body_retry_publishes_only_complete_result() {
+  fixture f; f.state->transport_failures_remaining = 1;
+  f.state->block_fetch = 2; f.state->fetch_latch = std::make_shared<latch>();
+  auto svc = f.make(std::chrono::seconds(180));
+  auto pending = std::async(std::launch::async, [svc] { return get(svc); });
+  release_on_exit release{f.state->fetch_latch};
+  f.state->fetch_latch->wait_entered();
+  CHECK(f.state->factory_count() == 2 && f.state->fetch_count() == 2);
+  f.state->check_same_retry_identity();
+  CHECK(f.disk->read().empty() && f.disk->commit_count() == 0);
+  f.state->fetch_latch->release();
+  const auto r = pending.get();
+  CHECK(r.ok && r.cumulative == std::vector<uint64_t>({100,110,120,130,140}));
+  CHECK(f.disk->commit_count() == 1);
+}
+void second_transport_failure_keeps_its_stage() {
+  fixture f; f.state->connect_failures_remaining = 1; f.state->transport_failures_remaining = 1;
+  auto r = get(f.make(std::chrono::seconds(180)));
+  CHECK(!r.ok && r.stage == failure_stage::distribution_read);
+  CHECK(std::string(failure_stage_code(r.stage)) == "distribution-read");
+  CHECK(f.state->factory_count() == 2 && f.state->fetch_count() == 1);
+  f.state->check_same_retry_identity();
+  CHECK(f.disk->read().empty() && f.disk->commit_count() == 0);
+
+  fixture connect; connect.state->connect_failures_remaining = 3;
+  r = get(connect.make(std::chrono::seconds(180)));
+  CHECK(!r.ok && r.stage == failure_stage::connect);
+  CHECK(connect.state->factory_count() == 2 && connect.state->fetch_count() == 0);
+}
+void no_retry_when_original_budget_cannot_cover_connect() {
+  for (const bool connect_fault : {true, false}) {
+    fixture f;
+    if (connect_fault) f.state->connect_failures_remaining = 1;
+    else f.state->transport_failures_remaining = 1;
+    // No real wait is needed: less than one new 30-second connection
+    // allowance remains in this job from the beginning of the fixture.
+    const auto r = get(f.make(std::chrono::seconds(29)));
+    CHECK(!r.ok && r.stage == (connect_fault ? failure_stage::connect : failure_stage::distribution_read));
+    CHECK(f.state->factory_count() == 1 && f.disk->commit_count() == 0);
+  }
+}
+void validation_payment_and_cancel_never_retry() {
+  const std::vector<std::pair<fault, failure_stage>> cases = {
+    {fault::bad_base, failure_stage::distribution_response},
+    {fault::nonmonotonic, failure_stage::distribution_response},
+    {fault::truncated, failure_stage::distribution_response},
+    {fault::wire_error, failure_stage::distribution_response},
+    {fault::wrong_genesis, failure_stage::network_validation},
+    {fault::chain_changed, failure_stage::chain_validation},
+    {fault::payment, failure_stage::payment_required},
+    {fault::cancelled, failure_stage::cancelled},
+  };
+  for (const auto& scenario : cases) {
+    fixture f; f.state->set_fault(scenario.first);
+    auto svc = f.make(std::chrono::seconds(180));
+    const auto r = get(svc);
+    CHECK(!r.ok && r.stage == scenario.second);
+    CHECK(f.state->factory_count() == 1);
+    CHECK(f.disk->read().empty() && f.disk->commit_count() == 0);
+    if (scenario.first == fault::payment) {
+      CHECK(svc->requires_payment());
+      CHECK(!get(svc).ok && f.state->factory_count() == 1);
+    }
+  }
+}
+void cancellation_during_retry_cannot_publish_late() {
+  fixture f; f.state->transport_failures_remaining = 1;
+  f.state->block_fetch = 2; f.state->fetch_latch = std::make_shared<latch>();
+  auto svc = f.make(std::chrono::seconds(180));
+  auto old = std::async(std::launch::async, [svc] { return get(svc); });
+  release_on_exit release{f.state->fetch_latch};
+  f.state->fetch_latch->wait_entered();
+  CHECK(f.state->factory_count() == 2 && f.disk->commit_count() == 0);
+  svc->cancel();
+  CHECK(old.wait_for(ms(500)) == std::future_status::ready);
+  const auto cancelled = old.get();
+  CHECK(!cancelled.ok && cancelled.stage == failure_stage::cancelled);
+  f.state->change(7,1,1);
+  const auto fresh = get(svc);
+  CHECK(fresh.ok && fresh.cumulative.back() == 1160);
+  const auto saved = f.disk->read();
+  CHECK(f.disk->commit_count() == 1);
+  f.state->fetch_latch->release(); f.state->wait_destroyed(3);
+  CHECK(f.state->factory_count() == 3);
+  CHECK(f.disk->read() == saved && f.disk->commit_count() == 1);
+}
+
 void little(std::string& bytes,uint64_t value,size_t width) { for (size_t i=0;i<width;++i) bytes.push_back(char(value>>(8*i))); }
 void portable_count(std::string& bytes,uint64_t value) {
   const size_t width = value < 64 ? 1 : value < 16384 ? 2 : value < 1073741824 ? 4 : 8;
@@ -269,7 +407,13 @@ int main() {
     {"base/monotonic/count/wire failures preserve disk",failures_preserve_disk},
     {"truncated/oversized/corrupt disk rejected",invalid_disk}, {"prefetch + parallel get share full",prefetch_parallel},
     {"cancel fetch is immediate and restart wins",cancel_fetch_restart},
-    {"cancel staging prevents old disk publication",cancel_staged_restart}, {"bounded EPEE formats and failures",wire_formats_and_errors}
+    {"cancel staging prevents old disk publication",cancel_staged_restart}, {"bounded EPEE formats and failures",wire_formats_and_errors},
+    {"one connect retry retains factory/token/deadline",connect_retry_keeps_factory_token_and_deadline},
+    {"partial body retry publishes only complete data",partial_body_retry_publishes_only_complete_result},
+    {"failed second attempt preserves its failure stage",second_transport_failure_keeps_its_stage},
+    {"under-30s remaining budget never begins retry connect",no_retry_when_original_budget_cannot_cover_connect},
+    {"validation/payment/cancel faults never retry",validation_payment_and_cancel_never_retry},
+    {"cancelled retry cannot publish over fresh result",cancellation_during_retry_cannot_publish_late}
   };
   int failed=0;
   for(const auto& test:tests) { try {test.second(); std::cout<<"PASS "<<test.first<<std::endl;} catch(const std::exception& e) {++failed;std::cerr<<"FAIL "<<test.first<<": "<<e.what()<<std::endl;} }

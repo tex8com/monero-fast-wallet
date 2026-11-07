@@ -44,6 +44,16 @@ cp \
   "${mobile_build_root}/mfw-recipient-protocol/"
 cp -R "${repo_root}/native/mfw-recipient-protocol/src" \
   "${mobile_build_root}/mfw-recipient-protocol/"
+# Product Core is embedded in the same Rust archive as the protocol/crypto
+# ABIs. Copy source/schema inputs only, never an existing target cache.
+mkdir -p "${mobile_build_root}/product-core"
+cp "${repo_root}/native/product-core/Cargo.toml" \
+  "${repo_root}/native/product-core/Cargo.lock" \
+  "${mobile_build_root}/product-core/"
+cp -R "${repo_root}/native/product-core/src" \
+  "${repo_root}/native/product-core/schema" \
+  "${repo_root}/native/product-core/generated" \
+  "${mobile_build_root}/product-core/"
 cargo --config "$(wallet_cpu_cargo_config)" metadata \
   --manifest-path "${mobile_build_source}/Cargo.toml" \
   --features mobile-fast-crypto \

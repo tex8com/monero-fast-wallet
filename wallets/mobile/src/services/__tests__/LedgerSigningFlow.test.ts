@@ -341,6 +341,76 @@ describe('LedgerSigningFlow', () => {
     expect(readSnapshot).toHaveBeenCalledTimes(2);
   });
 
+  it('compares a re-adopted signing cache with the corrected companion spend state', async () => {
+    const staleReference = walletSnapshot();
+    const correctedReference = walletSnapshot({
+      balanceAtomic: '600',
+      unlockedBalanceAtomic: '500',
+      spendBalanceAtomic: '600',
+      spendUnlockedBalanceAtomic: '500',
+    });
+    const readSnapshot = jest.fn(async () => correctedReference);
+    const rebuild = jest.fn(async () => correctedReference);
+
+    await expect(
+      waitForLedgerSigningSpendReadyWithSingleRebuild({
+        referenceSnapshot: staleReference,
+        readSnapshot,
+        rebuild,
+        retryDelayMs: 0,
+      }),
+    ).resolves.toMatchObject({
+      spendBalanceAtomic: '600',
+      spendUnlockedBalanceAtomic: '500',
+    });
+    expect(rebuild).toHaveBeenCalledTimes(1);
+    expect(readSnapshot).toHaveBeenCalledTimes(2);
+    expect(staleReference.spendBalanceAtomic).toBe('900');
+  });
+
+  it('still rejects a signing balance that differs from the refreshed companion', async () => {
+    const correctedReference = walletSnapshot({
+      spendBalanceAtomic: '600',
+      spendUnlockedBalanceAtomic: '500',
+    });
+    const rebuild = jest.fn(async () => correctedReference);
+
+    await expect(
+      waitForLedgerSigningSpendReadyWithSingleRebuild({
+        referenceSnapshot: walletSnapshot(),
+        readSnapshot: async () => walletSnapshot({
+          spendBalanceAtomic: '100',
+          spendUnlockedBalanceAtomic: '100',
+        }),
+        rebuild,
+        retryDelayMs: 0,
+      }),
+    ).rejects.toThrow('spend state does not match');
+    expect(rebuild).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not accept a refreshed reference after cancellation during re-adoption', async () => {
+    let cancelled = false;
+    const readSnapshot = jest.fn(async () => walletSnapshot({
+      spendBalanceAtomic: '600',
+      spendUnlockedBalanceAtomic: '500',
+    }));
+
+    await expect(
+      waitForLedgerSigningSpendReadyWithSingleRebuild({
+        referenceSnapshot: walletSnapshot(),
+        readSnapshot,
+        rebuild: async () => {
+          cancelled = true;
+          return walletSnapshot();
+        },
+        control: { isCancelled: () => cancelled },
+        retryDelayMs: 0,
+      }),
+    ).rejects.toMatchObject({ name: 'LedgerSigningCancelledError' });
+    expect(readSnapshot).toHaveBeenCalledTimes(1);
+  });
+
   it('keeps aligning newer scan heights instead of rebuilding from different-height balances', async () => {
     const height101 = walletSnapshot({
       walletHeight: 101,

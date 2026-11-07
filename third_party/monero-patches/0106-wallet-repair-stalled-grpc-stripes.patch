@@ -1,0 +1,645 @@
+From 69c81341b9d6079f3ab54dd8734807b9c57cb707 Mon Sep 17 00:00:00 2001
+From: TEX8 Monero Patch Integrator <monero-patches@tex8.local>
+Date: Fri, 06 Nov 2026 16:50:05 -0500
+Subject: [PATCH] wallet: repair stalled gRPC stripes without resetting healthy lanes
+
+A stalled historical stripe blocks ordered delivery while the other lanes
+hold already-downloaded blocks. Repair the exact remaining stripe on one
+replacement stream, and resume that lane at its next original boundary.
+Keep the original chunk deadline, a repair cooldown and the existing
+near-tip, locator and fallback rules.
+
+Start synchronous gRPC readers on their cancellable receive threads. Do
+not tear down healthy lanes based on an adaptive sample from a repair.
+
+---
+ src/wallet/grpc_stream/CMakeLists.txt              |  20 +++
+ src/wallet/grpc_stream/grpc_block_range_pool.cpp   | 122 +++++++++++---
+ src/wallet/grpc_stream/grpc_block_range_pool.h     |   2 +
+ .../grpc_stream/grpc_block_stream_client.cpp       |  40 +++--
+ src/wallet/grpc_stream/grpc_block_stream_client.h  |   4 +-
+ src/wallet/grpc_stream/test_lane_repair.cpp        | 181 +++++++++++++++++++++
+ src/wallet/wallet2.cpp                             |  25 ++-
+ 7 files changed, 352 insertions(+), 42 deletions(-)
+
+diff --git a/src/wallet/grpc_stream/CMakeLists.txt b/src/wallet/grpc_stream/CMakeLists.txt
+index 90d048f04b35bbafa5306f764df10ae12baa1f87..6afe6d6682eba1d3f4e645a7d647562f788d6aa3 100644
+--- a/src/wallet/grpc_stream/CMakeLists.txt
++++ b/src/wallet/grpc_stream/CMakeLists.txt
+@@ -127,6 +127,26 @@ endif()
+ 
+ # Optional standalone test tool — validates the client against a live cuprated
+ # gRPC server without pulling in the full wallet translation unit. Default OFF.
++if(BUILD_TESTS)
++    add_executable(cuprate_grpc_lane_repair_tests test_lane_repair.cpp)
++    set_target_properties(cuprate_grpc_lane_repair_tests PROPERTIES
++        CXX_STANDARD 17
++        CXX_STANDARD_REQUIRED ON
++    )
++    target_include_directories(cuprate_grpc_lane_repair_tests PRIVATE
++        ${PROTO_OUT_DIR}
++        ${GRPCPP_INCLUDE_DIRS}
++        ${GRPC_INCLUDE_DIRS}
++        ${PROTOBUF_INCLUDE_DIRS}
++    )
++    target_link_libraries(cuprate_grpc_lane_repair_tests PRIVATE cuprate_grpc_stream)
++    if(APPLE)
++        target_link_libraries(cuprate_grpc_lane_repair_tests PRIVATE "-framework CoreFoundation")
++    endif()
++    add_test(NAME cuprate_grpc_lane_repair COMMAND cuprate_grpc_lane_repair_tests)
++    set_tests_properties(cuprate_grpc_lane_repair PROPERTIES TIMEOUT 35)
++endif()
++
+ option(BUILD_GRPC_STREAM_TESTS "Build cuprate_grpc_stream_test smoke binary" OFF)
+ if(BUILD_GRPC_STREAM_TESTS)
+     add_executable(cuprate_grpc_stream_test test_client.cpp)
+diff --git a/src/wallet/grpc_stream/grpc_block_range_pool.cpp b/src/wallet/grpc_stream/grpc_block_range_pool.cpp
+index 9c109942555b981ae12d052878b2213dd2a36b9b..dfe0677293c7bb1328c4c2dcca339933fcb5f810 100644
+--- a/src/wallet/grpc_stream/grpc_block_range_pool.cpp
++++ b/src/wallet/grpc_stream/grpc_block_range_pool.cpp
+@@ -37,6 +37,9 @@ constexpr size_t kSharedCacheMaxEntries = 128;
+ constexpr size_t kSharedCacheMaxBytes = 96 * 1024 * 1024;
+ constexpr uint64_t kStableDepth = 64;
+ constexpr auto kSharedCacheTtl = std::chrono::minutes(2);
++constexpr uint32_t kLaneRepairWaitMs = 2500;
++constexpr uint32_t kLaneRepairChunkBlocks = 64;
++constexpr auto kLaneRepairCooldown = std::chrono::seconds(20);
+ 
+ struct cached_chunk {
+     std::string payload;
+@@ -336,6 +339,7 @@ uint64_t canonical_first_stop(uint64_t start, uint64_t requested_stop,
+ struct cuprate_grpc_block_range_pool::impl {
+     struct lane_slot {
+         std::unique_ptr<cuprate_grpc_stream_client> client;
++        bool recovering_stripe = false;
+     };
+     struct slot {
+         std::shared_ptr<shared_range> range;
+@@ -356,6 +360,8 @@ struct cuprate_grpc_block_range_pool::impl {
+     bool lane_mode = false, lane_fallback_attempted = false;
+     bool warmup_complete = false, ended_ok = false;
+     uint64_t lane_chunks_consumed = 0;
++    bool last_chunk_recovered = false;
++    std::chrono::steady_clock::time_point next_lane_repair_at{};
+     int error_code = 0;
+     uint64_t last_start = 0, last_seq = 0, last_tip = 0;
+     uint32_t last_blocks = 0, last_payload_bytes = 0;
+@@ -406,26 +412,36 @@ void close_lane_slots(cuprate_grpc_block_range_pool::impl& p) {
+     p.lane_slots.clear();
+ }
+ 
++bool open_persistent_lane(cuprate_grpc_block_range_pool::impl& p,
++    size_t index, uint64_t start, bool resumed) {
++    auto client = std::make_unique<cuprate_grpc_stream_client>();
++    const std::string request_id = p.request_id + "-lane" + std::to_string(index)
++        + (resumed ? "-resume-" + std::to_string(start) : "");
++    // The new start is this lane's next original stripe boundary. Index zero
++    // under that new origin gives it exactly the same future stripes.
++    if (!client->connect(p.target, index)
++            || !client->open_stream(start, p.stop_height, true,
++                p.chunk_blocks_hint, request_id,
++                resumed ? std::vector<std::string>{} : p.locator,
++                kPerLaneQueueCapacity, true, kLaneStripeBlocks,
++                resumed ? 0 : static_cast<uint32_t>(index),
++                static_cast<uint32_t>(p.target_channels))) {
++        p.error_code = client->last_error_code();
++        p.error = client->last_error_message();
++        return false;
++    }
++    p.lane_slots[index].client = std::move(client);
++    return true;
++}
++
+ bool open_lane_slots(cuprate_grpc_block_range_pool::impl& p) {
+     p.lane_slots.clear();
+     p.lane_slots.resize(p.target_channels);
+     for (size_t index = 0; index < p.target_channels; ++index) {
+-        auto client = std::make_unique<cuprate_grpc_stream_client>();
+-        const std::string lane_request_id = p.request_id
+-            + "-lane" + std::to_string(index);
+-        if (!client->connect(p.target, index)
+-                || !client->open_stream(
+-                    p.start_height, p.stop_height, true,
+-                    p.chunk_blocks_hint, lane_request_id, p.locator,
+-                    kPerLaneQueueCapacity, true, kLaneStripeBlocks,
+-                    static_cast<uint32_t>(index),
+-                    static_cast<uint32_t>(p.target_channels))) {
+-            p.error_code = client->last_error_code();
+-            p.error = client->last_error_message();
++        if (!open_persistent_lane(p, index, p.start_height, false)) {
+             close_lane_slots(p);
+             return false;
+         }
+-        p.lane_slots[index].client = std::move(client);
+     }
+     p.lane_mode = true;
+     p.next_expected = p.start_height;
+@@ -456,6 +472,33 @@ bool fallback_to_legacy_pool(cuprate_grpc_block_range_pool::impl& p) {
+     return open_slot(p, 0, true);
+ }
+ 
++bool open_lane_repair(cuprate_grpc_block_range_pool::impl& p,
++    size_t index, uint64_t stripe_stop) {
++    auto& lane = p.lane_slots[index];
++    // Cancel the stalled reader before starting its replacement. Other lanes
++    // keep their queued public data and the global stream count cannot grow.
++    lane.client.reset();
++    auto client = std::make_unique<cuprate_grpc_stream_client>();
++    p.next_lane_repair_at = std::chrono::steady_clock::now() + kLaneRepairCooldown;
++    const std::string request_id = p.request_id + "-repair-"
++        + std::to_string(p.next_expected);
++    if (!client->connect(p.target, index)
++            || !client->open_stream(p.next_expected, stripe_stop, true,
++                std::min(kLaneRepairChunkBlocks, p.chunk_blocks_hint),
++                request_id, {}, kPerLaneQueueCapacity)) {
++        p.error_code = client->last_error_code();
++        p.error = client->last_error_message();
++        return false;
++    }
++    lane.client = std::move(client);
++    lane.recovering_stripe = true;
++    std::fprintf(stderr,
++        "[GRPC pool] REPAIR lane=%zu range=[%llu..%llu] after_wait_ms=%u\n",
++        index, (unsigned long long)p.next_expected,
++        (unsigned long long)stripe_stop, kLaneRepairWaitMs);
++    return true;
++}
++
+ enum class lane_next_result {
+     success,
+     end,
+@@ -480,12 +523,36 @@ lane_next_result next_lane_chunk(cuprate_grpc_block_range_pool::impl& p,
+         return lane_next_result::error;
+     }
+ 
+-    auto& client = *p.lane_slots[lane_index].client;
++    auto& lane = p.lane_slots[lane_index];
++    const uint64_t stripe_start = p.next_expected - relative % kLaneStripeBlocks;
++    const uint64_t stripe_stop = stripe_start + std::min<uint64_t>(
++        p.stop_height - stripe_start, kLaneStripeBlocks - 1);
++    const auto started = std::chrono::steady_clock::now();
++    // Only the exact public-range path may reopen without a reorg locator.
++    // Near the tip, keep the existing clean-end and reorg handling.
++    const bool can_repair = p.target_channels > 1 && p.locator.empty()
++        && !lane.recovering_stripe && p.stop_height - stripe_stop > kStableDepth
++        && timeout_ms > kLaneRepairWaitMs && started >= p.next_lane_repair_at;
+     std::string payload;
+-    if (!client.next_chunk_payload(payload, timeout_ms)) {
++    bool timed_out = false;
++    bool received = lane.client->next_chunk_payload(payload,
++        can_repair ? kLaneRepairWaitMs : timeout_ms, &timed_out);
++    if (!received && timed_out && can_repair) {
++        if (!open_lane_repair(p, lane_index, stripe_stop))
++            return lane_next_result::error;
++        const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
++            started + std::chrono::milliseconds(timeout_ms)
++                - std::chrono::steady_clock::now()).count();
++        if (remaining > 0)
++            received = lane.client->next_chunk_payload(payload,
++                static_cast<uint32_t>(remaining));
++    }
++
++    auto& client = *lane.client;
++    if (!received) {
+         p.error_code = client.last_error_code();
+         p.error = client.last_error_message();
+-        if (p.lane_chunks_consumed == 0
++        if (p.lane_chunks_consumed == 0 && !lane.recovering_stripe
+                 && !p.lane_fallback_attempted
+                 && p.error_code == kGrpcUnimplemented)
+             return lane_next_result::fallback;
+@@ -496,7 +563,8 @@ lane_next_result next_lane_chunk(cuprate_grpc_block_range_pool::impl& p,
+                 p.lane_chunks_consumed == 0
+                 && p.start_height == p.stop_height
+                 && p.next_expected == p.start_height;
+-            if (cursor_above_authenticated_tip || empty_one_height_tip_probe) {
++            if (!lane.recovering_stripe
++                    && (cursor_above_authenticated_tip || empty_one_height_tip_probe)) {
+                 p.ended_ok = true;
+                 p.error_code = 0;
+                 p.error.clear();
+@@ -516,14 +584,10 @@ lane_next_result next_lane_chunk(cuprate_grpc_block_range_pool::impl& p,
+     const uint64_t chunk_start = client.last_chunk_start_height();
+     const uint32_t chunk_blocks = client.last_chunk_n_blocks();
+     const uint32_t payload_bytes = client.last_chunk_payload_bytes();
+-    const uint64_t stripe_start = p.start_height
+-        + stripe_ordinal * static_cast<uint64_t>(kLaneStripeBlocks);
+-    const uint64_t stripe_stop = std::min(p.stop_height,
+-        stripe_start + static_cast<uint64_t>(kLaneStripeBlocks) - 1);
+     const uint64_t chunk_end = chunk_start
+         + static_cast<uint64_t>(chunk_blocks);
+     if (chunk_start != p.next_expected || chunk_blocks == 0
+-            || chunk_end < chunk_start || chunk_end > stripe_stop + 1
++            || chunk_end < chunk_start || chunk_blocks - 1 > stripe_stop - chunk_start
+             || payload_bytes > kLaneMaxChunkBytes
+             || payload.size() > kLaneMaxChunkBytes
+             || payload_bytes != payload.size()) {
+@@ -540,7 +604,15 @@ lane_next_result next_lane_chunk(cuprate_grpc_block_range_pool::impl& p,
+     p.last_server_id = client.last_chunk_server_request_id();
+     p.next_expected = chunk_end;
+     ++p.lane_chunks_consumed;
++    p.last_chunk_recovered = lane.recovering_stripe;
+     out = std::move(payload);
++    if (lane.recovering_stripe && chunk_end > stripe_stop) {
++        lane.client.reset();
++        lane.recovering_stripe = false;
++        const uint64_t stride = kLaneStripeBlocks * p.target_channels;
++        if (p.stop_height - stripe_start >= stride)
++            open_persistent_lane(p, lane_index, stripe_start + stride, true);
++    }
+     std::fprintf(stderr,
+         "[GRPC pool] LANE_CHUNK lane=%zu stripe=%llu start=%llu blocks=%u expected_next=%llu\n",
+         lane_index, (unsigned long long)stripe_ordinal,
+@@ -603,6 +675,7 @@ bool cuprate_grpc_block_range_pool::open(const std::string& target,
+ 
+ bool cuprate_grpc_block_range_pool::next_chunk_payload(std::string& out,
+     uint32_t timeout_ms) {
++    p_->last_chunk_recovered = false;
+     if (!p_->opened) {
+         p_->error_code = -1;
+         p_->error = "pool not open";
+@@ -684,6 +757,11 @@ void cuprate_grpc_block_range_pool::close() {
+     process_range_cache().prune();
+ }
+ bool cuprate_grpc_block_range_pool::stream_ended_ok() const { return p_->ended_ok; }
++bool cuprate_grpc_block_range_pool::last_chunk_recovered() const { return p_->last_chunk_recovered; }
++bool cuprate_grpc_block_range_pool::last_chunk_matches(
++    uint64_t start_height, size_t block_count) const {
++    return start_height == p_->last_start && block_count == p_->last_blocks;
++}
+ int cuprate_grpc_block_range_pool::last_error_code() const { return p_->error_code; }
+ std::string cuprate_grpc_block_range_pool::last_error_message() const { return p_->error; }
+ uint64_t cuprate_grpc_block_range_pool::last_chunk_start_height() const { return p_->last_start; }
+diff --git a/src/wallet/grpc_stream/grpc_block_range_pool.h b/src/wallet/grpc_stream/grpc_block_range_pool.h
+index 2f950ceb393d98291e072bf91f5fac6b80c63569..8c13d1640aff189945a5e3d5a4825c77f0870e9f 100644
+--- a/src/wallet/grpc_stream/grpc_block_range_pool.h
++++ b/src/wallet/grpc_stream/grpc_block_range_pool.h
+@@ -27,6 +27,8 @@ public:
+     bool next_chunk_payload(std::string& out_epee_bytes, uint32_t timeout_ms);
+     void close();
+     bool stream_ended_ok() const;
++    bool last_chunk_recovered() const;
++    bool last_chunk_matches(uint64_t start_height, size_t block_count) const;
+     int last_error_code() const;
+     std::string last_error_message() const;
+     uint64_t last_chunk_start_height() const;
+diff --git a/src/wallet/grpc_stream/grpc_block_stream_client.cpp b/src/wallet/grpc_stream/grpc_block_stream_client.cpp
+index 1513ef4daa6f536b1eb9ca2d64d7b2aeb97c927b..cf2d95fafb1561526b6521c2b883eed177eff92c 100644
+--- a/src/wallet/grpc_stream/grpc_block_stream_client.cpp
++++ b/src/wallet/grpc_stream/grpc_block_stream_client.cpp
+@@ -382,7 +382,6 @@ struct cuprate_grpc_stream_client::impl {
+     std::unique_ptr<cuprate::stream::v1::BlockStream::Stub> stub;
+ 
+     std::unique_ptr<grpc::ClientContext> ctx;
+-    std::unique_ptr<grpc::ClientReader<cuprate::stream::v1::BlockChunk>> reader;
+     std::thread recv_thread;
+ 
+     std::mutex                mu;
+@@ -475,7 +474,7 @@ bool cuprate_grpc_stream_client::open_stream(uint64_t start_height,
+         p_->last_error_message = "open_stream: connect() not called";
+         return false;
+     }
+-    if (p_->reader) {
++    if (p_->recv_thread.joinable()) {
+         p_->last_error_code = -1;
+         p_->last_error_message = "open_stream: stream already open (close first)";
+         return false;
+@@ -515,9 +514,6 @@ bool cuprate_grpc_stream_client::open_stream(uint64_t start_height,
+     req.set_lane_count(lane_count);
+ 
+     p_->ctx = std::make_unique<grpc::ClientContext>();
+-    p_->reader = lane_rpc
+-        ? p_->stub->StreamBlockLane(p_->ctx.get(), req)
+-        : p_->stub->StreamBlocks(p_->ctx.get(), req);
+ 
+     std::fprintf(stderr,
+         "[GRPC client] OPEN rpc=%s client_req_id=%s start=%llu stop=%llu prune=%d chunk_hint=%u queue_capacity=%zu locator_hashes=%zu stripe_span=%u lane_index=%u lane_count=%u\n",
+@@ -533,9 +529,15 @@ bool cuprate_grpc_stream_client::open_stream(uint64_t start_height,
+         lane_index,
+         lane_count);
+ 
+-    p_->recv_thread = std::thread([this]() {
++    // Creating a synchronous gRPC reader can block on sending the first
++    // request. Keep that work on the cancellable receive thread as well, so a
++    // failed lane cannot block opening or repairing the other lanes.
++    p_->recv_thread = std::thread([this, lane_rpc, req = std::move(req)]() {
++        auto reader = lane_rpc
++            ? p_->stub->StreamBlockLane(p_->ctx.get(), req)
++            : p_->stub->StreamBlocks(p_->ctx.get(), req);
+         cuprate::stream::v1::BlockChunk chunk;
+-        while (p_->reader->Read(&chunk)) {
++        while (reader->Read(&chunk)) {
+             const auto t_recv = std::chrono::steady_clock::now();
+             const auto t_interval_start = p_->last_chunk_seen
+                 ? p_->t_last_chunk : p_->t_open;
+@@ -676,7 +678,7 @@ bool cuprate_grpc_stream_client::open_stream(uint64_t start_height,
+         }
+ 
+         // Stream done — call Finish() to get final status.
+-        const grpc::Status status = p_->reader->Finish();
++        const grpc::Status status = reader->Finish();
+         std::lock_guard<std::mutex> lk(p_->mu);
+         p_->done = true;
+         if (status.ok()) {
+@@ -724,14 +726,19 @@ bool cuprate_grpc_stream_client::open_stream(uint64_t start_height,
+     return true;
+ }
+ 
+-bool cuprate_grpc_stream_client::next_chunk_payload(std::string& out_epee_bytes, uint32_t timeout_ms)
++bool cuprate_grpc_stream_client::next_chunk_payload(
++    std::string& out_epee_bytes, uint32_t timeout_ms, bool* timed_out)
+ {
++    if (timed_out)
++        *timed_out = false;
+     std::unique_lock<std::mutex> lk(p_->mu);
+     const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+     if (!p_->cv_not_empty.wait_until(lk, deadline, [this]() {
+         return !p_->queue.empty() || p_->done || p_->cancelled;
+     })) {
+         // Timeout. Don't set last_error — caller may try again.
++        if (timed_out)
++            *timed_out = true;
+         return false;
+     }
+     if (p_->queue.empty()) {
+@@ -773,14 +780,13 @@ void cuprate_grpc_stream_client::close()
+ {
+     {
+         std::lock_guard<std::mutex> lk(p_->mu);
+-        if (!p_->reader && !p_->recv_thread.joinable()) return;
++        if (!p_->recv_thread.joinable()) return;
+         p_->cancelled = true;
+         if (p_->ctx) p_->ctx->TryCancel();
+     }
+     p_->cv_not_empty.notify_all();
+     p_->cv_not_full.notify_all();
+     if (p_->recv_thread.joinable()) p_->recv_thread.join();
+-    p_->reader.reset();
+     p_->ctx.reset();
+     {
+         std::lock_guard<std::mutex> lk(p_->mu);
+@@ -798,8 +804,16 @@ uint32_t    cuprate_grpc_stream_client::last_chunk_n_blocks()          const { r
+ uint32_t    cuprate_grpc_stream_client::last_chunk_payload_bytes()     const { return p_->last_chunk_payload_bytes; }
+ std::string cuprate_grpc_stream_client::last_chunk_server_request_id() const { return p_->last_chunk_server_request_id; }
+ 
+-int         cuprate_grpc_stream_client::last_error_code()    const { return p_->last_error_code; }
+-std::string cuprate_grpc_stream_client::last_error_message() const { return p_->last_error_message; }
++int cuprate_grpc_stream_client::last_error_code() const
++{
++    std::lock_guard<std::mutex> lock(p_->mu);
++    return p_->last_error_code;
++}
++std::string cuprate_grpc_stream_client::last_error_message() const
++{
++    std::lock_guard<std::mutex> lock(p_->mu);
++    return p_->last_error_message;
++}
+ 
+ uint64_t spool_bytes_buffered() { return process_spool().buffered_bytes(); }
+ uint64_t spool_peak_bytes() { return process_spool().peak_bytes(); }
+diff --git a/src/wallet/grpc_stream/grpc_block_stream_client.h b/src/wallet/grpc_stream/grpc_block_stream_client.h
+index 5b15262784e57457ddeb1727a2239df7ca997b1d..c954c3d92cc44b71dfd29e0c5f7113dc7614cc45 100644
+--- a/src/wallet/grpc_stream/grpc_block_stream_client.h
++++ b/src/wallet/grpc_stream/grpc_block_stream_client.h
+@@ -82,7 +82,9 @@ public:
+     //
+     // Diagnostics about the chunk (server_request_id, chunk_seq, n_blocks,
+     // chain_tip, start_height) are exposed via last_chunk_*() accessors.
+-    bool next_chunk_payload(std::string& out_epee_bytes, uint32_t timeout_ms);
++    // If supplied, timed_out reports only the local queue wait deadline.
++    bool next_chunk_payload(std::string& out_epee_bytes, uint32_t timeout_ms,
++                            bool* timed_out = nullptr);
+ 
+     // True iff the stream has terminated cleanly (server reached tip /
+     // stop_height) — distinguishes from "still streaming, just timed out
+diff --git a/src/wallet/grpc_stream/test_lane_repair.cpp b/src/wallet/grpc_stream/test_lane_repair.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..c2d3581adfa3ee9c3303475b64cc950e0b497e36
+--- /dev/null
++++ b/src/wallet/grpc_stream/test_lane_repair.cpp
+@@ -0,0 +1,181 @@
++#include "grpc_block_range_pool.h"
++#include "cuprate_stream.grpc.pb.h"
++
++#include <algorithm>
++#include <atomic>
++#include <chrono>
++#include <cstdint>
++#include <iostream>
++#include <stdexcept>
++#include <string>
++#include <thread>
++
++#include <grpcpp/grpcpp.h>
++
++namespace {
++using cuprate::stream::v1::BlockChunk;
++using cuprate::stream::v1::BlockStream;
++using cuprate::stream::v1::StreamBlocksRequest;
++using cuprate_grpc_stream::cuprate_grpc_block_range_pool;
++using namespace std::chrono_literals;
++
++constexpr uint64_t first_height = 1000;
++constexpr uint64_t last_height = 3500;
++constexpr uint64_t stripe_blocks = 512;
++constexpr uint64_t resumed_height = first_height + stripe_blocks * 2;
++
++void require(bool condition, const char* detail)
++{
++    if (!condition)
++        throw std::runtime_error(detail);
++}
++
++bool write_chunk(grpc::ServerWriter<BlockChunk>& writer, uint64_t start,
++    uint32_t count)
++{
++    BlockChunk chunk;
++    chunk.set_start_height(start);
++    chunk.set_n_blocks(count);
++    chunk.set_chain_tip(last_height + 1);
++    chunk.set_payload(std::string(count, 'b'));
++    chunk.set_payload_bytes(count);
++    return writer.Write(chunk);
++}
++
++class test_service final : public BlockStream::Service {
++public:
++    test_service(bool delay_first_chunk, bool invalid_repair)
++        : delay_first_chunk_(delay_first_chunk), invalid_repair_(invalid_repair)
++    {}
++
++    grpc::Status StreamBlockLane(grpc::ServerContext* context,
++        const StreamBlocksRequest* request,
++        grpc::ServerWriter<BlockChunk>* writer) override
++    {
++        if (request->lane_index() == 0 && request->start_height() == first_height) {
++            ++original_stalled_lane;
++            if (!delay_first_chunk_ && !write_chunk(*writer, first_height, 256))
++                return grpc::Status::OK;
++            while (!context->IsCancelled())
++                std::this_thread::sleep_for(5ms);
++            return grpc::Status::OK;
++        }
++        if (request->start_height() == resumed_height && request->lane_index() == 0)
++            ++resumed_lane;
++        else if (request->start_height() == first_height && request->lane_index() == 1)
++            ++healthy_lane;
++        else
++            return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, "unexpected lane");
++
++        if (request->lane_count() != 2 || request->stripe_span_blocks() != stripe_blocks
++                || request->stop_height() != last_height)
++            return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, "wrong stripe layout");
++        for (uint64_t start = request->start_height()
++                + request->lane_index() * stripe_blocks;
++                start <= last_height; start += 2 * stripe_blocks) {
++            const uint64_t end = std::min(start + stripe_blocks, last_height + 1);
++            if (!write_chunk(*writer, start, static_cast<uint32_t>(end - start)))
++                break;
++        }
++        return grpc::Status::OK;
++    }
++
++    grpc::Status StreamBlocks(grpc::ServerContext*,
++        const StreamBlocksRequest* request, grpc::ServerWriter<BlockChunk>* writer) override
++    {
++        ++repairs;
++        const uint64_t repair_start = first_height + (delay_first_chunk_ ? 0 : 256);
++        if (request->start_height() != repair_start
++                || request->stop_height() != first_height + stripe_blocks - 1
++                || request->chain_locator_size() != 0)
++            return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, "wrong repair range");
++        const uint64_t end = request->stop_height() + 1;
++        for (uint64_t start = repair_start; start < end; start += 64) {
++            if (!write_chunk(*writer, start + (invalid_repair_ ? 1 : 0), 64))
++                break;
++        }
++        return grpc::Status::OK;
++    }
++
++    std::atomic<unsigned> original_stalled_lane{0};
++    std::atomic<unsigned> healthy_lane{0};
++    std::atomic<unsigned> resumed_lane{0};
++    std::atomic<unsigned> repairs{0};
++
++private:
++    const bool delay_first_chunk_;
++    const bool invalid_repair_;
++};
++
++void check_repair(bool delay_first_chunk, bool invalid_repair)
++{
++    test_service service(delay_first_chunk, invalid_repair);
++    grpc::ServerBuilder builder;
++    int port = 0;
++    builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(), &port);
++    builder.RegisterService(&service);
++    auto server = builder.BuildAndStart();
++    require(server && port > 0, "loopback server failed to start");
++
++    cuprate_grpc_block_range_pool pool;
++    require(pool.open("127.0.0.1:" + std::to_string(port),
++        first_height, last_height, 256, 2, "lane-repair-regression", {}),
++        "pool did not open");
++
++    const auto started = std::chrono::steady_clock::now();
++    uint64_t expected = first_height;
++    uint64_t repaired = 0;
++    std::string payload;
++    while (pool.next_chunk_payload(payload, 10000)) {
++        const uint32_t blocks = pool.last_chunk_n_blocks();
++        require(pool.last_chunk_start_height() == expected && blocks > 0,
++            "recovery produced a gap or duplicate");
++        require(payload.size() == blocks, "payload bookkeeping was lost");
++        if (pool.last_chunk_recovered()) {
++            require(pool.last_chunk_matches(expected, blocks),
++                "matching decoded metadata was rejected");
++            require(!pool.last_chunk_matches(expected + 1, blocks)
++                    && !pool.last_chunk_matches(expected, blocks + 1),
++                "mismatched decoded height or block count was accepted");
++            repaired += blocks;
++        }
++        expected += blocks;
++    }
++    const auto elapsed = std::chrono::steady_clock::now() - started;
++    require(elapsed < 8s, "expected lane consumed the original 10-second deadline");
++    require(service.repairs == 1 && service.original_stalled_lane == 1,
++        "the stalled lane did not get exactly one bounded repair");
++    require(service.healthy_lane == 1, "healthy lane was reopened");
++    if (invalid_repair) {
++        require(!pool.stream_ended_ok() && pool.last_error_code() == -1
++                && expected == first_height + 256 && repaired == 0,
++            "malformed replacement data advanced the ordered cursor");
++        require(service.resumed_lane == 0, "invalid data resumed the lane");
++    } else {
++        require(pool.stream_ended_ok() && expected == last_height + 1
++                && repaired == (delay_first_chunk ? stripe_blocks : 256),
++            "the repaired stream did not complete exactly the requested range");
++        require(service.resumed_lane == 1, "the lane did not rejoin its original stripes");
++    }
++    pool.close();
++    require(pool.open("127.0.0.1:" + std::to_string(port),
++        first_height, last_height, 256, 2, "lane-cancellation-regression", {}),
++        "pool did not reopen");
++    // Cancellation must also work before the receive thread creates a reader.
++    pool.close();
++    server->Shutdown();
++}
++} // namespace
++
++int main()
++{
++    try {
++        check_repair(true, false);
++        check_repair(false, false);
++        check_repair(false, true);
++        return 0;
++    } catch (const std::exception& error) {
++        std::cerr << error.what() << '\n';
++        return 1;
++    }
++}
+diff --git a/src/wallet/wallet2.cpp b/src/wallet/wallet2.cpp
+index 63e7de9098bd52360a2fb39b37840864fbdba1a6..8db900ba23f2b215d7f255ff3096c3ea14a76620 100644
+--- a/src/wallet/wallet2.cpp
++++ b/src/wallet/wallet2.cpp
+@@ -3595,12 +3595,19 @@ bool wallet2::try_pull_blocks_grpc(bool first, uint64_t start_height,
+     m_grpc_stream_fallback_to_bin = true;
+     return false;
+   }
+-  if (res.blocks.size() != res.output_indices.size())
++  const bool repaired_chunk = m_grpc_stream_client->last_chunk_recovered();
++  const bool repaired_payload_mismatch = repaired_chunk &&
++    !m_grpc_stream_client->last_chunk_matches(res.start_height, res.blocks.size());
++  if (repaired_payload_mismatch || res.blocks.size() != res.output_indices.size())
+   {
+-    MWARNING("grpc_stream: mismatched blocks (" << res.blocks.size()
+-      << ") and output_indices (" << res.output_indices.size()
+-      << ") -- falling back to bin RPC for this session");
+-    log_grpc_fallback("session", "block_output_index_count_mismatch",
++    if (repaired_payload_mismatch)
++      MWARNING("grpc_stream: repaired payload differs from its ordered chunk");
++    else
++      MWARNING("grpc_stream: mismatched blocks (" << res.blocks.size()
++        << ") and output_indices (" << res.output_indices.size()
++        << ") -- falling back to bin RPC for this session");
++    log_grpc_fallback("session", repaired_payload_mismatch
++      ? "repaired_payload_range_mismatch" : "block_output_index_count_mismatch",
+       "protocol_payload", -1, m_grpc_stream_next_height,
+       static_cast<uint64_t>(m_blockchain.size()), res.current_height,
+       res.start_height, res.blocks.size());
+@@ -3648,7 +3655,13 @@ bool wallet2::try_pull_blocks_grpc(bool first, uint64_t start_height,
+   m_grpc_stream_next_height = chunk_end_exclusive;
+ 
+   bool reopen_with_adaptive_hint = false;
+-  if (!m_grpc_stream_chunk_hint_overridden)
++  if (repaired_chunk)
++  {
++    // A repaired stripe includes the stalled lane's wait, not a useful
++    // chunk-size measurement. Keep the healthy lanes and their queued data.
++    m_grpc_stream_fast_chunk_streak = 0;
++  }
++  else if (!m_grpc_stream_chunk_hint_overridden)
+   {
+     constexpr uint32_t kMinimumAdaptiveChunkHint = 16;
+     constexpr uint32_t kMaximumAdaptiveChunkHint = 256;

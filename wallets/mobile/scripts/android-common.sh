@@ -122,6 +122,11 @@ fast_wallet_protocol_artifact_needs_rebuild() {
     "${REPO_ROOT}/native/mfw-recipient-protocol/Cargo.toml" \
     "${REPO_ROOT}/native/mfw-recipient-protocol/Cargo.lock" \
     "${REPO_ROOT}/native/mfw-recipient-protocol/src" \
+    "${REPO_ROOT}/native/product-core/Cargo.toml" \
+    "${REPO_ROOT}/native/product-core/Cargo.lock" \
+    "${REPO_ROOT}/native/product-core/src" \
+    "${REPO_ROOT}/native/product-core/schema" \
+    "${REPO_ROOT}/native/product-core/generated" \
     "${REPO_ROOT}/native/monero-bridge/scripts/prepare-wallet-crypto-cpu-backend.sh" \
     "${REPO_ROOT}/third_party/curve25519-dalek-wallet-cpu" \
     "${monero_source_dir}/external/monero-fast-crypto/src/lib.rs" \

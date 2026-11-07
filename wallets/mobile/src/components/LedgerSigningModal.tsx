@@ -30,14 +30,20 @@ export default function LedgerSigningModal({
   const cancellationAllowed = canCancel;
   const connected =
     progress.phase === 'synchronizing-wallet' ||
+    progress.phase === 'verifying-wallet' ||
     progress.phase === 'connected' ||
     progress.phase === 'preparing-request' ||
+    progress.phase === 'preparing-transaction' ||
     progress.phase === 'awaiting-confirmation';
   const title = connected
     ? t('ledgerSigning.connectedTitle')
     : t('ledgerSigning.connectTitle');
   const instructions =
-    progress.phase === 'synchronizing-wallet'
+    progress.phase === 'verifying-wallet'
+      ? t('ledgerSigning.verifyingInstructions')
+      : progress.phase === 'preparing-transaction' || progress.phase === 'preparing-request'
+      ? t('ledgerSigning.preparingInstructions')
+      : progress.phase === 'synchronizing-wallet'
       ? t('ledgerSigning.synchronizingInstructions')
       : t('ledgerSigning.instructions');
   const message =
@@ -48,10 +54,14 @@ export default function LedgerSigningModal({
       ? t('ledgerSigning.connecting')
       : progress.phase === 'synchronizing-wallet'
       ? t('ledgerSigning.synchronizingWallet')
+      : progress.phase === 'verifying-wallet'
+      ? t('ledgerSigning.verifyingWallet')
       : progress.phase === 'connected'
       ? t('ledgerSigning.connected')
       : progress.phase === 'preparing-request'
       ? t('ledgerSigning.preparingRequest')
+      : progress.phase === 'preparing-transaction'
+      ? t('ledgerSigning.preparingTransaction')
       : t('ledgerSigning.awaitingConfirmation'));
 
   return (

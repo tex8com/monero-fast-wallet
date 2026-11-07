@@ -9,6 +9,8 @@ export type WalletSyncSource = {
   walletHeight: number | string;
   daemonHeight: number | string;
   daemonTargetHeight: number | string;
+  /** Native restore boundary, distinct from the current cached scan cursor. */
+  refreshFromHeight?: number | string;
   synchronized: boolean;
 };
 
@@ -25,6 +27,22 @@ export function ledgerBalanceIsVerified(
   const pending = Number(snapshot?.pendingOutputKeyImageCount);
   return Boolean(snapshot) && initialVerificationComplete
     && Number.isSafeInteger(pending) && pending === 0;
+}
+
+/** Display-only fallback while the Ledger spend status is still unverified. */
+export function ledgerBalanceSnapshotForDisplay<T extends WalletAuthoritativeSnapshot>(
+  published: T | undefined,
+  working: T | null | undefined,
+): T | undefined {
+  if (published) return published;
+  if (!working?.synchronized) return undefined;
+  const target = Math.max(
+    nonNegativeNumber(working.daemonHeight),
+    nonNegativeNumber(working.daemonTargetHeight),
+  );
+  return target > 0 && nonNegativeNumber(working.walletHeight) >= target
+    ? working
+    : undefined;
 }
 
 export type WalletReadinessPhase =
@@ -104,15 +122,13 @@ export function nextWalletPublication<
     nonNegativeNumber(workingSnapshot.daemonTargetHeight),
   ) <= 0) phase = "block-sync";
   else if (!workingSnapshot.synchronized) phase = "wallet-scan";
-  else if (input.requiresLedgerVerification && !input.ledgerVerified) {
-    phase = "scanning-spend-outputs";
-  } else if (
+  else if (
     input.requiresLedgerVerification &&
-    nonNegativeNumber(workingSnapshot.pendingOutputKeyImageCount ?? 0) > 0
+    (!input.ledgerVerified ||
+      nonNegativeNumber(workingSnapshot.pendingOutputKeyImageCount ?? 0) > 0)
   ) {
-    // Future Ledger outputs remain usable as working scan data but cannot
-    // replace the last state whose spend status was hardware-confirmed.
-    phase = "scanning-spend-outputs";
+    // Only an explicit operation phase may report an active spend-output check.
+    phase = "waiting-ledger";
   } else phase = "ready";
 
   const revision = snapshotRevision(workingSnapshot);
@@ -213,6 +229,26 @@ export type WalletSyncEtaOptions = {
   providerGeneration?: number;
 };
 
+export const WALLET_SYNC_SAMPLE_MAX_AGE_MS = 20_000;
+
+export function walletSyncSampleIsFresh(observedAt: number | undefined, now: number): boolean {
+  return observedAt !== undefined && now >= observedAt
+    && now - observedAt < WALLET_SYNC_SAMPLE_MAX_AGE_MS;
+}
+
+/** Count the downloaded range still ahead of this wallet's own scan cursor. */
+export function walletScanBacklog(
+  walletHeight: number,
+  downloadedHeight: number | undefined,
+  downloadStartHeight: number | undefined,
+): number | undefined {
+  if (walletHeight <= 0 || !Number.isSafeInteger(walletHeight)
+    || downloadedHeight === undefined || !Number.isSafeInteger(downloadedHeight)
+    || downloadStartHeight === undefined || !Number.isSafeInteger(downloadStartHeight)
+    || downloadStartHeight <= 0 || downloadedHeight < downloadStartHeight) return undefined;
+  return Math.max(0, downloadedHeight - Math.max(walletHeight, downloadStartHeight));
+}
+
 function nonNegativeNumber(value: number | string): number {
   const parsed = typeof value === "number" ? value : Number(value);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
@@ -235,8 +271,10 @@ export function syncStartHeightForWallet(
 
 /**
  * Presentation-only baseline for the work remaining in this app session.
- * Capture the first live Core height, not the historical restore point. Keep
- * it across progress polls/retries; rebase after completion or a rewind.
+ * Capture the first initialized Core height. A bootstrap cursor below a known
+ * restore boundary is not scanned work; use that boundary until Core catches
+ * up. Keep advanced cached cursors across polls/retries and heal old bootstrap
+ * baselines without rebasing genuine scans from genesis.
  * This never changes the native scan cursor or the wallet's readiness.
  */
 export function nextWalletSyncStartHeight(
@@ -246,9 +284,22 @@ export function nextWalletSyncStartHeight(
   const prior = nonNegativeNumber(previous ?? 0) || undefined;
   const current = nonNegativeNumber(snapshot?.walletHeight ?? 0);
   if (!current) return prior;
-  return snapshot?.synchronized || prior === undefined
+  const restore = nonNegativeNumber(snapshot?.refreshFromHeight ?? 0);
+  const target = Math.max(
+    nonNegativeNumber(snapshot?.daemonHeight ?? 0),
+    nonNegativeNumber(snapshot?.daemonTargetHeight ?? 0),
+  );
+  if (!snapshot?.synchronized && current <= 1 && target <= 1) {
+    return prior !== undefined && prior > 1 ? prior : restore > 1 ? restore : undefined;
+  }
+  if (restore > 1 && current < restore) {
+    return prior !== undefined && prior >= restore ? prior : restore;
+  }
+  const initializedPrior = prior !== undefined && restore > 1 && prior < restore
+    ? restore : prior;
+  return snapshot?.synchronized || initializedPrior === undefined
     ? current
-    : Math.min(prior, current);
+    : Math.min(initializedPrior, current);
 }
 
 /**
@@ -383,7 +434,9 @@ export function updateWalletSyncEta(
     options.providerGeneration !== undefined &&
     previous.providerGeneration !== options.providerGeneration;
 
-  if (!previous || remainingBlocks > previous.startRemainingBlocks || providerChanged) {
+  if (!previous || remainingBlocks > previous.startRemainingBlocks || providerChanged
+    || observedAt < previous.lastObservedAt
+    || observedAt - previous.lastObservedAt > WALLET_SYNC_SAMPLE_MAX_AGE_MS) {
     return {
       state: {
         startedAt: observedAt,
@@ -398,6 +451,10 @@ export function updateWalletSyncEta(
       },
       etaSeconds: undefined,
     };
+  }
+
+  if (observedAt === previous.lastObservedAt) {
+    return { state: previous, etaSeconds: previous.etaSeconds };
   }
 
   const active = options.active !== false;
@@ -416,6 +473,11 @@ export function updateWalletSyncEta(
   // throughput sample with that phase's elapsed time.
   if (!active) {
     return { state, etaSeconds: state.etaSeconds };
+  }
+
+  if (remainingBlocks >= previous.lastRemainingBlocks &&
+    state.activeElapsedMs - state.lastProgressActiveElapsedMs >= WALLET_SYNC_SAMPLE_MAX_AGE_MS) {
+    return updateWalletSyncEta(undefined, remainingBlocks, observedAt, options);
   }
 
   if (remainingBlocks < previous.lastRemainingBlocks) {
