@@ -70,7 +70,7 @@ reqwest = { version = "0.12", default-features = false, features = ["blocking", 
 zbus = "5.18"
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows = { version = "=0.62.2", features = ["Data_Xml_Dom", "Foundation", "UI_Notifications"] }
+windows = { version = "=0.62.2", features = ["Data_Xml_Dom", "Foundation", "UI_Notifications", "Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Variant", "Win32_UI_Shell", "Win32_UI_Shell_PropertiesSystem", "Win32_UI_WindowsAndMessaging"] }
 arti-client = { version = "0.47", default-features = false, features = ["compression", "native-tls", "onion-service-client", "tokio"] }
 notify-rust = "4.11"
 raw-window-handle = "0.6"
@@ -79,3 +79,7 @@ tor-rtcompat = { version = "0.47", default-features = false, features = ["native
 [[bin]]
 name = "monero-fast-walletd"
 path = "src/bin/monero-fast-walletd.rs"
+
+[patch.crates-io]
+# Retain the Windows 100 ns SystemTime fix required by Arti consensus parsing.
+saturating-time = { path = "../../../third_party/saturating-time" }

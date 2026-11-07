@@ -1,0 +1,29 @@
+{
+  "package": "saturating-time",
+  "version": "0.5.0",
+  "registry": "https://crates.io/crates/saturating-time/0.5.0",
+  "download": "https://static.crates.io/crates/saturating-time/saturating-time-0.5.0.crate",
+  "archiveSha256": "a586db154f85f3faf78398c37b6792d71f99d2253d3277571e14f8a8c6e49a65",
+  "upstreamGitCommit": "ce8bc6e0998bd5a4efdf06dd62dce53c98ea1087",
+  "upstreamGitPath": "crates/saturating-time",
+  "originalFilesSha256": {
+    ".cargo_vcs_info.json": "928bbfcfb3e46fdf9e0553863819a5464907b5590abbd745d65369d1706057c8",
+    ".gitignore": "44c92e3a70ad3307b7056871c2bdb096d8bfa9373f5bf06a79bb6324a20ff2fb",
+    "Cargo.lock": "7914d43c1b9d1fa44bb96581c8384978b488d53fb6aade3fafc4e6794191b4f8",
+    "Cargo.toml": "2c2599c8945f0dac04b8b8e7b3e7b14bfe834314c76acbde48b66c6367b7fd99",
+    "Cargo.toml.orig": "d6e6845753a62ad926e8d301ea3c9ec4ec257f5ae38b7d9bab820219d142f0f1",
+    "README.md": "1ab9989cc5356f4c9c5664d4633c7e7b35f2e349661ac69d5da10a10681a0db5",
+    "src/internal.rs": "1265a0f900ba5012d148ac2d886bbbe3fea058f85eb913c9031f72ce04f083a2",
+    "src/lib.rs": "315a0dca2dc81288963b3fd332ff10cbea327929c5a23ee0c2b666395223cea8"
+  },
+  "licenseFiles": {
+    "LICENSE-MIT": {
+      "source": "https://gitlab.torproject.org/api/v4/projects/tpo%2Fcore%2Farti/repository/files/LICENSE-MIT/raw?ref=ce8bc6e0998bd5a4efdf06dd62dce53c98ea1087",
+      "sha256": "e40081d18f17b6783fcb554ae42f6fa3548988e4d705a3e4541e2ef240293040"
+    },
+    "LICENSE-APACHE": {
+      "source": "https://gitlab.torproject.org/api/v4/projects/tpo%2Fcore%2Farti/repository/files/LICENSE-APACHE/raw?ref=ce8bc6e0998bd5a4efdf06dd62dce53c98ea1087",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    }
+  }
+}
