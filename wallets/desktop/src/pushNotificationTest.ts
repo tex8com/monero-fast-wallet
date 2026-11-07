@@ -13,6 +13,8 @@ export type PushTestStatus = {
   permissionSettingsAvailable?: boolean;
   platform?: 'macos' | 'windows' | 'linux' | 'unknown';
   backgroundAgentStatus?: string | null;
+  backgroundAgentOsStatus?: 'pending' | 'accepted' | 'disabled-for-application' | 'disabled-for-user'
+    | 'disabled-by-policy' | 'registration-error' | 'presentation-error' | null;
 };
 
 export function validPushTestReceipt(value: unknown): value is PushTestReceipt {
@@ -29,6 +31,18 @@ export function validPushTestReceipt(value: unknown): value is PushTestReceipt {
 export function receivedPushTest(status: PushTestStatus): boolean {
   return status.phase === 'received' && validPushTestReceipt(status.receipt)
     && Number.isSafeInteger(status.receivedAt) && Number(status.receivedAt) > 0;
+}
+
+/** Preserve a confirmed receipt only while it still identifies this test. */
+export function mergePushTestStatus(previous: PushTestStatus | null, next: PushTestStatus): PushTestStatus {
+  if (!previous || !receivedPushTest(previous) || previous.receipt?.eventId !== next.receipt?.eventId) return next;
+  if (previous.platform === 'windows' || next.platform === 'windows') {
+    if (previous.platform !== 'windows' || next.platform !== 'windows'
+      || !validPushTestReceipt(next.receipt)
+      || previous.receipt?.scheduledAt !== next.receipt.scheduledAt
+      || previous.receipt?.deliverAfter !== next.receipt.deliverAfter) return next;
+  }
+  return { ...next, phase: 'received', receivedAt: previous.receivedAt };
 }
 
 export function pushTestCanStart(status: PushTestStatus | null, requesting: boolean): boolean {

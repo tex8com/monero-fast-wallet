@@ -1,7 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useI18n } from './i18n';
-import { pushTestCanStart, receivedPushTest, type PushTestStatus } from './pushNotificationTest';
+import { mergePushTestStatus, pushTestCanStart, receivedPushTest, type PushTestStatus } from './pushNotificationTest';
 
 export default function FastWalletTestPushPanel({ onSetupFastWallet, onManageAlerts }: {
   onSetupFastWallet?: () => void;
@@ -20,9 +20,7 @@ export default function FastWalletTestPushPanel({ onSetupFastWallet, onManageAle
   const mounted = useRef(true);
   const statusRead = useRef(0);
   const providerRecoveryError = useRef(false);
-  const applyStatus = (next: PushTestStatus) => setStatus(previous =>
-    previous && receivedPushTest(previous) && previous.receipt?.eventId === next.receipt?.eventId
-      ? { ...next, phase: 'received', receivedAt: previous.receivedAt } : next);
+  const applyStatus = (next: PushTestStatus) => setStatus(previous => mergePushTestStatus(previous, next));
   const refresh = useCallback(async () => {
     const generation = ++statusRead.current;
     try {
@@ -74,16 +72,22 @@ export default function FastWalletTestPushPanel({ onSetupFastWallet, onManageAle
     const timer = window.setTimeout(() => { void refresh(); }, Math.min(delay, 2_147_483_647));
     return () => window.clearTimeout(timer);
   }, [refresh, status?.phase, status?.receipt]);
+  const windowsSettings = status?.platform === 'windows';
   const macosSettings = status?.platform === 'macos'
     || (!status?.platform && status?.permissionSettingsAvailable === true);
+  const notificationSettings = macosSettings || windowsSettings;
+  const permissionRequiredKey = windowsSettings
+    ? 'settings.pushTestWindowsPermissionRequired' : 'settings.pushTestMacPermissionRequired';
   const openSystemSettings = async (target: 'notifications' | 'focus') => {
-    if (inFlight.current || settingsInFlight.current || !macosSettings) return;
+    if (inFlight.current || settingsInFlight.current || !notificationSettings
+      || (target === 'focus' && !macosSettings)) return;
     settingsInFlight.current = true;
     setOpeningSettings(target); setError(null); setExplainSetup(false);
     try {
       await invoke(target === 'focus' ? 'open_focus_settings' : 'open_notification_settings');
     } catch {
-      if (mounted.current) setError(t(target === 'focus' ? 'settings.pushTestOpenFocusSettingsFailed' : 'settings.pushTestOpenSettingsFailed'));
+      if (mounted.current) setError(t(target === 'focus' ? 'settings.pushTestOpenFocusSettingsFailed'
+        : windowsSettings ? 'settings.pushTestOpenWindowsSettingsFailed' : 'settings.pushTestOpenSettingsFailed'));
     } finally {
       settingsInFlight.current = false;
       if (mounted.current) setOpeningSettings(null);
@@ -129,7 +133,7 @@ export default function FastWalletTestPushPanel({ onSetupFastWallet, onManageAle
           : message.includes('push-test-rate-limited') ? t('settings.pushTestRateLimited')
           : message.includes('push-test-agent-required') ? t('settings.pushTestAgentRequired')
           : message.includes('push-test-fast-wallet-required') ? t('settings.pushTestSetupRequired')
-            : message.includes('apns-authorization-denied') ? t('settings.pushTestMacPermissionRequired')
+            : message.includes('apns-authorization-denied') ? t(permissionRequiredKey)
               : providerRecoveryError.current ? t('settings.pushTestProviderRequired')
               : message.includes('push-test-hosting-check-required') ? t('settings.pushTestHostingCheckRequired')
               : message.includes('push-test-unavailable') ? t('settings.pushTestUnavailable') : t('settings.pushTestFailed'));
@@ -140,7 +144,7 @@ export default function FastWalletTestPushPanel({ onSetupFastWallet, onManageAle
     }
   };
   const setup = !status ? t('common.loading')
-    : status.permissionSettingsAvailable === true ? t('settings.pushTestMacPermissionRequired')
+    : status.permissionSettingsAvailable === true ? t(permissionRequiredKey)
     : status.reason === 'assignment-check-required' ? t('settings.pushTestLegacyCheck')
     : status.reason === 'assignment-required' ? t('settings.pushTestSetupRequired')
     : status.reason === 'fast-wallet-required' ? t('settings.pushTestFastWalletRequired')
@@ -151,7 +155,21 @@ export default function FastWalletTestPushPanel({ onSetupFastWallet, onManageAle
             : status.reason === 'ready' ? t('settings.pushTestReady') : t('settings.pushTestProviderRequired');
   const openingLabel = t(openingSettings === 'focus' ? 'settings.pushTestOpeningFocusSettings' : 'settings.pushTestOpeningSettings');
   const requestLabel = t(status?.reason === 'assignment-check-required' ? 'settings.pushTestCheckingSetup' : status?.reason === 'agent-required' ? 'settings.pushTestAgentStarting' : 'settings.pushTestRequesting');
+  const windowsReceived = windowsSettings && status !== null && receivedPushTest(status);
+  const windowsWaiting = windowsSettings && status?.phase === 'scheduled';
+  const windowsOsFeedback = !windowsSettings ? null
+    : status?.backgroundAgentOsStatus === 'pending' ? 'settings.pushWindowsPresentationPending'
+      : status?.backgroundAgentOsStatus === 'accepted' ? 'settings.pushWindowsPresentationAccepted'
+        : status?.backgroundAgentOsStatus === 'disabled-for-application' ? 'settings.pushWindowsDisabledApplication'
+          : status?.backgroundAgentOsStatus === 'disabled-for-user' ? 'settings.pushWindowsDisabledUser'
+            : status?.backgroundAgentOsStatus === 'disabled-by-policy' ? 'settings.pushWindowsDisabledPolicy'
+              : status?.backgroundAgentOsStatus === 'registration-error' ? 'settings.pushWindowsRegistrationError'
+                : status?.backgroundAgentOsStatus === 'presentation-error' ? 'settings.pushWindowsPresentationError' : null;
+  const windowsOsAttention = windowsOsFeedback !== null
+    && status?.backgroundAgentOsStatus !== 'pending' && status?.backgroundAgentOsStatus !== 'accepted';
   const progress = openingSettings ? openingLabel : requesting ? requestLabel
+    : windowsReceived ? t('settings.pushTestReceived')
+    : windowsWaiting ? t('settings.pushTestScheduled')
     : status?.available !== true ? setup
     : status && receivedPushTest(status) ? t('settings.pushTestReceived')
       : status?.phase === 'scheduled' ? t('settings.pushTestScheduled')
@@ -160,22 +178,30 @@ export default function FastWalletTestPushPanel({ onSetupFastWallet, onManageAle
   const busy = requesting || openingSettings !== null || waiting;
   const needsAssignment = status?.reason === 'assignment-required';
   return <section className="settings-section"><header><h3>{t('settings.pushTestTitle')}</h3></header>
-    <article className="settings-panel settings-wallet-actions push-test-panel">
+    <article className={`settings-panel settings-wallet-actions push-test-panel${windowsSettings ? ' push-test-panel-windows' : ''}`}>
       <div><strong>{t('settings.pushTestTitle')}</strong><p>{t('settings.pushTestHint')}</p>
         <p className={`push-test-feedback${explainSetup ? ' is-attention' : ''}`} id="settings-push-test-feedback" aria-live="polite" role="status">
           {error ? `${status && receivedPushTest(status) ? `${t('settings.pushTestReceived')} ` : ''}${error}`
-            : explainSetup ? `${t('settings.pushTestNotStarted')} ${setup}` : progress}
+            : !windowsReceived && !windowsWaiting && explainSetup ? `${t('settings.pushTestNotStarted')} ${setup}` : progress}
         </p>
         {(status?.platform === 'windows' || status?.platform === 'linux') && <p role="status">
-          {t(status.backgroundAgentStatus === 'connected' ? 'settings.pushAgentConnected' : 'settings.pushAgentNotConnected')}
+          {t(status.backgroundAgentStatus === 'connected' ? 'settings.pushAgentConnected'
+            : status.backgroundAgentStatus === 'disabled' ? 'settings.pushAgentDisabled' : 'settings.pushAgentNotConnected')}
+        </p>}
+        {windowsOsFeedback && <p className={`push-test-feedback${windowsOsAttention ? ' is-attention' : ''}`} role="status" aria-live="polite">
+          {t(windowsOsFeedback)}
         </p>}</div>
       <div className="button-row push-test-actions">
         <button className={needsAssignment ? 'primary' : 'secondary'} disabled={busy} aria-busy={busy} aria-describedby="settings-push-test-feedback" onClick={() => void request()} type="button">
           {busy && <span className="mfw-inline-spinner" aria-hidden="true" />}
-          {openingSettings ? openingLabel : requesting ? requestLabel : waiting ? t('settings.pushTestWaiting') : needsAssignment ? t('settings.pushTestRepairSetup') : status?.permissionSettingsAvailable === true ? t('settings.pushTestOpenMacSettings') : t('settings.testPushNotification')}
+          {openingSettings ? openingLabel : requesting ? requestLabel : waiting ? t('settings.pushTestWaiting') : needsAssignment ? t('settings.pushTestRepairSetup') : status?.permissionSettingsAvailable === true ? t(windowsSettings ? 'settings.pushTestOpenWindowsSettings' : 'settings.pushTestOpenMacSettings') : t('settings.testPushNotification')}
         </button>
         {status?.reason === 'fast-wallet-required' && onSetupFastWallet && <button className="primary" ref={setupAction} onClick={onSetupFastWallet} type="button">{t('settings.pushTestSetupFastWallet')}</button>}
         {status && status.reason !== 'fast-wallet-required' && !needsAssignment && onManageAlerts && <button className="primary" ref={setupAction} onClick={onManageAlerts} type="button">{t('settings.pushTestManageAlerts')}</button>}
+        {windowsSettings && <button className="secondary" disabled={requesting || openingSettings !== null} aria-busy={openingSettings === 'notifications'} onClick={() => void openSystemSettings('notifications')} type="button">
+          {openingSettings === 'notifications' && <span className="mfw-inline-spinner" aria-hidden="true" />}
+          {t('settings.pushTestOpenWindowsSettings')}
+        </button>}
       </div>
     </article>
     {macosSettings && <div className="push-banner-help">

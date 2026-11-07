@@ -25,7 +25,15 @@ try {
     $config = Get-Content -LiteralPath $ConfigPath -Raw | ConvertFrom-Json
     [xml]$xml = Export-ScheduledTask -TaskName $taskName -TaskPath '\'
     $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-    if ($xml.Task.RegistrationInfo.Source -ne $source -or $xml.Task.Principals.Principal.UserId -ne $sid -or $xml.Task.Principals.Principal.LogonType -ne 'InteractiveToken' -or $xml.Task.Principals.Principal.RunLevel -ne 'LeastPrivilege') { throw 'Task identity does not match this application and current user.' }
+    $principal = $xml.Task.Principals.Principal
+    # Windows omits default RunLevel=LeastPrivilege when exporting a task.
+    # Verify that default through the typed scheduler property as well.
+    $scheduler = New-Object -ComObject 'Schedule.Service'
+    $scheduler.Connect()
+    $registered = $scheduler.GetFolder('\').GetTask($taskName)
+    $typedRunLevel = $registered.Definition.Principal.RunLevel
+    $xmlLeastPrivilege = !$principal.RunLevel -or $principal.RunLevel -eq 'LeastPrivilege'
+    if ($xml.Task.RegistrationInfo.Source -ne $source -or $principal.UserId -ne $sid -or $principal.LogonType -ne 'InteractiveToken' -or !$xmlLeastPrivilege -or $typedRunLevel -ne 0) { throw 'Task identity does not match this application and current user.' }
     $executable = [string]$xml.Task.Actions.Exec.Command
     $task = Get-ScheduledTask -TaskName $taskName -TaskPath '\'
     $info = Get-ScheduledTaskInfo -TaskName $taskName -TaskPath '\'

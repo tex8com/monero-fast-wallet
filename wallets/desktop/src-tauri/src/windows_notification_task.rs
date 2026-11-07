@@ -87,8 +87,13 @@ pub fn task_xml(sid: &str, executable: &str, config: &str) -> Result<String, &'s
     {
         return Err("Notification task parameters are invalid.");
     }
-    let arguments = xml(&format!("--config {}", quote_argument(config)));
-    let command = xml(executable);
+    // PathBuf::join with a multi-component string can retain '/' on Windows.
+    // Emit one separator convention so the scheduler's export is stable.
+    let arguments = xml(&format!(
+        "--config {}",
+        quote_argument(&config.replace('/', "\\"))
+    ));
+    let command = xml(&executable.replace('/', "\\"));
     let boundary = utc_boundary(
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -169,31 +174,116 @@ pub fn decode_xml_output(bytes: &[u8]) -> Result<String, &'static str> {
     }
     String::from_utf8(bytes.to_vec()).map_err(|_| "Notification task response is invalid.")
 }
-pub fn owned_task(document: &str, sid: &str) -> bool {
+pub fn task_query_not_found(exit_code: Option<i32>) -> bool {
+    // /HRESULT makes this distinction independent of the Windows language.
+    // Access-denied and service failures must never authorize replacement.
+    exit_code.is_some_and(|code| code as u32 == 0x8007_0002)
+}
+fn section<'a>(document: &'a str, tag: &str) -> Option<&'a str> {
+    let start = format!("<{tag}");
+    let (before, after) = document.split_once(&start)?;
+    if before.contains(&start) || !after.starts_with(|c: char| c == '>' || c.is_ascii_whitespace())
+    {
+        return None;
+    }
+    let (_, body) = after.split_once('>')?;
+    let (body, remaining) = body.split_once(&format!("</{tag}>"))?;
+    (!remaining.contains(&start)).then_some(body)
+}
+
+fn text(document: &str, tag: &str) -> Option<String> {
+    let value = section(document, tag)?.trim();
+    if value.contains('<') {
+        return None;
+    }
+    let mut decoded = String::new();
+    let mut rest = value;
+    while let Some((plain, entity)) = rest.split_once('&') {
+        decoded.push_str(plain);
+        let (name, tail) = entity.split_once(';')?;
+        decoded.push(match name {
+            "amp" => '&',
+            "lt" => '<',
+            "gt" => '>',
+            "quot" => '"',
+            "apos" => '\'',
+            _ => return None,
+        });
+        rest = tail;
+    }
+    decoded.push_str(rest);
+    Some(decoded)
+}
+
+pub fn owned_task(document: &str, sid: &str, config: &str) -> bool {
     let Some((_, principal)) = document.split_once("<Principals>") else {
         return false;
     };
     let Some((principal, _)) = principal.split_once("</Principals>") else {
         return false;
     };
+    // Task Scheduler removes default-valued RunLevel when exporting a task.
+    // Its absent value is TASK_RUNLEVEL_LUA (0), not an elevated principal.
+    let least_privilege = if principal.contains("<RunLevel") {
+        text(principal, "RunLevel").as_deref() == Some("LeastPrivilege")
+    } else {
+        true
+    };
+    let Some(actions) = section(document, "Actions") else {
+        return false;
+    };
+    let Some(exec) = section(actions, "Exec") else {
+        return false;
+    };
+    if actions.contains("<ComHandler") {
+        return false;
+    }
+    let Some(command) = text(exec, "Command") else {
+        return false;
+    };
+    let Some(arguments) = text(exec, "Arguments") else {
+        return false;
+    };
+    let config = config.replace('/', "\\");
+    let Some((directory, _)) = config.rsplit_once('\\') else {
+        return false;
+    };
+    let prefix = format!("{directory}\\runtime\\");
+    let command = command.replace('/', "\\");
+    let Some(rest) = command.get(prefix.len()..) else {
+        return false;
+    };
+    let command_owned = command[..prefix.len()].eq_ignore_ascii_case(&prefix)
+        && rest.split_once('\\').is_some_and(|(fingerprint, binary)| {
+            fingerprint.len() == 24
+                && fingerprint.bytes().all(|b| b.is_ascii_hexdigit())
+                && binary.eq_ignore_ascii_case("monero-fast-walletd.exe")
+        });
     valid_sid(sid)
-        && document.contains(&format!("<Source>{TASK_SOURCE}</Source>"))
-        && principal.contains(&format!("<UserId>{sid}</UserId>"))
-        && principal.contains("<LogonType>InteractiveToken</LogonType>")
-        && principal.contains("<RunLevel>LeastPrivilege</RunLevel>")
+        && text(document, "Source").as_deref() == Some(TASK_SOURCE)
+        && text(principal, "UserId").as_deref() == Some(sid)
+        && text(principal, "LogonType").as_deref() == Some("InteractiveToken")
+        && least_privilege
+        && command_owned
+        // Existing app-created tasks can contain mixed separators in their
+        // quoted config path. Only separator equivalence is accepted: the
+        // complete switch, quoting, and exact config path must still match.
+        && arguments
+            .replace('/', "\\")
+            .eq_ignore_ascii_case(&format!("--config {}", quote_argument(&config)))
 }
 #[cfg(test)]
 mod tests {
     use super::*;
     #[test]
     fn interactive_user_restart_without_password_or_elevation() {
-        let body = task_xml(
-            "S-1-5-21-123-456-789-1001",
-            r"C:\Program Files\Wallet\helper.exe",
-            r"C:\Users\Müller\a&b\background-agent.json",
-        )
-        .unwrap();
-        assert!(owned_task(&body, "S-1-5-21-123-456-789-1001"));
+        let config = r"C:\Users\Müller\a&b\background-agent.json";
+        let helper = format!(
+            r"C:\Users\Müller\a&b\runtime\{}\monero-fast-walletd.exe",
+            "a".repeat(24)
+        );
+        let body = task_xml("S-1-5-21-123-456-789-1001", &helper, config).unwrap();
+        assert!(owned_task(&body, "S-1-5-21-123-456-789-1001", config));
         for expected in [
             "<RunLevel>LeastPrivilege</RunLevel>",
             "<Interval>PT1M</Interval>",
@@ -211,14 +301,119 @@ mod tests {
     }
     #[test]
     fn ownership_never_accepts_other_tasks_or_users() {
-        let body = task_xml("S-1-5-21-1001", "helper.exe", "config.json").unwrap();
-        assert!(!owned_task(&body, "S-1-5-21-1002"));
+        let config = r"C:\data\notifications\background-agent.json";
+        let helper = format!(
+            r"C:\data\notifications\runtime\{}\monero-fast-walletd.exe",
+            "a".repeat(24)
+        );
+        let body = task_xml("S-1-5-21-1001", &helper, config).unwrap();
+        assert!(owned_task(&body, "S-1-5-21-1001", config));
+        assert!(!owned_task(&body, "S-1-5-21-1002", config));
         assert!(!owned_task(
             &body.replace(TASK_SOURCE, "other"),
-            "S-1-5-21-1001"
+            "S-1-5-21-1001",
+            config,
         ));
         assert!(task_xml("S-1-5-21-1001<bad>", "x", "y").is_err());
         assert!(task_xml("S-1-5-21-1001", "x\ny", "z").is_err());
+    }
+    #[test]
+    fn task_query_errors_do_not_imply_that_a_task_is_absent() {
+        assert!(task_query_not_found(Some(0x8007_0002_u32 as i32)));
+        assert!(!task_query_not_found(Some(0x8007_0005_u32 as i32)));
+        assert!(!task_query_not_found(Some(0x8007_06BA_u32 as i32)));
+        assert!(!task_query_not_found(Some(1)));
+        assert!(!task_query_not_found(Some(0)));
+        assert!(!task_query_not_found(None));
+    }
+    #[test]
+    fn scheduler_export_omits_default_run_level_without_losing_ownership() {
+        // Real Windows 11 export; user identifiers and paths are synthetic.
+        let exported = include_str!("test-fixtures/windows-notification-task.normalized.xml");
+        let config = r"C:\Users\Example\AppData\Roaming\com.tex8.monerowallet.desktop\notifications\background-agent.json";
+        assert!(!exported.contains("<RunLevel>"));
+        assert!(owned_task(exported, "S-1-5-21-1001", config));
+        let elevated = exported.replace(
+            "</Principal>",
+            "<RunLevel>HighestAvailable</RunLevel></Principal>",
+        );
+        assert!(!owned_task(&elevated, "S-1-5-21-1001", config));
+        assert!(!owned_task(exported, "S-1-5-21-1002", config));
+        assert!(!owned_task(
+            &exported.replace(TASK_SOURCE, "other"),
+            "S-1-5-21-1001",
+            config
+        ));
+    }
+    #[test]
+    fn cli_query_roundtrip_accepts_only_the_same_mixed_separator_config() {
+        // Actual schtasks /Query /XML /HRESULT output from Windows 11,
+        // with identifiers and paths replaced by synthetic values.
+        let exported =
+            include_str!("test-fixtures/windows-notification-task.cli-mixed-separators.xml");
+        let config = r"C:\Users\Example\AppData\Roaming\com.tex8.monerowallet.desktop\notifications/background-agent.json";
+        assert!(exported.contains("notifications/background-agent.json"));
+        assert!(owned_task(exported, "S-1-5-21-1001", config));
+        assert!(owned_task(
+            exported,
+            "S-1-5-21-1001",
+            &config.replace('/', "\\")
+        ));
+        assert!(!owned_task(
+            &exported.replace("background-agent.json\"", "background-agent.json\" --other"),
+            "S-1-5-21-1001",
+            config
+        ));
+        assert!(!owned_task(
+            &exported.replace(
+                "notifications/background-agent.json",
+                "other/background-agent.json"
+            ),
+            "S-1-5-21-1001",
+            config
+        ));
+    }
+    #[test]
+    fn task_creation_canonicalizes_windows_path_separators() {
+        let config = r"C:/data/notifications/background-agent.json";
+        let helper = format!(
+            "C:/data/notifications/runtime/{}/monero-fast-walletd.exe",
+            "b".repeat(24)
+        );
+        let body = task_xml("S-1-5-21-1001", &helper, config).unwrap();
+        assert!(body.contains(r"<Arguments>--config &quot;C:\data\notifications\background-agent.json&quot;</Arguments>"));
+        assert!(body.contains(r"<Command>C:\data\notifications\runtime\bbbbbbbbbbbbbbbbbbbbbbbb\monero-fast-walletd.exe</Command>"));
+        assert!(owned_task(&body, "S-1-5-21-1001", config));
+    }
+    #[test]
+    fn task_ownership_binds_the_single_action_to_private_helper_and_exact_config() {
+        let config = r"C:\data\a&b\background-agent.json";
+        let helper = format!(
+            r"C:\data\a&b\runtime\{}\monero-fast-walletd.exe",
+            "b".repeat(24)
+        );
+        let body = task_xml("S-1-5-21-1001", &helper, config).unwrap();
+        assert!(owned_task(&body, "S-1-5-21-1001", config));
+        assert!(!owned_task(
+            &body,
+            "S-1-5-21-1001",
+            r"C:\other\background-agent.json"
+        ));
+        assert!(!owned_task(
+            &body.replace("monero-fast-walletd.exe", "other.exe"),
+            "S-1-5-21-1001",
+            config
+        ));
+        assert!(!owned_task(
+            &body.replace(&"b".repeat(24), r"..\..\outside"),
+            "S-1-5-21-1001",
+            config
+        ));
+        let extra = body.replace(
+            "</Actions>",
+            "<Exec><Command>other.exe</Command><Arguments>x</Arguments></Exec></Actions>",
+        );
+        assert!(!owned_task(&extra, "S-1-5-21-1001", config));
     }
     #[test]
     fn unicode_task_file_and_query_roundtrip() {
@@ -270,7 +465,7 @@ mod tests {
             "<Principals><Principal id=\"User\"><UserId>S-1-5-21-1001</UserId>",
             "<Principals><Principal id=\"User\"><UserId>S-1-5-21-1002</UserId>",
         );
-        assert!(!owned_task(&other, "S-1-5-21-1001"));
+        assert!(!owned_task(&other, "S-1-5-21-1001", "config.json"));
     }
     #[test]
     fn task_names_are_scoped_to_each_user_in_the_machine_wide_namespace() {

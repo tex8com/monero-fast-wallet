@@ -870,6 +870,10 @@ html[dir="rtl"] textarea { text-align: right; }
 .push-test-panel .push-test-actions > button:not(:disabled):active { transform: translateY(1px) scale(0.98); box-shadow: 0 0 0 3px rgb(250 103 28 / 24%); }
 .push-test-panel .push-test-actions > button:focus { outline: 2px solid #ffb18b; outline-offset: 3px; }
 .push-test-panel .push-test-actions > button:disabled { opacity: 0.7; cursor: wait; }
+.settings-wallet-actions.push-test-panel-windows { grid-template-columns: minmax(0, 1fr); }
+.push-test-panel-windows > div { min-width: 0; }
+.push-test-panel-windows .push-test-actions { justify-content: flex-start; }
+.push-test-panel-windows .push-test-actions > button { max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
 .push-test-panel .push-test-feedback.is-attention { padding: 10px 12px; border: 1px solid #aa633d; border-radius: 9px; background: rgb(250 103 28 / 9%); color: #ffcea8; animation: push-test-attention 350ms ease-out; }
 @keyframes push-test-attention { from { box-shadow: 0 0 0 4px rgb(250 103 28 / 24%); } to { box-shadow: 0 0 0 0 rgb(250 103 28 / 0%); } }
 @media (prefers-reduced-motion: reduce) {

@@ -104,6 +104,7 @@ const SAFE_FIELD_NAMES: &[&str] = &[
     "scheduledAt",
     "deliverAfter",
     "elapsedMs",
+    "exitCode",
     "endpointPresent",
     "event",
     "expired",
@@ -125,6 +126,8 @@ const SAFE_FIELD_NAMES: &[&str] = &[
     "opened",
     "operation",
     "outcome",
+    "outputBytes",
+    "outputFingerprint",
     "ownerCount",
     "phase",
     "preference",
@@ -189,7 +192,9 @@ pub fn start_native_drain(app: AppHandle) {
 
 fn safe_error_code(error: &str) -> &'static str {
     let normalized = error.to_ascii_lowercase();
-    if normalized.contains("apns-authorization-error") {
+    if normalized.contains("notification-agent-") {
+        "notification-agent"
+    } else if normalized.contains("apns-authorization-error") {
         "apns-authorization-error"
     } else if normalized.contains("apns-authorization-denied") {
         "apns-authorization-denied"
@@ -292,6 +297,13 @@ mod tests {
                 .and_then(|value| value.as_str()),
             Some("3")
         );
+    }
+
+    #[test]
+    fn helper_task_failure_is_not_reported_as_a_credential_failure() {
+        let fields = safe_fields(&[("error", "notification-agent-registration-failed: no administrator password is required".to_owned())]);
+        assert_eq!(fields.get("safeErrorCode").and_then(|value| value.as_str()), Some("notification-agent"));
+        assert_eq!(fields.len(), 1);
     }
 
     #[test]

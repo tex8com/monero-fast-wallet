@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import ts from 'typescript';
-import { pushTestCanStart, receivedPushTest, validPushTestReceipt } from '../src/pushNotificationTest.ts';
+import { mergePushTestStatus, pushTestCanStart, receivedPushTest, validPushTestReceipt } from '../src/pushNotificationTest.ts';
 
 const read = path => readFileSync(new URL(path, import.meta.url), 'utf8');
 const receipt = { accepted: true, eventId: `evt_${'a'.repeat(64)}`, scheduledAt: 2_000_000_000, deliverAfter: 2_000_000_010 };
@@ -54,7 +54,7 @@ function mount(invoke, props = {}) {
     const previous = hooks[position];
     if (changed(previous, deps)) effects.push(() => { previous?.cleanup?.(); hooks[position] = { deps, cleanup: effect() }; });
   };
-  const scope = { React, invoke, useState, useRef, useCallback, useEffect, useI18n: () => ({ t }), pushTestCanStart, receivedPushTest, window: {
+  const scope = { React, invoke, useState, useRef, useCallback, useEffect, useI18n: () => ({ t }), mergePushTestStatus, pushTestCanStart, receivedPushTest, window: {
     addEventListener: (name, callback) => { listeners.set(name, callback); },
     removeEventListener: (name, callback) => { if (listeners.get(name) === callback) listeners.delete(name); },
     setTimeout: (callback, delay) => { const id = ++timerId; timers.set(id, { callback, delay }); return id; },
@@ -122,6 +122,101 @@ test('helper health polling notices a connected or stale agent without focus and
   view.unmount();
   // The fixture retains fired timeouts, so the active successor must be removed.
   assert.equal([...view.timers.values()].filter(timer => timer !== poll).length, 0);
+});
+
+test('a confirmed Windows test stays received when its helper or banner later fails', async () => {
+  let current = { ...received, platform: 'windows', backgroundAgentStatus: 'connected', backgroundAgentOsStatus: 'accepted' };
+  const commands = [];
+  const view = mount(async command => { commands.push(command); return current; }, { onManageAlerts: () => {} });
+  view.render(); await tick(); view.render();
+  assert.match(view.markup(), /Test push received by this device/);
+  current = { ...scheduled, available: false, reason: 'agent-required', platform: 'windows', backgroundAgentStatus: 'stale', backgroundAgentOsStatus: 'registration-error' };
+  view.event('mfw-notification-registration-changed'); await tick(); view.render();
+  assert.match(view.markup(), /Test push received by this device/);
+  assert.match(view.markup(), /no recent connection confirmed/);
+  assert.match(view.markup(), /Windows notifications could not be initialized/);
+  assert.doesNotMatch(view.markup(), /Server test scheduled|Test not started/);
+  // A later setup action cannot erase the receipt while the same test remains selected.
+  current = { ...current, reason: 'alerts-required' };
+  view.event('mfw-fast-wallet-alerts-changed'); await tick(); view.render();
+  view.button(t('settings.testPushNotification')).props.onClick(); await tick(); view.render();
+  assert.match(view.markup(), /Test push received by this device/);
+  assert.doesNotMatch(view.markup(), /Test not started/);
+  assert.equal(commands.filter(command => command === 'request_test_push_notification').length, 0);
+  view.unmount();
+});
+
+test('a pending Windows test stays waiting and cannot send twice during an OS or helper failure', async () => {
+  let current = { ...scheduled, platform: 'windows', backgroundAgentStatus: 'connected' };
+  const commands = [];
+  const view = mount(async command => { commands.push(command); return current; });
+  view.render(); await tick(); view.render();
+  current = { ...current, available: false, reason: 'agent-required', backgroundAgentStatus: 'backoff', backgroundAgentOsStatus: 'presentation-error' };
+  view.event('mfw-notification-registration-changed'); await tick(); view.render();
+  assert.match(view.markup(), /Server test scheduled\. Waiting for the notification/);
+  assert.match(view.markup(), /Notification handoff to Windows failed/);
+  assert.match(view.markup(), /no recent connection confirmed/);
+  assert.doesNotMatch(view.markup(), /Test not started|Test push received/);
+  const button = view.button(t('settings.pushTestWaiting'));
+  assert.equal(button.props.disabled, true);
+  button.props.onClick(); await tick(); view.render();
+  assert.equal(commands.filter(command => command === 'request_test_push_notification').length, 0);
+  view.unmount();
+});
+
+test('Windows receipt retention never confirms another test or a modified receipt', async () => {
+  const previous = { ...received, platform: 'windows' };
+  const another = { ...scheduled, platform: 'windows', receipt: { ...receipt, eventId: `evt_${'b'.repeat(64)}` } };
+  assert.equal(mergePushTestStatus(previous, another), another);
+  const changedSchedule = { ...scheduled, platform: 'windows', receipt: { ...receipt, scheduledAt: receipt.scheduledAt + 20, deliverAfter: receipt.deliverAfter + 20 } };
+  assert.equal(mergePushTestStatus(previous, changedSchedule), changedSchedule);
+  const invalid = { ...scheduled, platform: 'windows', receipt: { ...receipt, accepted: false } };
+  assert.equal(mergePushTestStatus(previous, invalid), invalid);
+  const missing = { ...ready, platform: 'windows' };
+  assert.equal(mergePushTestStatus(previous, missing), missing);
+  let current = previous;
+  const view = mount(async () => current);
+  view.render(); await tick(); view.render();
+  current = another;
+  view.event('mfw-notification-received'); await tick(); view.render();
+  assert.doesNotMatch(view.markup(), /Test push received by this device/);
+  assert.ok(view.button(t('settings.pushTestWaiting')).props.disabled);
+  view.unmount();
+});
+
+test('Windows handoff status is independent of network health and is not a visible-banner receipt', async () => {
+  for (const [osStatus, key] of [
+    ['pending', 'settings.pushWindowsPresentationPending'],
+    ['accepted', 'settings.pushWindowsPresentationAccepted'],
+    ['disabled-for-application', 'settings.pushWindowsDisabledApplication'],
+    ['disabled-for-user', 'settings.pushWindowsDisabledUser'],
+    ['disabled-by-policy', 'settings.pushWindowsDisabledPolicy'],
+    ['registration-error', 'settings.pushWindowsRegistrationError'],
+    ['presentation-error', 'settings.pushWindowsPresentationError'],
+  ]) {
+    const view = mount(async () => ({ ...ready, platform: 'windows', backgroundAgentStatus: 'connected', backgroundAgentOsStatus: osStatus }));
+    view.render(); await tick(); view.render();
+    assert.match(view.markup(), /TEX8 background helper: connected/);
+    assert.ok(view.markup().includes(t(key)), osStatus);
+    assert.doesNotMatch(view.markup(), /Test push received by this device|Banner visible|banner shown/);
+    view.unmount();
+  }
+  const unknown = mount(async () => ({ ...ready, platform: 'windows', backgroundAgentStatus: 'connected', backgroundAgentOsStatus: 'PRIVATE_ERROR_TEXT' }));
+  unknown.render(); await tick(); unknown.render();
+  assert.doesNotMatch(unknown.markup(), /PRIVATE_ERROR_TEXT/);
+  unknown.unmount();
+});
+
+test('Windows presentation diagnostics do not change macOS or Linux feedback', async () => {
+  for (const platform of ['macos', 'linux']) {
+    const view = mount(async () => ({ ...received, platform, available: false, reason: 'alerts-required', backgroundAgentOsStatus: 'registration-error' }));
+    view.render(); await tick(); view.render();
+    assert.match(view.markup(), /Enable incoming-payment alerts/);
+    assert.doesNotMatch(view.markup(), /Windows notifications could not be initialized|Notification handed to Windows/);
+    view.unmount();
+  }
+  assert.match(messages.de['settings.pushWindowsRegistrationError'], /Windows-Mitteilungen/);
+  assert.match(messages.de['settings.pushWindowsPresentationAccepted'], /übergeben/);
 });
 
 test('missing prerequisites give immediate visible help without sending a test', async () => {
@@ -198,6 +293,71 @@ test('a confirmed macOS denial opens notification settings directly without sche
   view.button(t('settings.pushTestOpenMacSettings')).props.onClick(); await tick(); view.render();
   assert.deepEqual(commands, ['test_push_notification_status', 'open_notification_settings', 'open_notification_settings']);
   view.unmount();
+});
+
+test('Windows notification settings open through native IPC without a push or macOS guidance', async () => {
+  for (const current of [ready, scheduled, received]) {
+    const response = deferred();
+    const commands = [];
+    const view = mount(command => {
+      commands.push(command);
+      return command === 'open_notification_settings' ? response.promise
+        : Promise.resolve({ ...current, platform: 'windows', permissionSettingsAvailable: false });
+    });
+    view.render(); await tick(); view.render();
+    assert.doesNotMatch(view.markup(), /macOS|screen sharing|Focus settings/);
+    const settings = view.button(t('settings.pushTestOpenWindowsSettings'));
+    assert.ok(settings);
+    assert.equal(settings.props.disabled, false);
+    settings.props.onClick(); settings.props.onClick(); view.render();
+    assert.match(view.markup(), /Opening notification settings/);
+    assert.deepEqual(commands, ['test_push_notification_status', 'open_notification_settings']);
+    response.resolve(); await tick(); view.render();
+    assert.equal(view.button(t('settings.pushTestOpenWindowsSettings')).props.disabled, false);
+    if (current.phase === 'received') assert.match(view.markup(), /Test push received by this device/);
+    if (current.phase === 'scheduled') assert.equal(view.button().props.disabled, true);
+    view.unmount();
+  }
+});
+
+test('confirmed Windows denial forwards the test button to Windows settings', async () => {
+  const commands = [];
+  const view = mount(async command => {
+    commands.push(command);
+    return { ...ready, available: false, reason: 'permission-required', platform: 'windows', permissionSettingsAvailable: true };
+  });
+  view.render(); await tick(); view.render();
+  assert.match(view.markup(), /Notifications are blocked in Windows/);
+  assert.doesNotMatch(view.markup(), /macOS|screen sharing|Focus settings/);
+  view.button().props.onClick(); await tick(); view.render();
+  assert.deepEqual(commands, ['test_push_notification_status', 'open_notification_settings']);
+  view.unmount();
+});
+
+test('Windows settings failure gives the Windows manual route and remains retryable', async () => {
+  const view = mount(async command => {
+    if (command === 'open_notification_settings') throw new Error('settings-open-failed');
+    return { ...ready, platform: 'windows' };
+  });
+  view.render(); await tick(); view.render();
+  view.button(t('settings.pushTestOpenWindowsSettings')).props.onClick(); await tick(); view.render();
+  assert.match(view.markup(), /Windows Settings → System → Notifications/);
+  assert.doesNotMatch(view.markup(), /macOS|screen sharing|Focus settings/);
+  assert.equal(view.button(t('settings.pushTestOpenWindowsSettings')).props.disabled, false);
+  view.unmount();
+});
+
+test('a disabled helper is explained as disabled rather than a failed connection', async () => {
+  for (const platform of ['windows', 'linux']) {
+    const view = mount(async () => ({ ...ready, available: false, reason: 'alerts-required', platform, backgroundAgentStatus: 'disabled' }));
+    view.render(); await tick(); view.render();
+    assert.match(view.markup(), /background helper: disabled/);
+    assert.doesNotMatch(view.markup(), /no recent connection confirmed/);
+    view.unmount();
+  }
+  assert.match(messages.de['settings.pushAgentDisabled'], /deaktiviert/);
+  assert.match(messages.de['settings.pushTestOpenWindowsSettings'], /Windows/);
+  assert.doesNotMatch(messages.de['settings.pushTestOpenWindowsSettingsFailed'], /macOS|Fokus|Bildschirmfreigabe/);
 });
 
 test('a settings opener failure is visible and retryable; local disable or provider pending never implies OS denial', async () => {

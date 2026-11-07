@@ -296,18 +296,30 @@ mod tests {
 
     #[test]
     fn timeout_is_bounded_and_identifies_the_connect_phase() {
-        let (address, worker) = proxy(|mut stream| {
-            receive_greeting(&mut stream);
-            stream.write_all(&[5, 0]).unwrap();
-            receive_connect(&mut stream);
-            thread::sleep(Duration::from_millis(180));
+        let (ready, accepted) = std::sync::mpsc::sync_channel(0);
+        let (release, released) = std::sync::mpsc::sync_channel(0);
+        let (address, worker) = proxy(move |stream| {
+            ready.send(()).unwrap();
+            let _ = released.recv();
+            drop(stream);
         });
+        let mut stream = TcpStream::connect(address).unwrap();
+        accepted.recv().unwrap();
         let started = Instant::now();
-        let error = connect(address, HOST, PORT, Duration::from_millis(40)).unwrap_err();
-        assert!(started.elapsed() < Duration::from_millis(500));
+        let mut response = [0_u8; 4];
+        let result = read_exact_until(
+            &mut stream,
+            &mut response,
+            started + Duration::from_millis(40),
+            "CONNECT reply",
+        );
+        let elapsed = started.elapsed();
+        release.send(()).unwrap();
+        worker.join().unwrap();
+        let error = result.unwrap_err();
+        assert!(elapsed < Duration::from_millis(500));
         assert_eq!(error, "Tor SOCKS CONNECT reply timed out.");
         assert!(!error.contains("os error"));
-        worker.join().unwrap();
     }
 
     #[test]

@@ -153,16 +153,25 @@ fn run_agent(config_path: String, _initial_config: AgentConfig) -> Result<(), St
         .ok_or("agent directory is invalid")?;
     let log = AgentLog::new(directory);
     log.event("started", None);
-    Health::write(directory, "starting", false, None, None);
+    #[cfg(target_os = "windows")]
+    let mut journal = open_agent_journal(directory, &log)?;
+    #[cfg(target_os = "windows")]
+    for id in journal.recover_windows_pending()? {
+        log.event("os_presentation_recovered", Some(&id));
+    }
+    #[cfg(target_os = "windows")]
+    let starting_os_phase = journal.windows_os_phase();
+    #[cfg(not(target_os = "windows"))]
+    let starting_os_phase = None;
+    Health::write(directory, "starting", false, None, starting_os_phase);
     if !configuration_enabled(&config_path, None)? {
+        #[cfg(target_os = "windows")]
+        journal.clear_windows_os_phase()?;
         Health::write(directory, "disabled", false, None, None);
         return Ok(());
     }
-    let mut journal = Journal::open(directory).map_err(|error| {
-        log.event("journal_error", None);
-        Health::write(directory, "stopped", false, None, None);
-        error
-    })?;
+    #[cfg(not(target_os = "windows"))]
+    let mut journal = open_agent_journal(directory, &log)?;
     // Independent process, independent Arti cache/state and state lock.
     let tor_directory = directory.join("agent-tor");
     fs::create_dir_all(&tor_directory).map_err(|_| "agent Tor directory unavailable")?;
@@ -179,10 +188,18 @@ fn run_agent(config_path: String, _initial_config: AgentConfig) -> Result<(), St
         validate_config(&config)?;
         if !config.enabled {
             log.event("disabled", None);
+            #[cfg(target_os = "windows")]
+            journal.clear_windows_os_phase()?;
             Health::write(directory, "disabled", false, None, None);
             return Ok(());
         }
-        Health::write(directory, "connecting", false, None, None);
+        Health::write(
+            directory,
+            "connecting",
+            false,
+            None,
+            delivery_os_phase(&journal, None),
+        );
         let mut healthy = false;
         let outcome =
             run_stream_connection(&config_path, &config, &mut journal, &log, &mut healthy);
@@ -195,19 +212,37 @@ fn run_agent(config_path: String, _initial_config: AgentConfig) -> Result<(), St
             // reconnecting so a maintenance window can never turn into a
             // CPU-intensive reconnect loop.
             Ok(false) => log.event("stream_closed", None),
+            #[cfg(target_os = "windows")]
+            Err(error) if error == "agent_queue_replay_required" => {
+                log.event("queue_replay_reconnect", None)
+            }
             Err(_) => log.event("stream_error", None),
         }
         let deadline = Instant::now() + Duration::from_secs(reconnect_delay_secs);
-        Health::write(directory, "backoff", false, None, None);
+        Health::write(
+            directory,
+            "backoff",
+            false,
+            None,
+            delivery_os_phase(&journal, None),
+        );
         let mut health_tick = Instant::now();
         while Instant::now() < deadline {
             if !configuration_enabled(&config_path, None)? {
                 log.event("disabled", None);
+                #[cfg(target_os = "windows")]
+                journal.clear_windows_os_phase()?;
                 Health::write(directory, "disabled", false, None, None);
                 return Ok(());
             }
             if health_tick.elapsed() >= Duration::from_secs(5) {
-                Health::write(directory, "backoff", false, None, None);
+                Health::write(
+                    directory,
+                    "backoff",
+                    false,
+                    None,
+                    delivery_os_phase(&journal, None),
+                );
                 health_tick = Instant::now();
             }
             thread::sleep(
@@ -215,6 +250,29 @@ fn run_agent(config_path: String, _initial_config: AgentConfig) -> Result<(), St
             );
         }
         reconnect_delay_secs = agent_runtime::retry_delay(reconnect_delay_secs, healthy);
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+fn open_agent_journal(directory: &Path, log: &AgentLog) -> Result<Journal, String> {
+    Journal::open(directory).map_err(|error| {
+        log.event("journal_error", None);
+        Health::write(directory, "stopped", false, None, None);
+        error
+    })
+}
+
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+fn delivery_os_phase(journal: &Journal, legacy: Option<&'static str>) -> Option<&'static str> {
+    #[cfg(target_os = "windows")]
+    {
+        let _ = legacy;
+        journal.windows_os_phase()
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = journal;
+        legacy
     }
 }
 
@@ -366,16 +424,69 @@ fn run_stream_connection(
     let mut last_peer_at = agent_runtime::now();
     let mut health_tick = Instant::now();
     let mut os_phase = None;
+    #[cfg(target_os = "windows")]
+    let mut authenticated_windows_events = std::collections::BTreeSet::new();
+    #[cfg(target_os = "windows")]
+    let mut windows_overflow_seen = false;
     log.event("stream_connected", None);
-    Health::write(directory, "connected", true, Some(last_peer_at), os_phase);
+    Health::write(
+        directory,
+        "connected",
+        true,
+        Some(last_peer_at),
+        delivery_os_phase(journal, os_phase),
+    );
     loop {
         if !configuration_enabled(config_path, Some(config))? {
             log.event("disabled", None);
-            Health::write(directory, "disabled", false, Some(last_peer_at), os_phase);
+            #[cfg(target_os = "windows")]
+            journal.clear_windows_os_phase()?;
+            Health::write(
+                directory,
+                "disabled",
+                false,
+                Some(last_peer_at),
+                delivery_os_phase(journal, os_phase),
+            );
             return Ok(true);
         }
+        #[cfg(target_os = "windows")]
+        if let Some((id, record)) =
+            journal.next_windows_presentation(&authenticated_windows_events, agent_runtime::now())
+        {
+            let outcome = present_windows_event(
+                config_path,
+                config,
+                journal,
+                log,
+                &mut socket,
+                &id,
+                &record,
+                last_peer_at,
+            )?;
+            if matches!(
+                outcome,
+                agent_runtime::windows_delivery::PresentationOutcome::Accepted
+                    | agent_runtime::windows_delivery::PresentationOutcome::AlreadyAccepted
+            ) {
+                authenticated_windows_events.remove(&id);
+            }
+        }
+        #[cfg(target_os = "windows")]
+        if windows_overflow_seen && journal.windows_has_event_capacity() {
+            // A full journal never ACKs or forwards an unstored event. Once
+            // an actual ACK releases capacity, reconnect once so the server
+            // can replay those events without an unbounded overflow queue.
+            return Err("agent_queue_replay_required".into());
+        }
         if health_tick.elapsed() >= Duration::from_secs(5) {
-            Health::write(directory, "connected", true, Some(last_peer_at), os_phase);
+            Health::write(
+                directory,
+                "connected",
+                true,
+                Some(last_peer_at),
+                delivery_os_phase(journal, os_phase),
+            );
             health_tick = Instant::now();
         }
         match socket.read() {
@@ -393,59 +504,102 @@ fn run_stream_connection(
                 last_peer = Instant::now();
                 last_peer_at = agent_runtime::now();
                 log.event("socket_received", Some(&message.event.id));
-                let record = journal.receive_event(
+                let received_record = journal.receive_event(
                     &message.event.id,
                     &message.event.category,
                     &message.event.deep_link,
                     agent_runtime::now(),
-                )?;
+                );
+                #[cfg(target_os = "windows")]
+                let record = match received_record {
+                    Ok(record) => record,
+                    Err(error) if error == "agent_journal_full" => {
+                        if !windows_overflow_seen {
+                            log.event("journal_queue_full", Some(&message.event.id));
+                        }
+                        windows_overflow_seen = true;
+                        continue;
+                    }
+                    Err(error) => return Err(error),
+                };
+                #[cfg(not(target_os = "windows"))]
+                let record = received_record?;
                 let mut event = message.event;
                 event.received_at = record.received_at.to_string();
                 forward_received_event(config_path, &event)?;
                 if !configuration_enabled(config_path, Some(config))? {
+                    #[cfg(target_os = "windows")]
+                    {
+                        journal.clear_windows_os_phase()?;
+                        Health::write(directory, "disabled", false, Some(last_peer_at), None);
+                    }
                     return Ok(true);
                 }
-                if !record.os_accepted() {
-                    if record.uncertain() {
-                        journal.mark(&event.id, DeliveryStage::PresentationUnknown)?;
-                        log.event("presentation_unknown", Some(&event.id));
+                #[cfg(target_os = "windows")]
+                {
+                    if record.os_accepted() {
+                        log.event("duplicate_suppressed", Some(&event.id));
+                        journal.acknowledge_windows(&event.id, || {
+                            acknowledge_event(&mut socket, &event.id).map_err(|error| {
+                                log.event("ack_error", Some(&event.id));
+                                error
+                            })
+                        })?;
+                        log.event("ack_sent", Some(&event.id));
+                        authenticated_windows_events.remove(&event.id);
+                    } else if authenticated_windows_events.len() < agent_runtime::MAX_EVENTS
+                        || authenticated_windows_events.contains(&event.id)
+                    {
+                        // Queue an identifier, not another copy of metadata.
+                        // A server replay never resets its persisted budget.
+                        authenticated_windows_events.insert(event.id);
                     }
-                    validate_app_command(config).map_err(|error| {
-                        log.event("app_command_unavailable", Some(&event.id));
-                        error
-                    })?;
-                    journal.mark(&event.id, DeliveryStage::PresentationPending)?;
-                    Health::write(
-                        directory,
-                        "connected",
-                        true,
-                        Some(last_peer_at),
-                        Some("presentation_pending"),
-                    );
-                    if show_notification(config_path, config, &event, log).is_err() {
-                        journal.mark(&event.id, DeliveryStage::PresentationUnknown)?;
-                        log.event("os_submit_error", Some(&event.id));
+                    continue;
+                }
+                #[cfg(not(target_os = "windows"))]
+                {
+                    if !record.os_accepted() {
+                        if record.uncertain() {
+                            journal.mark(&event.id, DeliveryStage::PresentationUnknown)?;
+                            log.event("presentation_unknown", Some(&event.id));
+                        }
+                        validate_app_command(config).map_err(|error| {
+                            log.event("app_command_unavailable", Some(&event.id));
+                            error
+                        })?;
+                        journal.mark(&event.id, DeliveryStage::PresentationPending)?;
                         Health::write(
                             directory,
                             "connected",
                             true,
                             Some(last_peer_at),
-                            Some("presentation_unknown"),
+                            Some("presentation_pending"),
                         );
-                        return Err("notification presentation uncertain".into());
+                        if show_notification(config_path, config, &event, log).is_err() {
+                            journal.mark(&event.id, DeliveryStage::PresentationUnknown)?;
+                            log.event("os_submit_error", Some(&event.id));
+                            Health::write(
+                                directory,
+                                "connected",
+                                true,
+                                Some(last_peer_at),
+                                Some("presentation_unknown"),
+                            );
+                            return Err("notification presentation uncertain".into());
+                        }
+                        journal.mark(&event.id, DeliveryStage::OsAccepted)?;
+                        log.event("os_accepted", Some(&event.id));
+                        os_phase = Some("os_accepted");
+                    } else {
+                        log.event("duplicate_suppressed", Some(&event.id));
                     }
-                    journal.mark(&event.id, DeliveryStage::OsAccepted)?;
-                    log.event("os_accepted", Some(&event.id));
-                    os_phase = Some("os_accepted");
-                } else {
-                    log.event("duplicate_suppressed", Some(&event.id));
+                    if acknowledge_event(&mut socket, &event.id).is_err() {
+                        log.event("ack_error", Some(&event.id));
+                        return Err("notification acknowledgement failed".into());
+                    }
+                    journal.mark(&event.id, DeliveryStage::Acknowledged)?;
+                    log.event("ack_sent", Some(&event.id));
                 }
-                if acknowledge_event(&mut socket, &event.id).is_err() {
-                    log.event("ack_error", Some(&event.id));
-                    return Err("notification acknowledgement failed".into());
-                }
-                journal.mark(&event.id, DeliveryStage::Acknowledged)?;
-                log.event("ack_sent", Some(&event.id));
             }
             Ok(Message::Ping(payload)) => {
                 *healthy = true;
@@ -477,13 +631,90 @@ fn run_stream_connection(
             Err(_) => {
                 if matches!(configuration_enabled(config_path, Some(config)), Ok(false)) {
                     log.event("disabled", None);
-                    Health::write(directory, "disabled", false, Some(last_peer_at), os_phase);
+                    #[cfg(target_os = "windows")]
+                    journal.clear_windows_os_phase()?;
+                    Health::write(
+                        directory,
+                        "disabled",
+                        false,
+                        Some(last_peer_at),
+                        delivery_os_phase(journal, os_phase),
+                    );
                     return Ok(true);
                 }
                 return Err("notification stream connection was interrupted".to_owned());
             }
         }
     }
+}
+
+#[cfg(target_os = "windows")]
+fn present_windows_event<S: Read + Write>(
+    config_path: &str,
+    config: &AgentConfig,
+    journal: &mut Journal,
+    log: &AgentLog,
+    socket: &mut tungstenite::WebSocket<S>,
+    id: &str,
+    record: &agent_runtime::DeliveryRecord,
+    last_peer_at: u64,
+) -> Result<agent_runtime::windows_delivery::PresentationOutcome, String> {
+    use agent_runtime::windows_delivery::PresentationOutcome;
+    let directory = Path::new(config_path)
+        .parent()
+        .ok_or("agent directory invalid")?;
+    let event = NotificationEvent {
+        id: id.to_owned(),
+        category: record
+            .category
+            .clone()
+            .ok_or("agent_event_metadata_missing")?,
+        deep_link: record
+            .deep_link
+            .clone()
+            .ok_or("agent_event_metadata_missing")?,
+        received_at: record.received_at.to_string(),
+        opened: false,
+    };
+    let outcome = journal.present_windows(id, agent_runtime::now(), |phase| {
+        Health::write(directory, "connected", true, Some(last_peer_at), phase);
+        log.event("os_submit_attempt", Some(id));
+        show_notification(config_path, config, &event, log)
+    })?;
+    Health::write(
+        directory,
+        "connected",
+        true,
+        Some(last_peer_at),
+        journal.windows_os_phase(),
+    );
+    match outcome {
+        PresentationOutcome::Accepted | PresentationOutcome::AlreadyAccepted => {
+            log.event(
+                if outcome == PresentationOutcome::Accepted {
+                    "os_accepted"
+                } else {
+                    "duplicate_suppressed"
+                },
+                Some(id),
+            );
+            journal.acknowledge_windows(id, || {
+                acknowledge_event(socket, id).map_err(|error| {
+                    log.event("ack_error", Some(id));
+                    error
+                })
+            })?;
+            log.event("ack_sent", Some(id));
+        }
+        PresentationOutcome::Retry(retry) => {
+            // A local OS failure is not a broken network stream. Keep the
+            // socket/heartbeats alive and retry from the persistent journal.
+            log.event("os_submit_error", Some(id));
+            log.event_with_retry(id, retry);
+        }
+        PresentationOutcome::Deferred => {}
+    }
+    Ok(outcome)
 }
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
@@ -660,8 +891,7 @@ fn show_notification(
     };
     #[cfg(target_os = "windows")]
     {
-        let _ = command;
-        return windows_agent_toast::show(&event.id, body, log);
+        return windows_agent_toast::show(&command, &event.id, body, log);
     }
     #[cfg(target_os = "linux")]
     {

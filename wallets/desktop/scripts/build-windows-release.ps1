@@ -468,9 +468,17 @@ try {
   Copy-Item -LiteralPath (Join-Path $releaseDirectory 'monero-fast-walletd.exe') `
     -Destination (Join-Path $manifestHelperDirectory 'monero-fast-walletd.exe') -Force
 
-  $command = 'call "{0}" arm64 >nul && cd /d "{1}" && cargo test --release --manifest-path src-tauri\Cargo.toml && npm run tauri build -- --bundles nsis --config src-tauri\tauri.windows.conf.json' -f $vcvars, $desktopDirectory
+  $command = 'call "{0}" arm64 >nul && cd /d "{1}" && cargo test --release --manifest-path src-tauri\Cargo.toml && npm run tauri build -- --no-bundle --config src-tauri\tauri.windows.conf.json' -f $vcvars, $desktopDirectory
   & cmd.exe /d /s /c $command
   if ($LASTEXITCODE -ne 0) { throw 'The Windows release build failed.' }
+
+  # Tauri also rebuilds the helper with its release features. Package that
+  # final executable instead of the earlier bootstrap copy.
+  Copy-Item -LiteralPath (Join-Path $releaseDirectory 'monero-fast-walletd.exe') `
+    -Destination (Join-Path $manifestHelperDirectory 'monero-fast-walletd.exe') -Force
+  $bundleCommand = 'call "{0}" arm64 >nul && cd /d "{1}" && npm run tauri bundle -- --bundles nsis --features tauri/custom-protocol --config src-tauri\tauri.windows.conf.json' -f $vcvars, $desktopDirectory
+  & cmd.exe /d /s /c $bundleCommand
+  if ($LASTEXITCODE -ne 0) { throw 'The Windows installer packaging failed.' }
 } finally {
   Pop-Location
 }

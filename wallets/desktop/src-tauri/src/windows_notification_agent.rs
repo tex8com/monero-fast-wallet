@@ -26,27 +26,38 @@ const AGENT_NAME: &str = "monero-fast-walletd.exe";
 const BUNDLED_AGENT_RESOURCE: &str = "target/release/monero-fast-walletd.exe";
 #[cfg(target_os = "windows")]
 pub fn reconcile(app: &AppHandle, enabled: bool) -> Result<(), String> {
-    let sid = current_user_sid()?;
+    let sid = current_user_sid(app)?;
     let task_name = task::task_name(&sid).map_err(str::to_owned)?;
-    let existing = query_task(&task_name)?;
-    let owned = existing
-        .as_deref()
-        .is_some_and(|xml| task::owned_task(xml, &sid));
     let config = app
         .path()
         .app_data_dir()
         .map_err(|_| "Windows notification directory is unavailable.".to_owned())?
         .join("notifications/background-agent.json");
+    let config_text = path_text(&config)?;
+    let existing = query_task(app, &task_name)?;
+    let owned = existing
+        .as_deref()
+        .is_some_and(|xml| task::owned_task(xml, &sid, config_text));
     if !enabled {
         // Config.enabled is already false. Stop only our verified task;
         // old Run instances also observe that flag within one second.
         if owned {
-            let _ = run_tool("schtasks.exe", &["/End", "/TN", &task_name]);
-            if !run_tool("schtasks.exe", &["/Delete", "/TN", &task_name, "/F"])?
-                .status
-                .success()
+            let _ = run_tool(
+                app,
+                "task-end",
+                "schtasks.exe",
+                &["/End", "/TN", &task_name],
+            );
+            if !run_tool(
+                app,
+                "task-delete",
+                "schtasks.exe",
+                &["/Delete", "/TN", &task_name, "/F"],
+            )?
+            .status
+            .success()
             {
-                return Err("Windows notification startup could not be disabled.".to_owned());
+                return Err(task_failure("task-delete"));
             }
         }
         remove_protocol_handler(&sid)?;
@@ -54,7 +65,7 @@ pub fn reconcile(app: &AppHandle, enabled: bool) -> Result<(), String> {
     }
     if existing.is_some() && !owned {
         return Err(
-            "The notification startup task belongs to another configuration. It was preserved."
+            "notification-agent-task-ownership-failed: The notification startup task belongs to another configuration. It was preserved."
                 .to_owned(),
         );
     }
@@ -81,14 +92,27 @@ pub fn reconcile(app: &AppHandle, enabled: bool) -> Result<(), String> {
         ))
     });
     if unchanged {
-        if !run_tool("schtasks.exe", &["/Change", "/TN", &task_name, "/ENABLE"])?
-            .status
-            .success()
-            || !run_tool("schtasks.exe", &["/Run", "/TN", &task_name])?
-                .status
-                .success()
+        if !run_tool(
+            app,
+            "task-enable",
+            "schtasks.exe",
+            &["/Change", "/TN", &task_name, "/ENABLE"],
+        )?
+        .status
+        .success()
         {
-            return Err("Windows notification startup could not be resumed.".to_owned());
+            return Err(task_failure("task-enable"));
+        }
+        if !run_tool(
+            app,
+            "task-run",
+            "schtasks.exe",
+            &["/Run", "/TN", &task_name, "/HRESULT"],
+        )?
+        .status
+        .success()
+        {
+            return Err(task_failure("task-run"));
         }
         return remove_legacy_run(&config);
     }
@@ -104,28 +128,54 @@ pub fn reconcile(app: &AppHandle, enabled: bool) -> Result<(), String> {
         file.write_all(&task::utf16_file(&xml))
             .and_then(|_| file.sync_all())
             .map_err(|_| "Windows notification task could not be prepared.".to_owned())?;
-        let mut args = vec!["/Create", "/TN", &task_name, "/XML", path_text(&task_file)?];
+        // schtasks opens XML without sharing an existing writer. sync_all
+        // persists bytes but does not release that writer's Windows handle.
+        drop(file);
+        let mut args = vec![
+            "/Create",
+            "/TN",
+            &task_name,
+            "/XML",
+            path_text(&task_file)?,
+            "/HRESULT",
+        ];
         // Never overwrite an unknown/unreadable task. /F only follows proof
         // of this app's source marker and the current user's principal.
         if existing.is_some() {
             args.push("/F");
         }
         if existing.is_some() {
-            let _ = run_tool("schtasks.exe", &["/End", "/TN", &task_name]);
+            let _ = run_tool(
+                app,
+                "task-end",
+                "schtasks.exe",
+                &["/End", "/TN", &task_name],
+            );
         }
-        if !run_tool("schtasks.exe", &args)?.status.success() {
-            if existing.is_some() {
-                let _ = run_tool("schtasks.exe", &["/Run", "/TN", &task_name]);
-            }
-            return Err("Windows could not register the current-user notification task. No administrator password is required.".to_owned());
-        }
-        if !run_tool("schtasks.exe", &["/Run", "/TN", &task_name])?
+        if !run_tool(app, "task-create", "schtasks.exe", &args)?
             .status
             .success()
         {
-            return Err(
-                "Windows notification startup was registered but could not be started.".to_owned(),
-            );
+            if existing.is_some() {
+                let _ = run_tool(
+                    app,
+                    "task-run",
+                    "schtasks.exe",
+                    &["/Run", "/TN", &task_name, "/HRESULT"],
+                );
+            }
+            return Err(task_failure("task-create"));
+        }
+        if !run_tool(
+            app,
+            "task-run",
+            "schtasks.exe",
+            &["/Run", "/TN", &task_name, "/HRESULT"],
+        )?
+        .status
+        .success()
+        {
+            return Err(task_failure("task-run"));
         }
         // Migrate only after supervised startup exists. A compatible Run
         // instance is protected by the singleton, and task repetition covers
@@ -136,7 +186,71 @@ pub fn reconcile(app: &AppHandle, enabled: bool) -> Result<(), String> {
     result
 }
 #[cfg(target_os = "windows")]
-fn run_tool(name: &str, args: &[&str]) -> Result<Output, String> {
+fn task_failure(phase: &str) -> String {
+    format!("notification-agent-{phase}-failed: Windows background notification setup could not complete. Try enabling notifications again.")
+}
+
+#[cfg(target_os = "windows")]
+fn run_tool(app: &AppHandle, phase: &str, name: &str, args: &[&str]) -> Result<Output, String> {
+    let started = Instant::now();
+    let result = run_tool_raw(name, args);
+    let (exit_code, output_bytes, output_fingerprint, succeeded) = match &result {
+        Ok(output) => {
+            let mut digest = Sha256::new();
+            digest.update(&output.stdout);
+            digest.update([0]);
+            digest.update(&output.stderr);
+            (
+                output
+                    .status
+                    .code()
+                    .map_or_else(|| "unknown".to_owned(), |code| code.to_string()),
+                output.stdout.len().saturating_add(output.stderr.len()),
+                hex::encode(digest.finalize()),
+                output.status.success(),
+            )
+        }
+        Err(_) => ("unavailable".to_owned(), 0, String::new(), false),
+    };
+    let missing = phase == "task-query"
+        && result
+            .as_ref()
+            .is_ok_and(|output| task::task_query_not_found(output.status.code()));
+    crate::diagnostics::record(
+        app,
+        "notifications.agent-task-operation",
+        &[
+            ("phase", phase.to_owned()),
+            (
+                "result",
+                if succeeded {
+                    "complete"
+                } else if missing {
+                    "missing"
+                } else {
+                    "failed"
+                }
+                .to_owned(),
+            ),
+            ("elapsedMs", started.elapsed().as_millis().to_string()),
+            ("exitCode", exit_code),
+            ("outputBytes", output_bytes.to_string()),
+            ("outputFingerprint", output_fingerprint),
+            (
+                "safeErrorCode",
+                if succeeded || missing {
+                    "none".to_owned()
+                } else {
+                    format!("notification-agent-{phase}-failed")
+                },
+            ),
+        ],
+    );
+    result.map_err(|_| task_failure(phase))
+}
+
+#[cfg(target_os = "windows")]
+fn run_tool_raw(name: &str, args: &[&str]) -> Result<Output, String> {
     let system = env::var_os("SystemRoot")
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
@@ -240,8 +354,13 @@ fn install_agent(app: &AppHandle, config: &Path) -> Result<(PathBuf, String), St
     Ok((target, fingerprint))
 }
 #[cfg(target_os = "windows")]
-fn current_user_sid() -> Result<String, String> {
-    let output = run_tool("whoami.exe", &["/user", "/fo", "csv", "/nh"])?;
+fn current_user_sid(app: &AppHandle) -> Result<String, String> {
+    let output = run_tool(
+        app,
+        "user-sid",
+        "whoami.exe",
+        &["/user", "/fo", "csv", "/nh"],
+    )?;
     if !output.status.success() || output.stdout.len() > 8192 {
         return Err("The current Windows user could not be identified.".to_owned());
     }
@@ -253,10 +372,19 @@ fn current_user_sid() -> Result<String, String> {
         .ok_or_else(|| "The current Windows user could not be identified.".to_owned())
 }
 #[cfg(target_os = "windows")]
-fn query_task(task_name: &str) -> Result<Option<String>, String> {
-    let output = run_tool("schtasks.exe", &["/Query", "/TN", task_name, "/XML"])?;
+fn query_task(app: &AppHandle, task_name: &str) -> Result<Option<String>, String> {
+    let output = run_tool(
+        app,
+        "task-query",
+        "schtasks.exe",
+        &["/Query", "/TN", task_name, "/XML", "/HRESULT"],
+    )?;
     if !output.status.success() {
-        return Ok(None);
+        return if task::task_query_not_found(output.status.code()) {
+            Ok(None)
+        } else {
+            Err(task_failure("task-query"))
+        };
     }
     task::decode_xml_output(&output.stdout)
         .map(Some)

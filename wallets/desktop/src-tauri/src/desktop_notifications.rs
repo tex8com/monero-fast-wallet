@@ -100,6 +100,8 @@ pub struct NotificationInstallationStatus {
     pub background_mode_supported: bool,
     pub background_agent_config_path: Option<String>,
     pub background_agent_status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub background_agent_os_status: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -200,6 +202,27 @@ fn current_background_agent_status(
     Ok(Some(crate::background_agent_health::status(
         &notification_path(app, "agent-health.json")?, now(),
     ).to_owned()))
+}
+
+fn supports_agent_presentation_status(
+    platform_name: &str,
+    installation: &NotificationInstallation,
+) -> bool {
+    platform_name == "windows" && installation.platform == "windows"
+        && installation.provider == "windows-agent"
+        && installation.enabled && installation.background_mode_enabled
+}
+
+fn current_background_agent_os_status(
+    app: &AppHandle,
+    installation: &NotificationInstallation,
+) -> Result<Option<String>, String> {
+    if !supports_agent_presentation_status(platform(), installation) {
+        return Ok(None);
+    }
+    Ok(crate::background_agent_health::presentation_status(
+        &notification_path(app, "agent-health.json")?, now(),
+    ).map(str::to_owned))
 }
 
 async fn reconcile_background_agent(
@@ -513,6 +536,7 @@ fn status_for_installation(
         }.to_owned();
     }
     let background_agent_status = current_background_agent_status(app, &installation)?;
+    let background_agent_os_status = current_background_agent_os_status(app, &installation)?;
     let actual_delivery = if background_agent_status.as_deref().is_some_and(|status| status != "connected")
         && installation.enabled { "local-while-open".to_owned() } else { delivery(&installation) };
     Ok(NotificationInstallationStatus {
@@ -522,6 +546,7 @@ fn status_for_installation(
         background_mode_supported: matches!(platform(), "windows" | "linux"),
         background_agent_config_path: background_agent_config_path(app)?,
         background_agent_status,
+        background_agent_os_status,
         installation,
     })
 }
@@ -1117,6 +1142,75 @@ mod tests {
     }
 
     #[test]
+    fn presentation_status_is_only_supported_for_enabled_windows_agents() {
+        let mut windows = installation("windows-agent", "", true);
+        windows.platform = "windows".to_owned();
+        assert!(super::supports_agent_presentation_status("windows", &windows));
+        for other_platform in ["macos", "linux", "unknown"] {
+            assert!(!super::supports_agent_presentation_status(other_platform, &windows));
+        }
+        windows.enabled = false;
+        assert!(!super::supports_agent_presentation_status("windows", &windows));
+        windows.enabled = true;
+        windows.background_mode_enabled = false;
+        assert!(!super::supports_agent_presentation_status("windows", &windows));
+        windows.background_mode_enabled = true;
+        for other_provider in ["apns", "linux-agent", "unknown"] {
+            windows.provider = other_provider.to_owned();
+            assert!(!super::supports_agent_presentation_status("windows", &windows));
+        }
+    }
+
+    #[test]
+    fn macos_and_linux_status_json_omit_windows_presentation_field() {
+        for (platform_name, provider) in [("macos", "apns"), ("linux", "linux-agent")] {
+            let mut local = installation(provider, "", true);
+            local.platform = platform_name.to_owned();
+            let installation_status = super::NotificationInstallationStatus {
+                installation: local,
+                delivery: "local-while-open".to_owned(),
+                background_mode_supported: platform_name == "linux",
+                background_agent_config_path: None,
+                background_agent_status: None,
+                background_agent_os_status: None,
+            };
+            let json = serde_json::to_value(installation_status).unwrap();
+            assert!(json.get("backgroundAgentOsStatus").is_none());
+            let test_status = super::TestPushStatus {
+                platform: platform_name.to_owned(),
+                available: true,
+                reason: "ready".to_owned(),
+                phase: "idle".to_owned(),
+                receipt: None,
+                received_at: None,
+                background_agent_status: None,
+                background_agent_os_status: None,
+                permission_settings_available: false,
+            };
+            let json = serde_json::to_value(test_status).unwrap();
+            assert!(json.get("backgroundAgentOsStatus").is_none());
+        }
+    }
+
+    #[test]
+    fn presentation_error_has_a_separate_serialized_field_from_connection() {
+        let status = super::TestPushStatus {
+            platform: "windows".to_owned(),
+            available: true,
+            reason: "ready".to_owned(),
+            phase: "scheduled".to_owned(),
+            receipt: None,
+            received_at: None,
+            background_agent_status: Some("connected".to_owned()),
+            background_agent_os_status: Some("registration-error".to_owned()),
+            permission_settings_available: false,
+        };
+        let json = serde_json::to_value(status).unwrap();
+        assert_eq!(json["backgroundAgentStatus"], "connected");
+        assert_eq!(json["backgroundAgentOsStatus"], "registration-error");
+    }
+
+    #[test]
     fn background_agents_are_required_for_closed_app_delivery() {
         let mut local = installation("linux-agent", "", false);
         local.provider_status = provider_status(&local);
@@ -1217,6 +1311,8 @@ pub struct TestPushStatus {
     pub receipt: Option<TestPushReceipt>,
     pub received_at: Option<u64>,
     pub background_agent_status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub background_agent_os_status: Option<String>,
     pub permission_settings_available: bool,
 }
 fn read_test_push_state(app: &AppHandle) -> Result<TestPushState, String> {
@@ -1335,6 +1431,26 @@ async fn macos_permission_settings_available(app: &AppHandle) -> bool {
 async fn macos_permission_settings_available(_: &AppHandle) -> bool { false }
 
 pub async fn open_notification_settings(app: &AppHandle) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        // Fixed OS-owned page; the user changes notification preferences.
+        let opened = tauri::async_runtime::spawn_blocking(|| unsafe {
+            windows::Win32::UI::Shell::ShellExecuteW(
+                None,
+                windows::core::w!("open"),
+                windows::core::w!("ms-settings:notifications"),
+                None,
+                None,
+                windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL,
+            ).0 as isize > 32
+        }).await.unwrap_or(false);
+        crate::diagnostics::record(app, "notifications.open-settings", &[
+            ("phase", "notification-settings".to_owned()),
+            ("result", if opened { "opened" } else { "failed" }.to_owned()),
+        ]);
+        return if opened { Ok(()) } else { Err("Windows notification settings could not be opened.".to_owned()) };
+    }
+    #[cfg(not(target_os = "windows"))]
     open_macos_settings(app, false).await
 }
 
@@ -1368,9 +1484,11 @@ pub async fn test_push_status(app: &AppHandle) -> Result<TestPushStatus, String>
     let state = read_test_push_state(app)?;
     let received = state.receipt.as_ref().and_then(|receipt|
         state.received.iter().find(|event| event.event_id == receipt.event_id));
+    let installation_status = status(app)?;
     Ok(TestPushStatus {
         platform: platform().to_owned(),
-        background_agent_status: status(app)?.background_agent_status,
+        background_agent_status: installation_status.background_agent_status,
+        background_agent_os_status: installation_status.background_agent_os_status,
         available: reason == "ready", reason,
         phase: crate::notification_test::phase(state.receipt.as_ref().map(|receipt| receipt.event_id.as_str()),
             received.map(|event| event.event_id.as_str()), state.receipt.as_ref().map_or(0, |receipt| receipt.deliver_after), now()).to_owned(),
