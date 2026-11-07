@@ -27,11 +27,42 @@ const mirrorTimer = await readFile(new URL("../../ops/project-page/mfw-project-p
 const postbuild = await readFile(new URL("../scripts/postbuild.mjs", import.meta.url), "utf8");
 const localeConfig = JSON.parse(await readFile(new URL("../../config/product-locales.json", import.meta.url), "utf8"));
 const generatedLocales = await readFile(new URL("../src/locales.generated.js", import.meta.url), "utf8");
-const { copy, localeMetadata, releaseTag, releaseUrl } = await import(new URL("../src/content.js", import.meta.url));
+const { copy, localeMetadata, releaseTag, releaseUrl, repositoryUrl, walletReleases } = await import(new URL("../src/content.js", import.meta.url));
 const downloadComponents = app.slice(app.indexOf("function ReleaseFollow("), app.indexOf("function localizedPath("))
-  + app.slice(app.indexOf("const platforms ="), app.indexOf("function NodeSection("));
+  + app.slice(app.indexOf("const platforms ="), app.indexOf("function OpenSource("));
 const compiledDownloads = await transformWithOxc(downloadComponents, "downloads.jsx", { lang: "jsx", jsx: { runtime: "classic", pragma: "React.createElement", pragmaFrag: "React.Fragment" } });
-const { Downloads, walletReleaseMap } = Function("React", "releaseTag", "releaseUrl", "releaseUpdatesUrl", `${compiledDownloads.code}\nreturn { Downloads, walletReleaseMap };`)(React, releaseTag, releaseUrl, "https://x.com/roland_kk");
+const { Downloads, walletReleaseMap, ReleaseFollow, NodeSection } = Function("React", "releaseTag", "releaseUrl", "walletReleases", "repositoryUrl", "releaseUpdatesUrl", `${compiledDownloads.code}\nreturn { Downloads, walletReleaseMap, ReleaseFollow, NodeSection };`)(React, releaseTag, releaseUrl, walletReleases, repositoryUrl, "https://x.com/roland_kk");
+
+function approvedWalletCatalog() {
+  return Object.entries(walletReleases).map(([platform, release]) => ({
+    product: "mfw", platform, package: release.package, version: release.version,
+    sha256: release.sha256, size: release.size,
+    download_path: `/download/mfw/${platform}/${release.package}`,
+  }));
+}
+
+function downloadCard(markup, title) {
+  const card = markup.split('<article class="download-card">').find(section => section.startsWith(`<h3>${title}</h3>`));
+  assert.ok(card, `missing ${title} download card`);
+  return card.slice(0, card.indexOf("</article>"));
+}
+
+function assertPublishedDownloadCards(markup, gateway = false) {
+  for (const [platform, title] of [["android", "Android"], ["macos", "macOS"]]) {
+    const release = walletReleases[platform];
+    const card = downloadCard(markup, title);
+    const expectedDownload = gateway ? `/download/mfw/${platform}/${release.package}` : release.downloadUrl;
+    assert.ok(card.includes(`href="${expectedDownload}"`), `${platform} direct download`);
+    assert.ok(card.includes(`href="${release.releaseUrl}"`), `${platform} release notes`);
+    const visibleText = card.replace(/<[^>]*>/g, "");
+    assert.match(visibleText, /1\.0\.116/);
+    assert.match(visibleText, new RegExp(`Alpha\\s*${release.alpha}`));
+  }
+  assert.equal((markup.match(/store-badge is-live/g) ?? []).length, 2);
+  assert.equal((markup.match(/store-badge is-pending/g) ?? []).length, 3);
+  assert.doesNotMatch(markup, /href="\/download\/mfw\/(?:windows|ios|linux)\//);
+  assert.ok(markup.includes(`href="${repositoryUrl}"`), "downloads link the public source repository");
+}
 
 function stringLeaves(value, path = [], result = new Map()) {
   if (typeof value === "string") result.set(JSON.stringify(path), value);
@@ -82,17 +113,32 @@ test("download formats stay visible with a concrete alpha release and honest pla
   assert.match(app, /className="store-badge is-pending"/);
   assert.match(styles, /\.store-badge \{[^}]*background: transparent;/);
   assert.doesNotMatch(styles, /\.store-badge \{[^}]*background: #0b0a10;/);
-  assert.match(app, /href={releaseUrl}/);
+  assert.match(app, /import\s*\{[^}]*walletReleases[^}]*\}\s*from\s*["']\.\/content/);
   assert.doesNotMatch(app, /nodeReleaseUrl|nodeRepositoryUrl/);
-  assert.equal(releaseTag, "v1.0.111-alpha.1");
-  assert.equal(releaseUrl, "https://github.com/tex8com/monero-fast-wallet/releases/tag/v1.0.111-alpha.1");
+  assert.equal(releaseTag, "v1.0.116-macos-alpha.2");
+  assert.equal(releaseUrl, "https://github.com/tex8com/monero-fast-wallet/releases/tag/v1.0.116-macos-alpha.2");
   assert.doesNotMatch(releaseUrl, /releases\/latest/);
+  assert.deepEqual(walletReleases, {
+    android: {
+      version: "1.0.116", package: "apk", releaseTag: "v1.0.116-alpha.1",
+      releaseUrl: "https://github.com/tex8com/monero-fast-wallet/releases/tag/v1.0.116-alpha.1",
+      downloadUrl: "https://github.com/tex8com/monero-fast-wallet/releases/download/v1.0.116-alpha.1/Monero-Fast-Wallet-1.0.116-android-arm64-v8a.apk",
+      sha256: "09f5fed3178802f2f4e7831857d3dd724af4c4981bf69e2e4c269cb37e196269",
+      size: 78998012, alpha: 1,
+    },
+    macos: {
+      version: "1.0.116", package: "dmg", releaseTag: "v1.0.116-macos-alpha.2",
+      releaseUrl: "https://github.com/tex8com/monero-fast-wallet/releases/tag/v1.0.116-macos-alpha.2",
+      downloadUrl: "https://github.com/tex8com/monero-fast-wallet/releases/download/v1.0.116-macos-alpha.2/Monero-Fast-Wallet-1.0.116-macos-arm64.dmg",
+      sha256: "aff9c7e23e406b97d58ed8fb4232cac01897b1b8991313e44a93da7a892541ac",
+      size: 304832066, alpha: 2,
+    },
+  });
 });
 
-test("real download rendering links only approved DMG and APK through the existing gateway", () => {
+test("real download rendering links only exact current DMG and APK through the existing gateway", () => {
   const releases = [
-    { product: "mfw", platform: "macos", package: "dmg", version: "0.1.0", download_path: "/download/mfw/macos/dmg" },
-    { product: "mfw", platform: "android", package: "apk", version: "1.0.111", download_path: "/download/mfw/android/apk" },
+    ...approvedWalletCatalog(),
     ...[["windows", "exe"], ["ios", "appstore"], ["linux", "appimage"]].map(([platform, packageKind]) => ({ product: "mfw", platform, package: packageKind, version: "fixture", download_path: `/download/mfw/${platform}/${packageKind}` })),
     { product: "mfw", platform: "android", package: "apk", version: "untrusted", download_path: "https://invalid.example/wallet.apk" },
     null,
@@ -100,26 +146,67 @@ test("real download rendering links only approved DMG and APK through the existi
   assert.equal(walletReleaseMap(releases).size, 2);
   for (const language of ["en", "de"]) {
     const html = renderToStaticMarkup(React.createElement(Downloads, { text: copy[language], releases }));
-    assert.match(html, /href="\/download\/mfw\/macos\/dmg"/);
-    assert.match(html, /href="\/download\/mfw\/android\/apk"/);
-    assert.match(html, /class="release-version">0\.1\.0</);
-    assert.match(html, /class="release-version">1\.0\.111</);
-    assert.doesNotMatch(html, /href="\/download\/mfw\/(?:windows|ios|linux)\//);
+    assertPublishedDownloadCards(html, true);
     assert.doesNotMatch(html, /invalid\.example|Get it on Google Play|Download on the (?:Mac )?App Store|Get it from Microsoft/);
-    assert.equal((html.match(/store-badge is-pending/g) ?? []).length, 3);
-    assert.match(html, /v1\.0\.111-alpha\.1/);
+    assert.doesNotMatch(html, /0\.1\.0|1\.0\.111/);
     assert.match(html, /Apple Silicon/);
     assert.match(html, /ARM64/);
   }
 });
 
 test("a missing release catalog preserves the published GitHub fallback without enabling other platforms", () => {
-  const html = renderToStaticMarkup(React.createElement(Downloads, { text: copy.en, releases: [] }));
-  assert.equal((html.match(/store-badge is-live/g) ?? []).length, 2);
-  assert.equal((html.match(/store-badge is-pending/g) ?? []).length, 3);
-  assert.ok(html.includes(`href="${releaseUrl}"`));
-  assert.doesNotMatch(html, /href="\/download\//);
-  assert.doesNotMatch(html, /Not released yet|No public release artifacts/);
+  for (const language of ["en", "de"]) {
+    const html = renderToStaticMarkup(React.createElement(Downloads, { text: copy[language], releases: [] }));
+    assertPublishedDownloadCards(html);
+    assert.doesNotMatch(html, /href="\/download\//);
+    assert.doesNotMatch(html, /Not released yet|No public release artifacts/);
+  }
+});
+
+test("stale or mismatched gateway metadata cannot replace the configured GitHub files", () => {
+  for (const approved of approvedWalletCatalog()) {
+    const invalidEntries = [
+      { ...approved, product: "mfn" },
+      { ...approved, platform: "windows" },
+      { ...approved, package: "zip" },
+      { ...approved, version: "1.0.111" },
+      { ...approved, sha256: "0".repeat(64) },
+      { ...approved, sha256: undefined },
+      { ...approved, size: approved.size - 1 },
+      { ...approved, size: String(approved.size) },
+      { ...approved, download_path: `https://xmr.tex8.com${approved.download_path}` },
+      { ...approved, download_path: "//invalid.example/wallet" },
+      { ...approved, download_path: `${approved.download_path}?source=other` },
+      null,
+    ];
+    for (const invalid of invalidEntries) {
+      assert.equal(walletReleaseMap([invalid]).size, 0, JSON.stringify(invalid));
+    }
+  }
+  const staleCatalog = [
+    { product: "mfw", platform: "android", package: "apk", version: "1.0.111", sha256: "509172d8afe6917128d11dd6a12263d8f1c9e2123700a849ac5bdffabff32612", size: 77996532, download_path: "/download/mfw/android/apk" },
+    { product: "mfw", platform: "macos", package: "dmg", version: "0.1.0", sha256: "276c25bf318b3471ab55f13704636daf16d05643b37cb3ef20fbf12f0da5c4c9", size: 295340225, download_path: "/download/mfw/macos/dmg" },
+  ];
+  const wrongHashCatalog = approvedWalletCatalog().map(release => ({ ...release, sha256: "0".repeat(64) }));
+  for (const releases of [staleCatalog, wrongHashCatalog]) {
+    for (const language of ["en", "de"]) {
+      const html = renderToStaticMarkup(React.createElement(Downloads, { text: copy[language], releases }));
+      assertPublishedDownloadCards(html);
+      assert.doesNotMatch(html, /href="\/download\//);
+      assert.doesNotMatch(html, /0\.1\.0|1\.0\.111/);
+    }
+  }
+});
+
+test("each wallet platform keeps its own release notes and macOS signing status is current", () => {
+  for (const language of ["en", "de"]) {
+    const html = renderToStaticMarkup(React.createElement(ReleaseFollow, { product: "MFW", text: copy[language] }));
+    assert.match(html.replace(/<[^>]*>/g, ""), /MFW · Alpha 1\.0\.116/);
+    for (const release of Object.values(walletReleases)) assert.ok(html.includes(`href="${release.releaseUrl}"`));
+    assert.doesNotMatch(html, /1\.0\.111|releases\/latest/);
+  }
+  assert.equal(copy.en.macosSigning, "Apple-notarized app · Developer ID-signed");
+  assert.equal(copy.de.macosSigning, "App Apple-notarisiert · Developer-ID-signiert");
 });
 
 test("release copy replaces obsolete download and FAQ claims across every locale", () => {
@@ -513,10 +600,15 @@ test("MFN label is centered as one counter-rotated group", () => {
   assert.match(styles, /\.node-label\s*\{[^}]*left:\s*47%;[^}]*top:\s*47%;[^}]*transform:\s*translate\(-50%,-50%\) rotate\(-45deg\);/);
 });
 
-test("MFN package and source labels stay visible without pre-release links", () => {
+test("MFN keeps binary downloads pending while linking its public source", () => {
   assert.match(app, /className="button primary is-disabled">{text\.nodeDownload}/);
-  assert.match(app, /className="button is-disabled">{text\.nodeSource}/);
   assert.doesNotMatch(app, /href={nodeReleaseUrl}|href={nodeRepositoryUrl}/);
+  for (const language of ["en", "de"]) {
+    const html = renderToStaticMarkup(React.createElement(NodeSection, { text: copy[language], releases: [] }));
+    assert.ok(html.includes(`href="${repositoryUrl}/tree/main/node/mfn-monero-fast-node"`));
+    assert.match(html, /class="button primary is-disabled"/);
+    assert.doesNotMatch(html, /href="\/download\/mfn\//);
+  }
   assert.match(content, /Fertige Node-Pakete/);
   assert.match(content, /Ready-built node packages/);
 });

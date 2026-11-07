@@ -1,6 +1,20 @@
 export const repositoryUrl = "https://github.com/tex8com/monero-fast-wallet";
-export const releaseTag = "v1.0.111-alpha.1";
+export const releaseTag = "v1.0.116-macos-alpha.2";
 export const releaseUrl = `${repositoryUrl}/releases/tag/${releaseTag}`;
+export const walletReleases = {
+  android: {
+    version: "1.0.116", package: "apk", alpha: 1,
+    releaseTag: "v1.0.116-alpha.1",
+    releaseUrl: `${repositoryUrl}/releases/tag/v1.0.116-alpha.1`,
+    downloadUrl: `${repositoryUrl}/releases/download/v1.0.116-alpha.1/Monero-Fast-Wallet-1.0.116-android-arm64-v8a.apk`,
+    sha256: "09f5fed3178802f2f4e7831857d3dd724af4c4981bf69e2e4c269cb37e196269", size: 78998012,
+  },
+  macos: {
+    version: "1.0.116", package: "dmg", alpha: 2, releaseTag, releaseUrl,
+    downloadUrl: `${repositoryUrl}/releases/download/${releaseTag}/Monero-Fast-Wallet-1.0.116-macos-arm64.dmg`,
+    sha256: "aff9c7e23e406b97d58ed8fb4232cac01897b1b8991313e44a93da7a892541ac", size: 304832066,
+  },
+};
 import { generatedWebsiteCopy, localeMetadata } from "./locales.generated.js";
 
 const shared = {
@@ -295,8 +309,8 @@ export const copy = {
 
 Object.assign(copy, generatedWebsiteCopy);
 const releaseLabels = {
-  en: { available: "Available", releaseNotes: "Release & checksums", githubRelease: "Download on GitHub", releaseUpdates: "Follow updates on", androidRequirements: "Android 7 or newer · ARM64", macosRequirements: "macOS 12 or newer · Apple Silicon", macosSigning: "Developer ID-signed · not notarized" },
-  de: { available: "Verfügbar", releaseNotes: "Release & Prüfsummen", githubRelease: "Download auf GitHub", releaseUpdates: "Updates auf", androidRequirements: "Ab Android 7 · ARM64", macosRequirements: "Ab macOS 12 · Apple Silicon", macosSigning: "Developer-ID-signiert · nicht notarisiert" },
+  en: { available: "Available", releaseNotes: "Release & checksums", githubRelease: "Download on GitHub", releaseUpdates: "Follow updates on", androidRequirements: "Android 7 or newer · ARM64", macosRequirements: "macOS 12 or newer · Apple Silicon", macosSigning: "Apple-notarized app · Developer ID-signed" },
+  de: { available: "Verfügbar", releaseNotes: "Release & Prüfsummen", githubRelease: "Download auf GitHub", releaseUpdates: "Updates auf", androidRequirements: "Ab Android 7 · ARM64", macosRequirements: "Ab macOS 12 · Apple Silicon", macosSigning: "App Apple-notarisiert · Developer-ID-signiert" },
 };
 // Newly published release labels use English until reviewed translations exist.
 for (const [language, text] of Object.entries(copy)) Object.assign(text, releaseLabels[language] ?? releaseLabels.en);
