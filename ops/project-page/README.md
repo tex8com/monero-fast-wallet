@@ -45,7 +45,7 @@ fallback even without a catalog entry, so publish the GitHub artifact first.
 
 The prepared release is `v1.0.116-linux-arm64-alpha.1`, with
 `Monero-Fast-Wallet-1.0.116-linux-arm64.AppImage`, tested on Ubuntu 24.04 ARM64.
-The native DEB contains the same verified application and is also ARM64-only.
+The native DEB is the primary Ubuntu download, with AppImage as a portable alternative. Both packages are ARM64-only.
 No x86_64 or RPM package is approved. The website and release tests pin the
 final AppImage from source `aa0c982c8785cbd903a0b143dd754d05591e839a`:
 
@@ -54,8 +54,8 @@ final AppImage from source `aa0c982c8785cbd903a0b143dd754d05591e839a`:
 
 Native DEB (`Monero-Fast-Wallet-1.0.116-linux-arm64.deb`):
 
-- SHA-256: `87e91340ba0debfb365061bf3100fa150648d1d48a1951f311dc0a6fa49cdfb0`
-- Size: `341026476` bytes
+- SHA-256: `81ab8f98ce15c0a65d5a2eac6c33331e571f0bfae798cc27667cccf431b0f5a8`
+- Size: `297207952` bytes
 
 After the final package passes the required checks and publication is approved,
 publish the GitHub release with checksums and compliance files, then run on

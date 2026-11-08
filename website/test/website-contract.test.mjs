@@ -144,22 +144,23 @@ test("download formats stay visible with a concrete alpha release and honest pla
       size: 275232218, alpha: 1,
     },
     linux: {
-      version: "1.0.116", package: "appimage", releaseTag: "v1.0.116-linux-arm64-alpha.1",
+    version: "1.0.116", package: "deb", alpha: 1,
+    releaseTag: "v1.0.116-linux-arm64-alpha.1",
+    releaseUrl: "https://github.com/tex8com/monero-fast-wallet/releases/tag/v1.0.116-linux-arm64-alpha.1",
+    downloadUrl: "https://github.com/tex8com/monero-fast-wallet/releases/download/v1.0.116-linux-arm64-alpha.1/Monero-Fast-Wallet-1.0.116-linux-arm64.deb",
+    sha256: "81ab8f98ce15c0a65d5a2eac6c33331e571f0bfae798cc27667cccf431b0f5a8", size: 297207952,
+    alternatives: [{
+      version: "1.0.116", package: "appimage", alpha: 1,
+      releaseTag: "v1.0.116-linux-arm64-alpha.1",
       releaseUrl: "https://github.com/tex8com/monero-fast-wallet/releases/tag/v1.0.116-linux-arm64-alpha.1",
       downloadUrl: "https://github.com/tex8com/monero-fast-wallet/releases/download/v1.0.116-linux-arm64-alpha.1/Monero-Fast-Wallet-1.0.116-linux-arm64.AppImage",
-      sha256: "ca8b1aa2ec13c09ba95b2b5d8c039467d1326d62d8e27b075b1362198242bd5e", size: 407452168, alpha: 1,
-      alternatives: [{
-        version: "1.0.116", package: "deb", alpha: 1,
-        releaseTag: "v1.0.116-linux-arm64-alpha.1",
-        releaseUrl: "https://github.com/tex8com/monero-fast-wallet/releases/tag/v1.0.116-linux-arm64-alpha.1",
-        downloadUrl: "https://github.com/tex8com/monero-fast-wallet/releases/download/v1.0.116-linux-arm64-alpha.1/Monero-Fast-Wallet-1.0.116-linux-arm64.deb",
-        sha256: "87e91340ba0debfb365061bf3100fa150648d1d48a1951f311dc0a6fa49cdfb0", size: 341026476,
-      }],
-    },
+      sha256: "ca8b1aa2ec13c09ba95b2b5d8c039467d1326d62d8e27b075b1362198242bd5e", size: 407452168,
+    }],
+  },
   });
 });
 
-test("real download rendering links only exact current DMG, APK, ARM64 setup and AppImage through the existing gateway", () => {
+test("real download rendering links only exact current DMG, APK, ARM64 setup and DEB through the existing gateway", () => {
   const releases = [
     ...approvedWalletCatalog(),
     ...[["windows", "exe"], ["ios", "appstore"], ["linux", "appimage"]].map(([platform, packageKind]) => ({ product: "mfw", platform, package: packageKind, version: "fixture", download_path: `/download/mfw/${platform}/${packageKind}` })),
@@ -224,24 +225,24 @@ test("missing or incomplete Windows approval cannot activate an EXE from the cat
 
 test("a second Linux package appears only with complete pinned release metadata", () => {
   const primary = walletReleases.linux;
-  const deb = { ...primary, package: "deb", downloadUrl: `${repositoryUrl}/releases/download/${primary.releaseTag}/Monero-Fast-Wallet-1.0.116-linux-arm64.deb`, sha256: "d".repeat(64), size: 123456 };
-  const catalogEntry = { product: "mfw", platform: "linux", package: "deb", version: deb.version, sha256: deb.sha256, size: deb.size, download_path: "/download/mfw/linux/deb" };
-  for (const alternative of [deb, { ...deb, sha256: null }, { ...deb, size: 0 }, { ...deb, package: "exe" }, { ...deb, downloadUrl: "https://invalid.example/package.deb" }]) {
+  const appImage = { ...primary, package: "appimage", downloadUrl: `${repositoryUrl}/releases/download/${primary.releaseTag}/Monero-Fast-Wallet-1.0.116-linux-arm64.AppImage`, sha256: "d".repeat(64), size: 123456 };
+  const catalogEntry = { product: "mfw", platform: "linux", package: "appimage", version: appImage.version, sha256: appImage.sha256, size: appImage.size, download_path: "/download/mfw/linux/appimage" };
+  for (const alternative of [appImage, { ...appImage, sha256: null }, { ...appImage, size: 0 }, { ...appImage, package: "exe" }, { ...appImage, downloadUrl: "https://invalid.example/package.deb" }]) {
     const components = downloadComponentsFor({ ...walletReleases, linux: { ...primary, alternatives: [alternative] } });
-    const complete = alternative === deb;
+    const complete = alternative === appImage;
     assert.equal(components.walletReleaseMap([catalogEntry]).size, complete ? 1 : 0);
     const html = renderToStaticMarkup(React.createElement(components.Downloads, { text: copy.en, releases: [catalogEntry] }));
     const card = downloadCard(html, "Linux ARM64");
-    assert.ok(card.includes(`href="${primary.downloadUrl}"`), "existing AppImage remains available");
-    assert.equal(card.includes('href="/download/mfw/linux/deb"'), complete);
+    assert.ok(card.includes(`href="${primary.downloadUrl}"`), "primary DEB remains available");
+    assert.equal(card.includes('href="/download/mfw/linux/appimage"'), complete);
     assert.doesNotMatch(card, /invalid\.example/);
   }
-  const components = downloadComponentsFor({ ...walletReleases, linux: { ...primary, alternatives: [deb] } });
+  const components = downloadComponentsFor({ ...walletReleases, linux: { ...primary, alternatives: [appImage] } });
   const withoutGateway = renderToStaticMarkup(React.createElement(components.Downloads, { text: copy.en, releases: [] }));
-  assert.ok(downloadCard(withoutGateway, "Linux ARM64").includes(`href="${deb.downloadUrl}"`));
+  assert.ok(downloadCard(withoutGateway, "Linux ARM64").includes(`href="${appImage.downloadUrl}"`));
 });
 
-test("Linux stays pending until the final verified AppImage hash and size are configured", () => {
+test("Linux stays pending until the final verified Linux package hash and size are configured", () => {
   const components = downloadComponentsFor({ ...walletReleases, linux: { ...walletReleases.linux, sha256: null, size: null } });
   for (const text of Object.values(copy)) {
     const html = renderToStaticMarkup(React.createElement(components.Downloads, { text, releases: approvedWalletCatalog() }));
@@ -260,7 +261,7 @@ test("Linux stays pending until the final verified AppImage hash and size are co
 test("approved Linux keeps the exact ARM64 packages and its own release notes", () => {
   const linux = walletReleases.linux;
   const components = downloadComponentsFor();
-  const approved = { product: "mfw", platform: "linux", package: "appimage", version: linux.version, sha256: linux.sha256, size: linux.size, download_path: "/download/mfw/linux/appimage" };
+  const approved = { product: "mfw", platform: "linux", package: "deb", version: linux.version, sha256: linux.sha256, size: linux.size, download_path: "/download/mfw/linux/deb" };
   for (const text of Object.values(copy)) {
     for (const releases of [[], [approved]]) {
       const html = renderToStaticMarkup(React.createElement(components.Downloads, { text, releases }));
@@ -277,12 +278,12 @@ test("approved Linux keeps the exact ARM64 packages and its own release notes", 
   for (const invalid of [
     { ...approved, sha256: "0".repeat(64) }, { ...approved, sha256: undefined },
     { ...approved, size: approved.size - 1 }, { ...approved, version: "1.0.115" },
-    { ...approved, package: "deb" }, { ...approved, package: "rpm" },
+    { ...approved, package: "appimage" }, { ...approved, package: "rpm" },
     { ...approved, download_path: "https://invalid.example/wallet.AppImage" },
   ]) assert.equal(components.walletReleaseMap([invalid]).size, 0);
   for (const release of [undefined, {},
     { ...linux, sha256: null }, { ...linux, size: null }, { ...linux, size: 0 },
-    { ...linux, package: "deb" }, { ...linux, downloadUrl: "https://invalid.example/wallet.AppImage" },
+    { ...linux, package: "appimage" }, { ...linux, downloadUrl: "https://invalid.example/wallet.AppImage" },
   ]) {
     const pending = downloadComponentsFor({ ...walletReleases, linux: release });
     assert.equal(pending.walletReleaseMap([approved]).size, 0);

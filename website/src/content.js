@@ -22,17 +22,17 @@ export const walletReleases = {
     sha256: "82b493752ff648264557eb00ad24c49fafd66a7eeb3914a5c887415863cf21f7", size: 275232218,
   },
   linux: {
-    version: "1.0.116", package: "appimage", alpha: 1,
+    version: "1.0.116", package: "deb", alpha: 1,
     releaseTag: "v1.0.116-linux-arm64-alpha.1",
     releaseUrl: `${repositoryUrl}/releases/tag/v1.0.116-linux-arm64-alpha.1`,
-    downloadUrl: `${repositoryUrl}/releases/download/v1.0.116-linux-arm64-alpha.1/Monero-Fast-Wallet-1.0.116-linux-arm64.AppImage`,
-    sha256: "ca8b1aa2ec13c09ba95b2b5d8c039467d1326d62d8e27b075b1362198242bd5e", size: 407452168,
+    downloadUrl: `${repositoryUrl}/releases/download/v1.0.116-linux-arm64-alpha.1/Monero-Fast-Wallet-1.0.116-linux-arm64.deb`,
+    sha256: "81ab8f98ce15c0a65d5a2eac6c33331e571f0bfae798cc27667cccf431b0f5a8", size: 297207952,
     alternatives: [{
-      version: "1.0.116", package: "deb", alpha: 1,
+      version: "1.0.116", package: "appimage", alpha: 1,
       releaseTag: "v1.0.116-linux-arm64-alpha.1",
       releaseUrl: `${repositoryUrl}/releases/tag/v1.0.116-linux-arm64-alpha.1`,
-      downloadUrl: `${repositoryUrl}/releases/download/v1.0.116-linux-arm64-alpha.1/Monero-Fast-Wallet-1.0.116-linux-arm64.deb`,
-      sha256: "87e91340ba0debfb365061bf3100fa150648d1d48a1951f311dc0a6fa49cdfb0", size: 341026476,
+      downloadUrl: `${repositoryUrl}/releases/download/v1.0.116-linux-arm64-alpha.1/Monero-Fast-Wallet-1.0.116-linux-arm64.AppImage`,
+      sha256: "ca8b1aa2ec13c09ba95b2b5d8c039467d1326d62d8e27b075b1362198242bd5e", size: 407452168,
     }],
   },
 };

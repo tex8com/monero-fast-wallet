@@ -753,7 +753,7 @@ const platforms = [
   { id: "macos", title: "macOS", packages: ["dmg"], publishedPackage: "dmg", requirements: "macosRequirements", signing: "macosSigning" },
   { id: "ios", title: "iPhone & iPad", packages: ["appstore"] },
   { id: "windows", title: "Windows ARM64", packages: ["exe"], publishedPackage: "exe", packageLabel: "Setup EXE", requirements: "windowsRequirements", signing: "windowsSigning" },
-  { id: "linux", title: "Linux ARM64", packages: ["rpm", "deb", "appimage"], publishedPackage: "appimage", packageLabel: "AppImage", requirements: "linuxRequirements" },
+  { id: "linux", title: "Linux ARM64", packages: ["deb", "appimage", "rpm"], publishedPackage: "deb", packageLabel: "DEB", requirements: "linuxRequirements" },
 ];
 
 function publishedWalletRelease(platformId, packageKind) {
