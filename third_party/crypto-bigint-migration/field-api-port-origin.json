@@ -1,0 +1,91 @@
+{
+  "strategy": "API adapters to unmodified official crypto-bigint 0.7.10; no arithmetic backport",
+  "crates": [
+    {
+      "crate": "dalek-ff-group-0.4.6",
+      "source": "crates.io",
+      "changed_files": [
+        {
+          "path": "Cargo.toml",
+          "upstream_sha256": "eb32731a4864a799df59d65816142cd9ad62116d63a40d744cb55f20d0beee6c",
+          "modified_sha256": "cd9caa9985b218ab1c4545237c102cbf08e4daab88f7cb4f2c74c742a476c231"
+        },
+        {
+          "path": "src/field.rs",
+          "upstream_sha256": "555a2576f78ec920d0d544c13455ca92c50762aa4e976beedb0df5f1bb75b307",
+          "modified_sha256": "afbf74735e9bde378761b312afa8d636ab5110bff74727489c5e2d9e62507619"
+        }
+      ],
+      "upstream_archive_sha256": "231684731518402967286b76bedadedfd6b0867f814e2cd41d4a82bedea2902a",
+      "archive_matches_existing_product_lock": true
+    },
+    {
+      "crate": "dalek-ff-group-0.5.0",
+      "source": "crates.io",
+      "changed_files": [
+        {
+          "path": "Cargo.toml",
+          "upstream_sha256": "f0e30725e48ba0d0b4006ad539cc5b371abcdb0d511702c17a4237b89ac0525c",
+          "modified_sha256": "34b5147a7cf1214a2876a2e6dd64e762eda8ae11f85d8324a51ec16157c76d16"
+        },
+        {
+          "path": "src/field.rs",
+          "upstream_sha256": "555a2576f78ec920d0d544c13455ca92c50762aa4e976beedb0df5f1bb75b307",
+          "modified_sha256": "afbf74735e9bde378761b312afa8d636ab5110bff74727489c5e2d9e62507619"
+        }
+      ],
+      "upstream_archive_sha256": "26103554e8f7857b6015a4a9ef551c6ce0669f6caa040785d4394bf52041ccaf",
+      "archive_matches_existing_product_lock": true
+    },
+    {
+      "crate": "minimal-ed448-0.4.2",
+      "source": "crates.io",
+      "changed_files": [
+        {
+          "path": "Cargo.toml",
+          "upstream_sha256": "f5714c3a336978aaef56e1f88ad12edf9d702d52c2f13b389382fcb7ea80ce32",
+          "modified_sha256": "dbaa9e710b2d934e179d50ae07299dbf9c5e386fcd4a0747d33e839e76b6c490"
+        },
+        {
+          "path": "src/backend.rs",
+          "upstream_sha256": "601dee58c4d9c22c81b8d72511cba040d8ee1019730c3df48d57f3b260824343",
+          "modified_sha256": "564deecbeb35fb5d82f762eeb826b0c004d831feaa4b14a2b2f89fa801f42e9e"
+        },
+        {
+          "path": "src/field.rs",
+          "upstream_sha256": "78b28753c36861dac16a8008f07f4656016d1c273b3f0d1b3b8565dbb36e6aba",
+          "modified_sha256": "573ff875bf34519c47b15f50bdb01ce490f47515cc2d10833cfcd263222ea902"
+        },
+        {
+          "path": "src/point.rs",
+          "upstream_sha256": "1c84f333fffbc8f4e050cebcff8e765f57cd55b5fa1da9c021e3dc116d696eaf",
+          "modified_sha256": "f08e1385880223ecca72115ba51a9cc22feaba0b217fc8672473c6506efd9813"
+        },
+        {
+          "path": "src/scalar.rs",
+          "upstream_sha256": "2d2c5c670894f4ea4084b523b63b8612ba7fbacdbbfa37575b37fbdbbb1f8392",
+          "modified_sha256": "cc89197644a531410eafe49e5aeb4c7584318bc59762febded6a312bd8e48f24"
+        }
+      ],
+      "upstream_archive_sha256": "0209ec7c2b5573660a3c5d0f64c90f8ff286171b15ad2234e7a3fbf8f26180be",
+      "archive_matches_existing_product_lock": true
+    },
+    {
+      "crate": "monero-generators-0.4.0",
+      "source": "https://github.com/monero-oxide/monero-oxide.git",
+      "changed_files": [
+        {
+          "path": "Cargo.toml",
+          "upstream_sha256": "628152adfeacdbe29dc7720bddf5f15e3603ed4b7fbce6acdbf247caf94fe06f",
+          "modified_sha256": "e237c7332a0fcadd0090e393f8ef639b76d7dfd87f64b5562a3b75af34373c49"
+        },
+        {
+          "path": "src/hash_to_point.rs",
+          "upstream_sha256": "186fd13aa1f8bb71e663433d31ac3fa21ac70bd756f1eb3b90ed1bd3e50f132f",
+          "modified_sha256": "14c62f5e861e51f85761c127aed10e1a3e6e64dc625797a098b64e467b76e892"
+        }
+      ],
+      "git_rev": "7c288b058ae7f1e3d36600a2af11b3176102bcfc"
+    }
+  ]
+}

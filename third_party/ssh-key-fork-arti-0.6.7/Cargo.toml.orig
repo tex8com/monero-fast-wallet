@@ -1,0 +1,69 @@
+[package]
+name = "ssh-key-fork-arti"
+version = "0.6.7"
+description = """
+Pure Rust implementation of SSH key file format decoders/encoders as described
+in RFC4251/RFC4253 and OpenSSH key formats, as well as "sshsig" signatures and
+certificates (including certificate validation and certificate authority support),
+with further support for the `authorized_keys` and `known_hosts` file formats.
+"""
+authors = ["RustCrypto Developers"]
+license = "Apache-2.0 OR MIT"
+repository = "https://github.com/RustCrypto/SSH/tree/master/ssh-key"
+categories = ["authentication", "cryptography", "encoding", "no-std", "parser-implementations"]
+keywords = ["crypto", "certificate", "openssh", "ssh", "sshsig"]
+readme = "README.md"
+edition = "2021"
+rust-version = "1.65"
+
+[dependencies]
+cipher = { package = "ssh-cipher-fork-arti", version = "0.2", path = "../ssh-cipher" }
+encoding = { package = "ssh-encoding-fork-arti", version = "0.2", features = ["base64", "pem", "sha2"], path = "../ssh-encoding" }
+sha2 = { version = "0.10.8", default-features = false }
+signature = { version = "2", default-features = false }
+subtle = { version = "2", default-features = false }
+zeroize = { version = "1", default-features = false }
+
+# optional dependencies
+bcrypt-pbkdf = { version = "0.10", optional = true, default-features = false, features = ["alloc"] }
+rand_core = { version = "0.6.4", optional = true, default-features = false }
+sec1 = { version = "0.7.3", optional = true, default-features = false, features = ["point"] }
+serde = { version = "1", optional = true }
+
+[dev-dependencies]
+hex-literal = "0.4.1"
+rand_chacha = "0.3"
+
+[features]
+default = ["std"]
+alloc = [
+    "encoding/alloc",
+    "signature/alloc",
+    "zeroize/alloc",
+]
+std = [
+    "alloc",
+    "encoding/std",
+    "sec1?/std",
+    "signature/std"
+]
+
+ecdsa = ["dep:sec1"]
+encryption = [
+    "dep:bcrypt-pbkdf",
+    "alloc",
+    "cipher/aes-cbc",
+    "cipher/aes-ctr",
+    "cipher/aes-gcm",
+    "cipher/chacha20poly1305",
+    "rand_core"
+]
+getrandom = ["rand_core/getrandom"]
+tdes = ["cipher/tdes", "encryption"]
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("crypto", "dsa", "ed25519", "p256", "p384", "p521", "rsa"))'] }

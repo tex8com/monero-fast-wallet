@@ -44,7 +44,7 @@ tauri = { version = "2.8", features = [] }
 tauri-plugin-notification = "2.3.3"
 tauri-plugin-process = "2.3.1"
 tauri-plugin-single-instance = "2.4.3"
-tauri-plugin-updater = "2.10.1"
+tauri-plugin-updater = "2.14.1"
 tokio = { version = "1.53.3", features = ["io-util", "net", "rt-multi-thread", "time"] }
 tungstenite = { version = "0.24", default-features = false, features = ["handshake", "rustls-tls-webpki-roots"] }
 zeroize = { version = "1.8", features = ["derive"] }
@@ -81,5 +81,22 @@ name = "monero-fast-walletd"
 path = "src/bin/monero-fast-walletd.rs"
 
 [patch.crates-io]
+# Pinned source adapters use the unchanged upstream crypto-bigint 0.7.10.
+dalek-ff-group-04 = { package = "dalek-ff-group", path = "../../../third_party/dalek-ff-group-0.4.6" }
+dalek-ff-group-05 = { package = "dalek-ff-group", path = "../../../third_party/dalek-ff-group-0.5.0" }
+minimal-ed448 = { path = "../../../third_party/minimal-ed448-0.4.2" }
+elliptic-curve = { path = "../../../third_party/elliptic-curve-0.13.8" }
+# Client-only Tor RSA verification delegates to the maintained OpenSSL backend.
+tor-llcrypto = { path = "../../../third_party/tor-llcrypto-0.47.0" }
+tor-key-forge = { path = "../../../third_party/tor-key-forge-0.47.0" }
+tor-cert = { path = "../../../third_party/tor-cert-0.47.0" }
+tor-netdoc = { path = "../../../third_party/tor-netdoc-0.47.0" }
+ssh-key-fork-arti = { path = "../../../third_party/ssh-key-fork-arti-0.6.7" }
 # Retain the Windows 100 ns SystemTime fix required by Arti consensus parsing.
 saturating-time = { path = "../../../third_party/saturating-time" }
+
+# API-preserving upstream VariantStrIter fix for the Linux GTK3 GLib line.
+glib = { path = "../../../third_party/glib-0.18.5" }
+
+[patch."https://github.com/monero-oxide/monero-oxide.git"]
+monero-generators = { path = "../../../third_party/monero-generators-0.4.0" }

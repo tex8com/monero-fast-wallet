@@ -1,0 +1,45 @@
+[package]
+name = "monero-generators"
+version = "0.4.0"
+description = "Monero's hash to point function and generators"
+license = "MIT"
+repository = "https://github.com/monero-oxide/monero-oxide/tree/main/monero-oxide/generators"
+authors = ["Luke Parker <lukeparker5132@gmail.com>"]
+edition = "2021"
+rust-version = "1.87"
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+
+[dependencies]
+std-shims = { version = "0.1.5", default-features = false }
+
+subtle = { version = "^2.4", default-features = false }
+
+sha3 = { version = "0.10", default-features = false }
+
+group = { version = "0.13", default-features = false, features = ["alloc"] }
+curve25519-dalek = { version = "4", default-features = false, features = ["alloc", "zeroize"] }
+crypto-bigint = { version = "=0.7.10", default-features = false, features = ["alloc", "subtle"] }
+dalek-ff-group = { version = "0.5", default-features = false }
+
+monero-io = { git = "https://github.com/monero-oxide/monero-oxide.git", rev = "7c288b058ae7f1e3d36600a2af11b3176102bcfc", version = "0.1", default-features = false }
+
+[dev-dependencies]
+hex = "0.4"
+
+[features]
+std = [
+  "std-shims/std",
+
+  "subtle/std",
+
+  "sha3/std",
+
+  "dalek-ff-group/std",
+
+  "monero-io/std"
+]
+default = ["std"]

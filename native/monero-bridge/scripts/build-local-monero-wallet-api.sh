@@ -83,22 +83,14 @@ fi
 # The isolated copy permits Cargo to reconcile the local Dalek override without
 # mutating the checked-in protocol lockfile.
 fast_wallet_protocol_build_root="$(mktemp -d "${TMPDIR:-/tmp}/tex8-local-fast-wallet-protocol.XXXXXX")"
-fast_wallet_protocol_build_source="${fast_wallet_protocol_build_root}/fast-wallet-protocol"
-mkdir -p "${fast_wallet_protocol_build_source}" "${fast_wallet_protocol_build_root}/mfw-recipient-protocol"
+fast_wallet_protocol_build_source="${fast_wallet_protocol_build_root}/native/fast-wallet-protocol"
 cleanup_fast_wallet_protocol_build() {
   rm -rf "${fast_wallet_protocol_build_root}"
 }
 trap cleanup_fast_wallet_protocol_build EXIT
-cp "${fast_wallet_protocol_root}/Cargo.toml" "${fast_wallet_protocol_root}/Cargo.lock" \
-  "${fast_wallet_protocol_build_source}/"
-cp -R "${fast_wallet_protocol_root}/src" "${fast_wallet_protocol_root}/include" \
-  "${fast_wallet_protocol_build_source}/"
-cp "${repo_root}/native/mfw-recipient-protocol/Cargo.toml" \
-  "${repo_root}/native/mfw-recipient-protocol/Cargo.lock" \
-  "${repo_root}/native/mfw-recipient-protocol/README.md" \
-  "${fast_wallet_protocol_build_root}/mfw-recipient-protocol/"
-cp -R "${repo_root}/native/mfw-recipient-protocol/src" \
-  "${fast_wallet_protocol_build_root}/mfw-recipient-protocol/"
+source "${repo_root}/native/monero-bridge/scripts/stage-fast-wallet-protocol-source.sh"
+stage_fast_wallet_protocol_sources "${repo_root}" "${fast_wallet_protocol_build_root}" \
+  "${fast_wallet_protocol_root}" "${product_core_root}"
 cargo --config "$(wallet_cpu_cargo_config)" metadata \
   --manifest-path "${fast_wallet_protocol_build_source}/Cargo.toml" \
   --features mobile-fast-crypto --format-version 1 >/dev/null

@@ -1,0 +1,108 @@
+{
+  "strategy": "API-only adapters to unmodified official crypto-bigint 0.7.10; no arithmetic algorithm backport",
+  "msrv": "1.87",
+  "required_status": "elliptic-curve required by VOPRF; k256/p256/primeorder are optional inactive-path compatibility adapters pending final product cargo tree and lock cleanup",
+  "crates": [
+    {
+      "crate": "elliptic-curve-0.13.8",
+      "source": "crates.io",
+      "original_archive_sha256": "b5e6043086bf7973472e0c7dff2142ea0b680d30e18d9cc40f267efbf222bd47",
+      "required_in_product_after_ssh_feature_reduction": true,
+      "original_manifest_sha256": "ae28aa3db758a5b18bf9e4b1253082b2503067f41be65e0bf3dc89917fda3f76",
+      "changed_files": [
+        {
+          "path": "Cargo.toml",
+          "upstream_sha256": "ae28aa3db758a5b18bf9e4b1253082b2503067f41be65e0bf3dc89917fda3f76",
+          "modified_sha256": "fd80298f1ee83f6ec5da2044181fb23d5cdff69b59514377f83b9032688f9b5a"
+        },
+        {
+          "path": "src/bigint.rs",
+          "upstream_sha256": null,
+          "modified_sha256": "be482edc320017c2d4817e172138a96f601c7f969db318ffffe2c81762f9d91a"
+        },
+        {
+          "path": "src/bigint_rng.rs",
+          "upstream_sha256": null,
+          "modified_sha256": "5480ef787030d9c282dbd54b3547d00ca42448012d8b587c28d81538682d4099"
+        },
+        {
+          "path": "src/lib.rs",
+          "upstream_sha256": "24db533221762c4e504428821f79bd3508a2dfaeef21ae3a67ece7d5d65da6c7",
+          "modified_sha256": "77822091b69e6899a057b3fa09819484740efe8f7fe2ff94a405d4fced25ab7d"
+        },
+        {
+          "path": "src/scalar/nonzero.rs",
+          "upstream_sha256": "e485dad71df0e161a354ab9998ed155f3ae19a63be5b41d5c368fe942a21d329",
+          "modified_sha256": "bdcf89e64f35e54fcb62de8c79e2b3fdfbf2753c398ba0313e73ebc6163c90f2"
+        },
+        {
+          "path": "src/scalar/primitive.rs",
+          "upstream_sha256": "19363dfc72b339c06e41ea60a1205fed5f301e7ec144feee22ea05a9c3aa4576",
+          "modified_sha256": "1056c89b02586017f68d61bc9be5ebca0160ec357deb82137532062e592a7e92"
+        }
+      ]
+    },
+    {
+      "crate": "k256-0.13.4",
+      "source": "crates.io",
+      "original_archive_sha256": "f6e3919bbaa2945715f0bb6d3934a173d1e9a59ac23767fbaaef277265a7411b",
+      "required_in_product_after_ssh_feature_reduction": false,
+      "original_manifest_sha256": "c66662150f07eb8766599c1bcfbe725894ba6da041740412a13dc6f48eb1f940",
+      "changed_files": [
+        {
+          "path": "Cargo.toml",
+          "upstream_sha256": "c66662150f07eb8766599c1bcfbe725894ba6da041740412a13dc6f48eb1f940",
+          "modified_sha256": "aa46935fd0fff310d34765b66c8d3b32b365ddd2221a3469b45991ebfc3f5ea0"
+        },
+        {
+          "path": "src/arithmetic/scalar.rs",
+          "upstream_sha256": "e100091f87e88787ba6f56a14c68d4fa0c712ff34ed19cbc99b1e8ffb83aff15",
+          "modified_sha256": "057ba7f9f5819af69727755042acd9a91e2af7ec0485d7ee4749bcc0d6ac5354"
+        }
+      ]
+    },
+    {
+      "crate": "p256-0.13.2",
+      "source": "crates.io",
+      "original_archive_sha256": "c9863ad85fa8f4460f9c48cb909d38a0d689dba1f6f6988a5e3e0d31071bcd4b",
+      "required_in_product_after_ssh_feature_reduction": false,
+      "original_manifest_sha256": "7f2c98e9af91a495cf341425f77b782d6c253dba9cf4f63a16d63489ecb9ddfc",
+      "changed_files": [
+        {
+          "path": "Cargo.toml",
+          "upstream_sha256": "7f2c98e9af91a495cf341425f77b782d6c253dba9cf4f63a16d63489ecb9ddfc",
+          "modified_sha256": "662f4915fdc2a81ef69015bc7b1f2beb6ab71b3a93b5bb6a8fc9a3797df568c2"
+        },
+        {
+          "path": "src/arithmetic/scalar.rs",
+          "upstream_sha256": "50a38c74863ee5e808faf49354eb5c0f9e86a79cb77c68e5cad43e583c11871a",
+          "modified_sha256": "25198cc11fc92ea4ed3aa8b91b2510d90ee56711ef128a06099c0f18b892ccb9"
+        }
+      ]
+    },
+    {
+      "crate": "primeorder-0.13.6",
+      "source": "crates.io",
+      "original_archive_sha256": "353e1ca18966c16d9deb1c69278edbc5f194139612772bd9537af60ac231e1e6",
+      "required_in_product_after_ssh_feature_reduction": false,
+      "original_manifest_sha256": "b2c33028ef1a7763ac1828c3f3c009e73085773de8adbfc043a6f5ca8ba7dba7",
+      "changed_files": [
+        {
+          "path": "Cargo.toml",
+          "upstream_sha256": "b2c33028ef1a7763ac1828c3f3c009e73085773de8adbfc043a6f5ca8ba7dba7",
+          "modified_sha256": "712be6013a5abb739d8c5e26d4c365d0590f544b77d45ee910388c684cb9139a"
+        },
+        {
+          "path": "src/field.rs",
+          "upstream_sha256": "5a3c9bb09c21cafb56032374d99be8494d7bf482253e701cf745c0d6b4df61a5",
+          "modified_sha256": "749a1e1dfec98913f59794e10b77611d8f72135d0617b7ceaecb2bccb7bfa507"
+        },
+        {
+          "path": "src/projective.rs",
+          "upstream_sha256": "4250a404894f3f18f788bdac07c91573ff57070e5a7bea54b8422c49f53b3f15",
+          "modified_sha256": "2befee15f152917054019f862c27f21d8d6385a80b0df9290580062a10b81619"
+        }
+      ]
+    }
+  ]
+}

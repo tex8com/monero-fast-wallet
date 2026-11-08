@@ -341,6 +341,11 @@ archives=(
   "${depends_prefix}/lib/libiconv.a"
   "${grpc_sdk_prefix}/lib/libz.a"
 )
+# Rust's client-side Tor RSA verifier must use the same static OpenSSL as Core.
+# Do not resolve another Homebrew or vendored OpenSSL into this executable.
+export OPENSSL_DIR="${depends_prefix}"
+export OPENSSL_STATIC=1
+export OPENSSL_NO_VENDOR=1
 link_args=()
 for archive in "${archives[@]}"; do
   [[ -f "${archive}" ]] || { echo "Missing native archive: ${archive}" >&2; return 1 2>/dev/null || exit 1; }

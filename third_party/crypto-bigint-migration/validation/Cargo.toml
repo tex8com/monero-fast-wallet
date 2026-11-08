@@ -1,0 +1,21 @@
+[package]
+name = "mfw-bigint-migration-validation"
+version = "0.0.0"
+edition = "2021"
+publish = false
+[workspace]
+[dependencies]
+crypto-bigint = { version = "=0.7.10", default-features = false, features = ["alloc", "subtle", "zeroize"] }
+dalek04 = { package = "dalek-ff-group", version = "=0.4.6" }
+dalek05 = { package = "dalek-ff-group", version = "=0.5.0" }
+minimal-ed448 = "=0.4.2"
+monero-generators = { path = "../../monero-generators-0.4.0" }
+group = "0.13"
+rand_core = "0.6"
+rand_chacha = "0.3"
+num-bigint = "0.4"
+hex = "0.4"
+[patch.crates-io]
+dalek04 = { package = "dalek-ff-group", path = "../../dalek-ff-group-0.4.6" }
+dalek05 = { package = "dalek-ff-group", path = "../../dalek-ff-group-0.5.0" }
+minimal-ed448 = { package = "minimal-ed448", path = "../../minimal-ed448-0.4.2" }

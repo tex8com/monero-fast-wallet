@@ -1,0 +1,440 @@
+--- a/third_party/elliptic-curve-0.13.8/Cargo.toml
++++ b/third_party/elliptic-curve-0.13.8/Cargo.toml
+@@ -11,7 +11,7 @@
+ 
+ [package]
+ edition = "2021"
+-rust-version = "1.65"
++rust-version = "1.87"
+ name = "elliptic-curve"
+ version = "0.13.8"
+ authors = ["RustCrypto Developers"]
+@@ -59,10 +59,10 @@
+ default-features = false
+ 
+ [dependencies.crypto-bigint]
+-version = "0.5"
+-features = [
++version = "=0.7.10"
++features = ["subtle",
+     "rand_core",
+-    "generic-array",
++    "hybrid-array",
+     "zeroize",
+ ]
+ default-features = false
+@@ -218,3 +218,8 @@
+     "sec1?/std",
+ ]
+ voprf = ["digest"]
++
++[dependencies.rand_core_10]
++package = "rand_core"
++version = "0.10"
++default-features = false
+--- a/third_party/elliptic-curve-0.13.8/src/bigint.rs
++++ b/third_party/elliptic-curve-0.13.8/src/bigint.rs
+@@ -0,0 +1,56 @@
++//! Byte-container compatibility for the official crypto-bigint 0.7 implementation.
++//!
++//! Elliptic-curve 0.13 exposes generic-array 0.14 in its public API. Keep that
++//! representation at the boundary and delegate integer operations to 0.7.
++
++pub use crypto_bigint::*;
++use generic_array::{ArrayLength, GenericArray};
++
++/// Byte array in the existing elliptic-curve public encoding API.
++pub type ByteArray<T> = GenericArray<u8, <T as ArrayEncoding>::ByteSize>;
++
++/// Encoding boundary between generic-array and crypto-bigint's hybrid-array.
++pub trait ArrayEncoding: Encoding {
++    /// Number of encoded bytes.
++    type ByteSize: ArrayLength<u8> + core::ops::Add + Eq + Ord;
++    /// Decode big-endian bytes.
++    fn from_be_byte_array(bytes: ByteArray<Self>) -> Self;
++    /// Decode little-endian bytes.
++    fn from_le_byte_array(bytes: ByteArray<Self>) -> Self;
++    /// Encode big-endian bytes.
++    fn to_be_byte_array(&self) -> ByteArray<Self>;
++    /// Encode little-endian bytes.
++    fn to_le_byte_array(&self) -> ByteArray<Self>;
++}
++
++impl<const LIMBS: usize> ArrayEncoding for Uint<LIMBS>
++where
++    Uint<LIMBS>: crypto_bigint::ArrayEncoding,
++    <Uint<LIMBS> as crypto_bigint::ArrayEncoding>::ByteSize: ArrayLength<u8>,
++{
++    type ByteSize = <Self as crypto_bigint::ArrayEncoding>::ByteSize;
++    fn from_be_byte_array(bytes: ByteArray<Self>) -> Self {
++        Self::from_be_slice(&bytes)
++    }
++    fn from_le_byte_array(bytes: ByteArray<Self>) -> Self {
++        Self::from_le_slice(&bytes)
++    }
++    fn to_be_byte_array(&self) -> ByteArray<Self> {
++        GenericArray::clone_from_slice(self.to_be_bytes().as_ref())
++    }
++    fn to_le_byte_array(&self) -> ByteArray<Self> {
++        GenericArray::clone_from_slice(self.to_le_bytes().as_ref())
++    }
++}
++
++/// Traits used by elliptic-curve 0.13 and its existing curve consumers.
++/// Ctutils comparison traits are deliberately qualified at the implementation
++/// boundary, so these imports retain the public subtle comparison API.
++pub mod prelude {
++    pub use super::{ArrayEncoding, ByteArray};
++    pub use crypto_bigint::{
++        AddMod, BitOps, Bounded, CheckedAdd, CheckedDiv, CheckedMul, CheckedSub,
++        ConstOne, ConstZero, Encoding, Integer, NegMod, Random, RandomMod, SubMod,
++        Zero,
++    };
++}
+--- a/third_party/elliptic-curve-0.13.8/src/bigint_rng.rs
++++ b/third_party/elliptic-curve-0.13.8/src/bigint_rng.rs
+@@ -0,0 +1,20 @@
++//! Compatibility adapter; randomness is still supplied by the caller's CSRNG.
++
++/// Infallible adapter from rand_core 0.6 to rand_core 0.10.
++#[doc(hidden)]
++pub struct LegacyRng<'a, R: rand_core::RngCore + ?Sized>(pub &'a mut R);
++
++impl<R: rand_core::RngCore + ?Sized> rand_core_10::TryRng for LegacyRng<'_, R> {
++    type Error = core::convert::Infallible;
++
++    fn try_next_u32(&mut self) -> Result<u32, Self::Error> {
++        Ok(self.0.next_u32())
++    }
++    fn try_next_u64(&mut self) -> Result<u64, Self::Error> {
++        Ok(self.0.next_u64())
++    }
++    fn try_fill_bytes(&mut self, dst: &mut [u8]) -> Result<(), Self::Error> {
++        self.0.fill_bytes(dst);
++        Ok(())
++    }
++}
+--- a/third_party/elliptic-curve-0.13.8/src/lib.rs
++++ b/third_party/elliptic-curve-0.13.8/src/lib.rs
+@@ -118,7 +118,11 @@
+     scalar::ScalarPrimitive,
+     secret_key::SecretKey,
+ };
+-pub use crypto_bigint as bigint;
++pub mod bigint;
++
++/// Adapter between the public rand_core 0.6 API and crypto-bigint 0.7 RNG API.
++#[doc(hidden)]
++pub mod bigint_rng;
+ pub use generic_array::{self, typenum::consts};
+ pub use rand_core;
+ pub use subtle;
+@@ -175,7 +179,16 @@
+     type FieldBytesSize: ArrayLength<u8> + Add + Eq;
+ 
+     /// Integer type used to represent field elements of this elliptic curve.
+-    type Uint: bigint::ArrayEncoding
++    type Uint: Copy
++        + bigint::Bounded
++        + subtle::ConstantTimeEq
++        + subtle::ConstantTimeLess
++        + subtle::ConstantTimeGreater
++        + subtle::ConditionallySelectable
++        + From<u64>
++        + bigint::ConstZero
++        + bigint::ConstOne
++        + bigint::ArrayEncoding
+         + bigint::AddMod<Output = Self::Uint>
+         + bigint::Encoding
+         + bigint::Integer
+--- a/third_party/elliptic-curve-0.13.8/src/scalar/nonzero.rs
++++ b/third_party/elliptic-curve-0.13.8/src/scalar/nonzero.rs
+@@ -11,7 +11,7 @@
+     ops::{Deref, Mul, Neg},
+     str,
+ };
+-use crypto_bigint::{ArrayEncoding, Integer};
++use crate::bigint::{ArrayEncoding, Integer};
+ use ff::{Field, PrimeField};
+ use generic_array::{typenum::Unsigned, GenericArray};
+ use rand_core::CryptoRngCore;
+--- a/third_party/elliptic-curve-0.13.8/src/scalar/primitive.rs
++++ b/third_party/elliptic-curve-0.13.8/src/scalar/primitive.rs
+@@ -67,13 +67,13 @@
+     /// Generate a random [`ScalarPrimitive`].
+     pub fn random(rng: &mut impl CryptoRngCore) -> Self {
+         Self {
+-            inner: C::Uint::random_mod(rng, &NonZero::new(Self::MODULUS).unwrap()),
++            inner: C::Uint::random_mod_vartime(&mut crate::bigint_rng::LegacyRng(rng), &NonZero::new(Self::MODULUS).unwrap()),
+         }
+     }
+ 
+     /// Create a new scalar from [`Curve::Uint`].
+     pub fn new(uint: C::Uint) -> CtOption<Self> {
+-        CtOption::new(Self { inner: uint }, uint.ct_lt(&Self::MODULUS))
++        CtOption::new(Self { inner: uint }, crate::bigint::CtLt::ct_lt(&uint, &Self::MODULUS).into())
+     }
+ 
+     /// Decode [`ScalarPrimitive`] from a serialized field element
+@@ -102,17 +102,17 @@
+ 
+     /// Is this [`ScalarPrimitive`] value equal to zero?
+     pub fn is_zero(&self) -> Choice {
+-        self.inner.is_zero()
++        self.inner.is_zero().into()
+     }
+ 
+     /// Is this [`ScalarPrimitive`] value even?
+     pub fn is_even(&self) -> Choice {
+-        self.inner.is_even()
++        self.inner.is_even().into()
+     }
+ 
+     /// Is this [`ScalarPrimitive`] value odd?
+     pub fn is_odd(&self) -> Choice {
+-        self.inner.is_odd()
++        self.inner.is_odd().into()
+     }
+ 
+     /// Encode [`ScalarPrimitive`] as a serialized field element.
+@@ -164,7 +164,7 @@
+ {
+     fn conditional_select(a: &Self, b: &Self, choice: Choice) -> Self {
+         Self {
+-            inner: C::Uint::conditional_select(&a.inner, &b.inner, choice),
++            inner: crate::bigint::CtSelect::ct_select(&a.inner, &b.inner, choice.into()),
+         }
+     }
+ }
+@@ -174,7 +174,7 @@
+     C: Curve,
+ {
+     fn ct_eq(&self, other: &Self) -> Choice {
+-        self.inner.ct_eq(&other.inner)
++        crate::bigint::CtEq::ct_eq(&self.inner, &other.inner).into()
+     }
+ }
+ 
+@@ -183,7 +183,7 @@
+     C: Curve,
+ {
+     fn ct_lt(&self, other: &Self) -> Choice {
+-        self.inner.ct_lt(&other.inner)
++        crate::bigint::CtLt::ct_lt(&self.inner, &other.inner).into()
+     }
+ }
+ 
+@@ -192,7 +192,7 @@
+     C: Curve,
+ {
+     fn ct_gt(&self, other: &Self) -> Choice {
+-        self.inner.ct_gt(&other.inner)
++        crate::bigint::CtGt::ct_gt(&self.inner, &other.inner).into()
+     }
+ }
+ 
+@@ -257,7 +257,7 @@
+ 
+     fn add(self, other: &Self) -> Self {
+         Self {
+-            inner: self.inner.add_mod(&other.inner, &Self::MODULUS),
++            inner: self.inner.add_mod(&other.inner, &NonZero::new(Self::MODULUS).expect("nonzero curve order")),
+         }
+     }
+ }
+@@ -299,7 +299,7 @@
+ 
+     fn sub(self, other: &Self) -> Self {
+         Self {
+-            inner: self.inner.sub_mod(&other.inner, &Self::MODULUS),
++            inner: self.inner.sub_mod(&other.inner, &NonZero::new(Self::MODULUS).expect("nonzero curve order")),
+         }
+     }
+ }
+@@ -330,7 +330,7 @@
+ 
+     fn neg(self) -> Self {
+         Self {
+-            inner: self.inner.neg_mod(&Self::MODULUS),
++            inner: self.inner.neg_mod(&NonZero::new(Self::MODULUS).expect("nonzero curve order")),
+         }
+     }
+ }
+@@ -360,8 +360,8 @@
+     C: Curve,
+ {
+     fn is_high(&self) -> Choice {
+-        let n_2 = C::ORDER >> 1;
+-        self.inner.ct_gt(&n_2)
++        let n_2 = C::ORDER >> 1u32;
++        crate::bigint::CtGt::ct_gt(&self.inner, &n_2).into()
+     }
+ }
+ 
+--- a/third_party/k256-0.13.4/Cargo.toml
++++ b/third_party/k256-0.13.4/Cargo.toml
+@@ -11,7 +11,7 @@
+ 
+ [package]
+ edition = "2021"
+-rust-version = "1.65"
++rust-version = "1.87"
+ name = "k256"
+ version = "0.13.4"
+ authors = ["RustCrypto Developers"]
+--- a/third_party/k256-0.13.4/src/arithmetic/scalar.rs
++++ b/third_party/k256-0.13.4/src/arithmetic/scalar.rs
+@@ -84,7 +84,7 @@
+ 
+     /// Checks if the scalar is zero.
+     pub fn is_zero(&self) -> Choice {
+-        self.0.is_zero()
++        self.0.is_zero().into()
+     }
+ 
+     /// Returns the SEC1 encoding of this scalar.
+@@ -94,17 +94,17 @@
+ 
+     /// Negates the scalar.
+     pub const fn negate(&self) -> Self {
+-        Self(self.0.neg_mod(&ORDER))
++        Self(self.0.neg_mod(&ORDER.to_nz().expect_copied("nonzero curve order")))
+     }
+ 
+     /// Returns self + rhs mod n.
+     pub const fn add(&self, rhs: &Self) -> Self {
+-        Self(self.0.add_mod(&rhs.0, &ORDER))
++        Self(self.0.add_mod(&rhs.0, &ORDER.to_nz().expect_copied("nonzero curve order")))
+     }
+ 
+     /// Returns self - rhs mod n.
+     pub const fn sub(&self, rhs: &Self) -> Self {
+-        Self(self.0.sub_mod(&rhs.0, &ORDER))
++        Self(self.0.sub_mod(&rhs.0, &ORDER.to_nz().expect_copied("nonzero curve order")))
+     }
+ 
+     /// Modulo multiplies two scalars.
+@@ -121,7 +121,7 @@
+     ///
+     /// Note: not constant-time with respect to the `shift` parameter.
+     pub fn shr_vartime(&self, shift: usize) -> Scalar {
+-        Self(self.0.shr_vartime(shift))
++        if shift >= U256::BITS as usize { Self::ZERO } else { Self(self.0.shr_vartime(shift as u32)) }
+     }
+ 
+     /// Inverts the scalar.
+@@ -339,7 +339,7 @@
+     }
+ 
+     fn is_odd(&self) -> Choice {
+-        self.0.is_odd()
++        self.0.is_odd().into()
+     }
+ }
+ 
+--- a/third_party/p256-0.13.2/Cargo.toml
++++ b/third_party/p256-0.13.2/Cargo.toml
+@@ -11,7 +11,7 @@
+ 
+ [package]
+ edition = "2021"
+-rust-version = "1.65"
++rust-version = "1.87"
+ name = "p256"
+ version = "0.13.2"
+ authors = ["RustCrypto Developers"]
+--- a/third_party/p256-0.13.2/src/arithmetic/scalar.rs
++++ b/third_party/p256-0.13.2/src/arithmetic/scalar.rs
+@@ -97,7 +97,7 @@
+ 
+     /// Returns self + rhs mod n
+     pub const fn add(&self, rhs: &Self) -> Self {
+-        Self(self.0.add_mod(&rhs.0, &NistP256::ORDER))
++        Self(self.0.add_mod(&rhs.0, &NistP256::ORDER.to_nz().expect_copied("nonzero curve order")))
+     }
+ 
+     /// Returns 2*self.
+@@ -107,12 +107,12 @@
+ 
+     /// Returns self - rhs mod n.
+     pub const fn sub(&self, rhs: &Self) -> Self {
+-        Self(self.0.sub_mod(&rhs.0, &NistP256::ORDER))
++        Self(self.0.sub_mod(&rhs.0, &NistP256::ORDER.to_nz().expect_copied("nonzero curve order")))
+     }
+ 
+     /// Returns self * rhs mod n
+     pub const fn multiply(&self, rhs: &Self) -> Self {
+-        let (lo, hi) = self.0.mul_wide(&rhs.0);
++        let (lo, hi) = self.0.widening_mul(&rhs.0);
+         Self(barrett_reduce(lo, hi))
+     }
+ 
+@@ -126,7 +126,7 @@
+     ///
+     /// Note: not constant-time with respect to the `shift` parameter.
+     pub const fn shr_vartime(&self, shift: usize) -> Scalar {
+-        Self(self.0.shr_vartime(shift))
++        if shift >= U256::BITS as usize { Self::ZERO } else { Self(self.0.shr_vartime(shift as u32)) }
+     }
+ 
+     /// Returns the multiplicative inverse of self, if self is non-zero
+@@ -181,7 +181,7 @@
+ 
+     /// Is integer representing equivalence class odd?
+     pub fn is_odd(&self) -> Choice {
+-        self.0.is_odd()
++        self.0.is_odd().into()
+     }
+ 
+     /// Is integer representing equivalence class even?
+@@ -310,7 +310,7 @@
+     }
+ 
+     fn is_odd(&self) -> Choice {
+-        self.0.is_odd()
++        self.0.is_odd().into()
+     }
+ }
+ 
+--- a/third_party/primeorder-0.13.6/Cargo.toml
++++ b/third_party/primeorder-0.13.6/Cargo.toml
+@@ -11,7 +11,7 @@
+ 
+ [package]
+ edition = "2021"
+-rust-version = "1.65"
++rust-version = "1.87"
+ name = "primeorder"
+ version = "0.13.6"
+ authors = ["RustCrypto Developers"]
+--- a/third_party/primeorder-0.13.6/src/field.rs
++++ b/third_party/primeorder-0.13.6/src/field.rs
+@@ -168,7 +168,7 @@
+             /// If odd, return `Choice(1)`.  Otherwise, return `Choice(0)`.
+             pub fn is_odd(&self) -> Choice {
+                 use $crate::elliptic_curve::bigint::Integer;
+-                self.to_canonical().is_odd()
++                self.to_canonical().is_odd().into()
+             }
+ 
+             /// Determine if this [`
+--- a/third_party/primeorder-0.13.6/src/projective.rs
++++ b/third_party/primeorder-0.13.6/src/projective.rs
+@@ -9,7 +9,7 @@
+     ops::{Add, AddAssign, Mul, MulAssign, Neg, Sub, SubAssign},
+ };
+ use elliptic_curve::{
+-    bigint::{ArrayEncoding, Integer},
++    bigint::{ArrayEncoding, Bounded, Integer},
+     generic_array::ArrayLength,
+     group::{
+         self,
+@@ -122,7 +122,7 @@
+         }
+ 
+         let mut q = Self::IDENTITY;
+-        let mut pos = C::Uint::BITS - 4;
++        let mut pos = C::Uint::BITS as usize - 4;
+ 
+         loop {
+             let slot = (k[pos >> 3] >> (pos & 7)) & 0xf;

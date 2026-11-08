@@ -143,28 +143,10 @@ build_fast_wallet_protocol() (
   source "${repo_root}/native/monero-bridge/scripts/prepare-wallet-crypto-cpu-backend.sh"
   build_root="$(mktemp -d "${TMPDIR:-/tmp}/tex8-linux-fast-wallet-protocol.XXXXXX")"
   trap 'rm -rf "${build_root}"' EXIT
-  build_source="${build_root}/fast-wallet-protocol"
-  recipient_source="${build_root}/mfw-recipient-protocol"
-  product_source="${build_root}/product-core"
-  mkdir -p "${build_source}" "${recipient_source}" "${product_source}"
-  cp "${fast_wallet_protocol_root}/Cargo.toml" "${fast_wallet_protocol_root}/Cargo.lock" \
-    "${build_source}/"
-  cp -R "${fast_wallet_protocol_root}/src" "${fast_wallet_protocol_root}/include" \
-    "${fast_wallet_protocol_root}/test-vectors" \
-    "${build_source}/"
-  cp \
-    "${repo_root}/native/mfw-recipient-protocol/Cargo.toml" \
-    "${repo_root}/native/mfw-recipient-protocol/Cargo.lock" \
-    "${repo_root}/native/mfw-recipient-protocol/README.md" \
-    "${recipient_source}/"
-  cp -R "${repo_root}/native/mfw-recipient-protocol/src" "${recipient_source}/"
-  # mobile-fast-crypto embeds Product Core in this one Rust archive. Preserve
-  # its path dependency and compile-time schema/generated inputs, but never
-  # copy an existing target cache into the isolated source tree.
-  cp "${product_core_root}/Cargo.toml" "${product_core_root}/Cargo.lock" \
-    "${product_source}/"
-  cp -R "${product_core_root}/src" "${product_core_root}/schema" \
-    "${product_core_root}/generated" "${product_source}/"
+  build_source="${build_root}/native/fast-wallet-protocol"
+  source "${repo_root}/native/monero-bridge/scripts/stage-fast-wallet-protocol-source.sh"
+  stage_fast_wallet_protocol_sources "${repo_root}" "${build_root}" \
+    "${fast_wallet_protocol_root}" "${product_core_root}"
   cargo --config "$(wallet_cpu_cargo_config)" metadata \
     --manifest-path "${build_source}/Cargo.toml" \
     --features mobile-fast-crypto --format-version 1 >/dev/null

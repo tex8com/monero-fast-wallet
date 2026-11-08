@@ -173,7 +173,11 @@ test('Linux protocol isolation preserves its local Rust dependency and schema cl
     assert.ok(buildFunction, 'the protocol staging entry point must exist');
     const result = spawnSync('bash', ['-c', `
 set -euo pipefail
-source() { wallet_cpu_cargo_config() { printf fixture; }; }
+source() {
+  if [[ "$1" == *prepare-wallet-crypto-cpu-backend.sh ]]; then
+    wallet_cpu_cargo_config() { printf fixture; }
+  else builtin source "$@"; fi
+}
 cargo() {
   if [[ "$*" == *metadata* ]]; then cp -R "$build_root/." "$TEST_SNAPSHOT"; fi
 }
@@ -197,12 +201,12 @@ build_fast_wallet_protocol
       if (manifests.has(manifest)) return;
       assert.equal(existsSync(manifest), true, `missing staged path dependency: ${manifest}`);
       manifests.add(manifest);
-      for (const match of readFileSync(manifest, 'utf8').matchAll(/\bpath\s*=\s*"([^"]+)"/g)) {
+      for (const match of readFileSync(manifest, 'utf8').matchAll(/\bpath\s*=\s*"((?:\.\.\/)+[^"]+)"/g)) {
         checkLocalDependencies(resolve(dirname(manifest), match[1], 'Cargo.toml'));
       }
     };
-    checkLocalDependencies(resolve(snapshot, 'fast-wallet-protocol', 'Cargo.toml'));
-    assert.equal(manifests.size, 3, 'Protocol, Recipient and Product Core must be staged');
+    checkLocalDependencies(resolve(snapshot, 'native', 'fast-wallet-protocol', 'Cargo.toml'));
+    assert.ok(manifests.size >= 3, 'Protocol, Recipient, Product Core and every pinned path dependency must be staged');
     for (const input of [
       'src/lib.rs',
       'generated/rust/mfw_product_core_contract.rs',
@@ -212,10 +216,10 @@ build_fast_wallet_protocol
       'schema/app-vault-state-machine.v1.json',
       'schema/wallet-lifecycle.v1.json',
     ]) {
-      assert.deepEqual(readFileSync(resolve(snapshot, 'product-core', input)), readFileSync(resolve(product, input)), input);
+      assert.deepEqual(readFileSync(resolve(snapshot, 'native', 'product-core', input)), readFileSync(resolve(product, input)), input);
     }
-    assert.equal(existsSync(resolve(snapshot, 'product-core', 'target')), false);
-    assert.equal(existsSync(resolve(snapshot, 'fast-wallet-protocol', 'test-vectors', 'worker-descriptor-v1.json')), true);
+    assert.equal(existsSync(resolve(snapshot, 'native', 'product-core', 'target')), false);
+    assert.equal(existsSync(resolve(snapshot, 'native', 'fast-wallet-protocol', 'test-vectors', 'worker-descriptor-v1.json')), true);
   } finally {
     rmSync(fixture, { recursive: true, force: true });
   }

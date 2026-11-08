@@ -35,10 +35,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "autocfg"
+version = "1.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
+
+[[package]]
 name = "base16ct"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4c7f02d4ea65f2c1853089ffd8d2787bdbc63de2f0d29dedbcf8ccdfa0ccd4cf"
+
+[[package]]
+name = "base16ct"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fd307490d624467aa6f74b0eabb77633d1f758a7b25f12bceb0b22e08d9726f6"
 
 [[package]]
 name = "base64ct"
@@ -208,6 +220,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2459377285ad874054d797f3ccebf984978aa39129f6eafde5cdc8315b612f8"
 
 [[package]]
+name = "cpubits"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "15b85f9c39137c3a891689859392b1bd49812121d0d61c9caf00d46ed5ce06ae"
+
+[[package]]
 name = "cpufeatures"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -252,12 +270,15 @@ checksum = "61803da095bee82a81bb1a452ecc25d3b2f1416d1897eb86430c6159ef717c17"
 
 [[package]]
 name = "crypto-bigint"
-version = "0.5.5"
+version = "0.7.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0dc92fb57ca44df6db8059111ab3af99a63d5d0f8375d9972e319a379c6bab76"
+checksum = "9c035cb64cba03dad2fb921f3e218785e8cf9a41790da5eb3a1400f62fa2be11"
 dependencies = [
- "generic-array 0.14.9",
- "rand_core 0.6.4",
+ "cpubits",
+ "ctutils",
+ "hybrid-array",
+ "num-traits",
+ "rand_core 0.10.1",
  "serdect",
  "subtle",
  "zeroize",
@@ -285,11 +306,12 @@ dependencies = [
 
 [[package]]
 name = "ctutils"
-version = "0.4.4"
+version = "0.4.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "12218662ccac37d9714f2191252553d67585b97df8c839cbe49e0bde278dc865"
+checksum = "261af4dc7a06ea8a527a8717d8cbba3417530d6ea14e1edb3de6b67806be474f"
 dependencies = [
  "cmov",
+ "subtle",
 ]
 
 [[package]]
@@ -339,8 +361,6 @@ dependencies = [
 [[package]]
 name = "dalek-ff-group"
 version = "0.4.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "231684731518402967286b76bedadedfd6b0867f814e2cd41d4a82bedea2902a"
 dependencies = [
  "crypto-bigint",
  "curve25519-dalek 4.1.3",
@@ -357,8 +377,6 @@ dependencies = [
 [[package]]
 name = "dalek-ff-group"
 version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "26103554e8f7857b6015a4a9ef551c6ce0669f6caa040785d4394bf52041ccaf"
 dependencies = [
  "ciphersuite",
  "crypto-bigint",
@@ -474,16 +492,15 @@ checksum = "9e5e8f6c15a24b9a3ee5efec809ccd006d3b30e8b3bb63c39af737c7f87daa1d"
 [[package]]
 name = "elliptic-curve"
 version = "0.13.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b5e6043086bf7973472e0c7dff2142ea0b680d30e18d9cc40f267efbf222bd47"
 dependencies = [
- "base16ct",
+ "base16ct 0.2.0",
  "crypto-bigint",
  "digest 0.10.7",
  "ff",
  "generic-array 0.14.9",
  "group",
  "pkcs8",
+ "rand_core 0.10.1",
  "rand_core 0.6.4",
  "sec1",
  "subtle",
@@ -702,6 +719,7 @@ version = "0.4.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "818356c5132c1fede50f837ca96afbe78ff42413047f4abb886217845e1b6c8c"
 dependencies = [
+ "subtle",
  "typenum",
 ]
 
@@ -924,8 +942,6 @@ dependencies = [
 [[package]]
 name = "minimal-ed448"
 version = "0.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0209ec7c2b5573660a3c5d0f64c90f8ff286171b15ad2234e7a3fbf8f26180be"
 dependencies = [
  "crypto-bigint",
  "ff",
@@ -962,7 +978,6 @@ dependencies = [
 [[package]]
 name = "monero-generators"
 version = "0.4.0"
-source = "git+https://github.com/monero-oxide/monero-oxide.git?rev=7c288b058ae7f1e3d36600a2af11b3176102bcfc#7c288b058ae7f1e3d36600a2af11b3176102bcfc"
 dependencies = [
  "crypto-bigint",
  "curve25519-dalek 4.1.3",
@@ -995,6 +1010,15 @@ dependencies = [
  "sha3",
  "std-shims",
  "zeroize",
+]
+
+[[package]]
+name = "num-traits"
+version = "0.2.19"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "071dfc062690e90b734c0b2273ce72ad0ffa95f0c74596bc250dcfd960262841"
+dependencies = [
+ "autocfg",
 ]
 
 [[package]]
@@ -1215,7 +1239,7 @@ version = "0.7.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d3e97a565f76233a6003f9f5c54be1d9c5bdfa3eccfb189469f11ec4901c47dc"
 dependencies = [
- "base16ct",
+ "base16ct 0.2.0",
  "der",
  "generic-array 0.14.9",
  "pkcs8",
@@ -1274,11 +1298,11 @@ dependencies = [
 
 [[package]]
 name = "serdect"
-version = "0.2.0"
+version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a84f14a19e9a014bb9f4512488d9829a68e04ecabffb0f9904cd1ace94598177"
+checksum = "66cf8fedced2fcf12406bcb34223dffb92eaf34908ede12fed414c82b7f00b3e"
 dependencies = [
- "base16ct",
+ "base16ct 1.0.0",
  "serde",
 ]
 

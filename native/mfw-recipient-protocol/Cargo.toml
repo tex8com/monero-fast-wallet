@@ -30,3 +30,7 @@ tempfile = "3"
 
 [lints.rust]
 unsafe_code = "forbid"
+
+[patch.crates-io]
+# The Ristretto VOPRF retains its API and uses the hardened bigint dependency.
+elliptic-curve = { path = "../../third_party/elliptic-curve-0.13.8" }
