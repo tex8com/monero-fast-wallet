@@ -17,6 +17,8 @@ mod fast_wallet_enrollment;
 mod fast_wallet_hosting;
 mod ledger_operation;
 mod linux_notification_agent;
+#[cfg(target_os = "linux")]
+mod linux_private_directory;
 mod mfw_name_resolver;
 mod mfw_names;
 mod native_wallet;

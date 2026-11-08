@@ -87,6 +87,10 @@ pub fn reconcile(app: &AppHandle, enabled: bool) -> Result<(), String> {
         }
         return Ok(());
     }
+    for directory in [&data, &data.join("notifications")] {
+        crate::linux_private_directory::ensure_private_directory(directory)
+            .map_err(|_| "Linux notification directories could not be protected.".to_owned())?;
+    }
     let _ = persistent_app_command()?;
     let source = bundled_agent(app)?
         .canonicalize()

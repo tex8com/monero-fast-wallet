@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { tmpdir } from 'node:os';
+import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import test from 'node:test';
@@ -12,6 +15,7 @@ const read = (...segments) => readFileSync(resolve(...segments), 'utf8');
 const cargo = read(desktopRoot, 'src-tauri', 'Cargo.toml');
 const windowsConfig = read(desktopRoot, 'src-tauri', 'tauri.windows.conf.json');
 const linuxConfig = read(desktopRoot, 'src-tauri', 'tauri.linux.conf.json');
+const linuxAgentUnit = read(desktopRoot, 'packaging', 'linux', 'monero-fast-walletd.service');
 const bundleScript = read(desktopRoot, 'scripts', 'build-bundle.sh');
 const signScript = read(desktopRoot, 'scripts', 'sign-macos-app.sh');
 const packageScript = read(desktopRoot, 'scripts', 'package-macos-signed.sh');
@@ -75,6 +79,164 @@ test('Windows and Linux release packages carry their closed-app notification hel
   assert.match(bundleScript, /\[\[ ! -s "\$\{notification_agent\}" \]\]/);
 });
 
+test('Linux stages and fingerprints the current helper with external or default Cargo outputs', () => {
+  const fixture = realpathSync(mkdtempSync(resolve(tmpdir(), 'mfw-helper-packaging-')));
+  const desktop = resolve(fixture, 'desktop');
+  const scripts = resolve(desktop, 'scripts');
+  const resource = resolve(desktop, 'src-tauri', 'target', 'release', 'monero-fast-walletd');
+  const bin = resolve(fixture, 'bin');
+  const native = resolve(fixture, 'native');
+  try {
+    for (const dir of [scripts, bin, native]) mkdirSync(dir, { recursive: true });
+    writeFileSync(resolve(scripts, 'build-bundle.sh'), bundleScript);
+    writeFileSync(resolve(scripts, 'prepare-linux-monero-core.sh'), `
+export DESKTOP_MONERO_SOURCE_DIR="\$TEST_NATIVE"
+export DESKTOP_MONERO_WALLET_API_LIBRARY="\$TEST_NATIVE/libwallet_api.a"
+export DESKTOP_MONERO_FAST_CRYPTO_LIBRARY="\$TEST_NATIVE/libmonero_fast_crypto.so"
+`);
+    for (const file of ['libwallet_api.a', 'libmonero_fast_crypto.so']) {
+      writeFileSync(resolve(native, file), 'fixture');
+    }
+    const tools = {
+      uname: '#!/bin/sh\necho Linux\n',
+      cargo: `#!/bin/bash
+set -euo pipefail
+target="\${CARGO_TARGET_DIR:-\$TEST_DESKTOP/src-tauri/target}"
+if [[ "\$1" == build ]]; then
+  mkdir -p "\$target/release"
+  printf '#!/bin/sh\\nexit 0\\n' > "\$target/release/monero-fast-walletd"
+  chmod u+x "\$target/release/monero-fast-walletd"
+elif [[ "\$1" == metadata ]]; then
+  node -e 'process.stdout.write(JSON.stringify({target_directory:process.env.TEST_DESKTOP+"/src-tauri/target"}))'
+else
+  exit 1
+fi
+`,
+      npm: `#!/bin/bash
+set -euo pipefail
+if [[ "\$1" == run ]]; then
+  target="\${CARGO_TARGET_DIR:-\$TEST_DESKTOP/src-tauri/target}"
+  resource="\$TEST_DESKTOP/src-tauri/target/release/monero-fast-walletd"
+  cmp "\$target/release/monero-fast-walletd" "\$resource"
+  [[ -x "\$resource" ]]
+fi
+`,
+    };
+    for (const [name, source] of Object.entries(tools)) {
+      const path = resolve(bin, name);
+      writeFileSync(path, source);
+      chmodSync(path, 0o755);
+    }
+    for (const mode of ['external-clean', 'external-stale', 'default']) {
+      rmSync(resolve(desktop, 'src-tauri', 'target'), { recursive: true, force: true });
+      if (mode === 'external-stale') {
+        mkdirSync(resolve(resource, '..'), { recursive: true });
+        writeFileSync(resource, 'stale helper');
+      }
+      const env = {
+        ...process.env,
+        PATH: `${bin}:${process.env.PATH}`,
+        TEST_DESKTOP: desktop,
+        TEST_NATIVE: native,
+      };
+      delete env.CARGO_TARGET_DIR;
+      if (mode.startsWith('external')) env.CARGO_TARGET_DIR = resolve(fixture, mode);
+      const result = spawnSync('bash', [resolve(scripts, 'build-bundle.sh'), 'appimage'], {
+        env,
+        encoding: 'utf8',
+      });
+      assert.equal(result.status, 0, `${mode}: ${result.stderr}`);
+      const helper = readFileSync(resource);
+      assert.equal(helper.toString(), '#!/bin/sh\nexit 0\n', mode);
+      const provenance = JSON.parse(readFileSync(`${resource}.provenance.json`, 'utf8'));
+      assert.equal(provenance.sha256, createHash('sha256').update(helper).digest('hex'), mode);
+      assert.equal(provenance.resource, resource, mode);
+      assert.equal(provenance.source, resolve(env.CARGO_TARGET_DIR ?? resolve(desktop, 'src-tauri', 'target'), 'release', 'monero-fast-walletd'), mode);
+    }
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
+  }
+});
+
+test('Linux protocol isolation preserves its local Rust dependency and schema closure', () => {
+  const fixture = realpathSync(mkdtempSync(resolve(tmpdir(), 'mfw-protocol-source-')));
+  const product = resolve(fixture, 'selected-product-core');
+  const snapshot = resolve(fixture, 'snapshot');
+  try {
+    mkdirSync(product);
+    for (const input of ['Cargo.toml', 'Cargo.lock', 'src', 'schema', 'generated']) {
+      cpSync(resolve(repoRoot, 'native', 'product-core', input), resolve(product, input), { recursive: true });
+    }
+    mkdirSync(resolve(product, 'target'));
+    writeFileSync(resolve(product, 'target', 'never-stage'), 'compiled cache');
+    const buildFunction = linuxCoreScript.match(/^build_fast_wallet_protocol\(\) \([\s\S]*?^\)$/m)?.[0];
+    assert.ok(buildFunction, 'the protocol staging entry point must exist');
+    const result = spawnSync('bash', ['-c', `
+set -euo pipefail
+source() { wallet_cpu_cargo_config() { printf fixture; }; }
+cargo() {
+  if [[ "$*" == *metadata* ]]; then cp -R "$build_root/." "$TEST_SNAPSHOT"; fi
+}
+${buildFunction}
+build_fast_wallet_protocol
+`], {
+      env: {
+        ...process.env,
+        repo_root: repoRoot,
+        product_core_root: product,
+        fast_wallet_protocol_root: resolve(repoRoot, 'native', 'fast-wallet-protocol'),
+        fast_crypto_source: resolve(fixture, 'unused-crypto.rs'),
+        fast_wallet_protocol_target_dir: resolve(fixture, 'unused-target'),
+        TEST_SNAPSHOT: snapshot,
+      },
+      encoding: 'utf8',
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const manifests = new Set();
+    const checkLocalDependencies = (manifest) => {
+      if (manifests.has(manifest)) return;
+      assert.equal(existsSync(manifest), true, `missing staged path dependency: ${manifest}`);
+      manifests.add(manifest);
+      for (const match of readFileSync(manifest, 'utf8').matchAll(/\bpath\s*=\s*"([^"]+)"/g)) {
+        checkLocalDependencies(resolve(dirname(manifest), match[1], 'Cargo.toml'));
+      }
+    };
+    checkLocalDependencies(resolve(snapshot, 'fast-wallet-protocol', 'Cargo.toml'));
+    assert.equal(manifests.size, 3, 'Protocol, Recipient and Product Core must be staged');
+    for (const input of [
+      'src/lib.rs',
+      'generated/rust/mfw_product_core_contract.rs',
+      'schema/diagnostic-registry.v1.json',
+      'schema/diagnostic-result.v1.json',
+      'schema/diagnostic-adapters.v1.json',
+      'schema/app-vault-state-machine.v1.json',
+      'schema/wallet-lifecycle.v1.json',
+    ]) {
+      assert.deepEqual(readFileSync(resolve(snapshot, 'product-core', input)), readFileSync(resolve(product, input)), input);
+    }
+    assert.equal(existsSync(resolve(snapshot, 'product-core', 'target')), false);
+    assert.equal(existsSync(resolve(snapshot, 'fast-wallet-protocol', 'test-vectors', 'worker-descriptor-v1.json')), true);
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
+  }
+});
+
+test('Linux notification activation preserves host UIDs and permits the AppImage FUSE helper', () => {
+  const directives = linuxAgentUnit.split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith('#'));
+  assert.ok(directives.includes('PrivateUsers=false'));
+  for (const setting of ['PrivateTmp', 'PrivateUsers']) {
+    assert.ok(directives.filter((line) => line.startsWith(`${setting}=`))
+      .every((line) => new RegExp(`^${setting}=(?:false|no|off|0)$`, 'i').test(line)),
+    'User namespace remapping must not hide root ownership from Arti');
+  }
+  assert.ok(directives.includes('UMask=0077'));
+  assert.ok(directives.includes('ExecStart=@AGENT_EXEC@ --config @AGENT_CONFIG@'));
+  assert.equal(directives.some((line) => /^NoNewPrivileges=(?:true|yes|on|1)$/i.test(line)), false,
+    'AppImage activation must permit its system fusermount SUID helper');
+});
+
 test('Linux links the authenticated Product Core and Fast Wallet protocol', () => {
   assert.match(linuxCoreScript, /MFW_PRODUCT_CORE_ROOT/);
   assert.match(linuxCoreScript, /MFW_PRODUCT_CORE_LIBRARY/);
@@ -89,6 +251,8 @@ test('Linux links the authenticated Product Core and Fast Wallet protocol', () =
   assert.match(linuxCoreScript, /"\$\{grpc_sdk_prefix\}\/lib\/libprotobuf\.a"/);
   assert.match(linuxCoreScript, /'-Wl,--end-group'/);
   assert.match(linuxCoreScript, /-lstdc\+\+,-lgcc,-latomic,-lc/);
+  assert.match(linuxCoreScript, /linux_build_jobs="\$\{JOBS:-4\}"/);
+  assert.match(linuxCoreScript, /--target wallet_api --parallel "\$\{linux_build_jobs\}"/);
 });
 
 test('Windows packages the authenticated Core and its private runtime closure', () => {

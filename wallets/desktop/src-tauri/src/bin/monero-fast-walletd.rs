@@ -89,7 +89,20 @@ fn main() {
     }
 }
 
+fn initialize_tls_crypto_provider() {
+    // The helper is a separate process: the wallet's Rustls initialization
+    // cannot select its provider. Match the wallet's explicit Ring policy
+    // before Arti or the notification stream can construct a TLS client.
+    if rustls::crypto::ring::default_provider()
+        .install_default()
+        .is_ok()
+    {
+        eprintln!("MONERO_AGENT_TLS provider=ring");
+    }
+}
+
 fn run() -> Result<(), String> {
+    initialize_tls_crypto_provider();
     let (config_path, open_notification) = agent_runtime::arguments(env::args().skip(1).collect())?;
     let config = read_config(&config_path)?;
     validate_config(&config)?;
@@ -174,13 +187,10 @@ fn run_agent(config_path: String, _initial_config: AgentConfig) -> Result<(), St
     let mut journal = open_agent_journal(directory, &log)?;
     // Independent process, independent Arti cache/state and state lock.
     let tor_directory = directory.join("agent-tor");
+    #[cfg(target_os = "windows")]
     fs::create_dir_all(&tor_directory).map_err(|_| "agent Tor directory unavailable")?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&tor_directory, fs::Permissions::from_mode(0o700))
-            .map_err(|_| "agent Tor directory unavailable")?;
-    }
+    #[cfg(target_os = "linux")]
+    monero_wallet_desktop::tor_transport::prepare_private_directories(&tor_directory)?;
     monero_wallet_desktop::tor_transport::start_embedded_tor(tor_directory);
     let mut reconnect_delay_secs = 1_u64;
     loop {
@@ -899,6 +909,7 @@ fn show_notification(
             .summary("Monero Fast Wallet")
             .body(body)
             .appname("Monero Fast Wallet")
+            .action("default", "Open wallet")
             .action("open", "Open wallet")
             .show()
             .map_err(|_| "desktop notification could not be shown".to_owned())?;
@@ -1117,6 +1128,53 @@ fn is_opaque_event_id(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{validate_config, AgentConfig};
+
+    #[test]
+    fn helper_startup_initializes_tls_with_both_backends_and_is_idempotent() {
+        const CHILD_MARKER: &str = "MFW_AGENT_TLS_PROVIDER_TEST_CHILD";
+        if std::env::var_os(CHILD_MARKER).is_none() {
+            // Rustls selection is process-wide. A separate test process keeps
+            // another test's provider initialization from hiding this defect.
+            let result = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "tests::helper_startup_initializes_tls_with_both_backends_and_is_idempotent",
+                    "--nocapture",
+                ])
+                .env(CHILD_MARKER, "1")
+                .status()
+                .unwrap();
+            assert!(result.success(), "cold helper TLS initialization failed");
+            return;
+        }
+
+        // Both implementations must be compiled into this regression test,
+        // matching the feature unification that triggered the packaged panic.
+        let _ = rustls::crypto::ring::default_provider();
+        let _ = rustls::crypto::aws_lc_rs::default_provider();
+        assert!(rustls::crypto::CryptoProvider::get_default().is_none());
+        // Test-harness arguments are deliberately invalid agent arguments;
+        // run() must initialize TLS before returning, without reading a config.
+        assert!(super::run().is_err());
+        let first = rustls::crypto::CryptoProvider::get_default()
+            .unwrap()
+            .clone();
+        super::initialize_tls_crypto_provider();
+        assert!(std::sync::Arc::ptr_eq(
+            &first,
+            rustls::crypto::CryptoProvider::get_default().unwrap(),
+        ));
+        let config = rustls::ClientConfig::builder()
+            .with_root_certificates(rustls::RootCertStore::empty())
+            .with_no_client_auth();
+        let connection = rustls::ClientConnection::new(
+            std::sync::Arc::new(config),
+            "helper-startup.invalid".try_into().unwrap(),
+        )
+        .unwrap();
+        assert!(connection.wants_write());
+    }
+
     #[test]
     fn accepts_the_current_private_background_agent_contract() {
         let config = AgentConfig {

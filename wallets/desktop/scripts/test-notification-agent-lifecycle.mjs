@@ -19,9 +19,10 @@ test('Tauri binary discovery contains executable entrypoints rather than module 
 for (const [label, source] of [
   ['Windows interactive task, safe migration ownership, Unicode and update identity', 'windows_notification_task.rs'],
   ['Linux transitive ldd closure, stable paths and systemd argument escaping', 'linux_notification_install.rs'],
+  ['Linux Tor directories reject symlinks and foreign owners and retain existing state with private permissions', 'linux_private_directory.rs'],
 ]) {
   test(label, {
-    skip: process.platform === 'win32' && source === 'linux_notification_install.rs'
+    skip: process.platform === 'win32' && ['linux_notification_install.rs', 'linux_private_directory.rs'].includes(source)
       ? 'POSIX paths require Unix std::path semantics; this suite is not applicable on Windows.'
       : false,
   }, () => {

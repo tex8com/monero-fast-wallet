@@ -23,7 +23,7 @@ sha2="=${version('sha2')}"
 getrandom="=${version('getrandom')}"
 hex="=${version('hex')}"
 zeroize="=${version('zeroize')}"
-rustls={version="=${version('rustls')}",default-features=false,features=["ring"]}
+rustls={version="=${version('rustls')}",default-features=false,features=["ring","aws-lc-rs"]}
 tungstenite={version="=${version('tungstenite')}",default-features=false,features=["handshake","rustls-tls-webpki-roots"]}
 `);
 writeFileSync(join(directory,'Cargo.lock'),lock);
@@ -42,7 +42,14 @@ mod keyring {
  impl Entry { pub fn new(_: &str,_:&str)->Result<Self,()> {Ok(Self)} pub fn get_password(&self)->Result<String,()> {Err(())} }
 }
 mod monero_wallet_desktop { pub mod tor_transport {
+ #[cfg(unix)]
+ #[path=${JSON.stringify(join(desktop,'src-tauri/src/linux_private_directory.rs'))}]
+ mod private_directory;
  pub static STARTS:std::sync::atomic::AtomicUsize=std::sync::atomic::AtomicUsize::new(0);
+ pub fn prepare_private_directories(path:&std::path::Path)->Result<(),String>{
+  #[cfg(unix)] {private_directory::prepare_tor_directories(path).map_err(|error|error.to_string())}
+  #[cfg(not(unix))] {std::fs::create_dir_all(path).map_err(|error|error.to_string())}
+ }
  pub fn start_embedded_tor(_:std::path::PathBuf){STARTS.fetch_add(1,std::sync::atomic::Ordering::SeqCst);}
  pub fn socks_address()->String {"127.0.0.1:1".into()}
 }}

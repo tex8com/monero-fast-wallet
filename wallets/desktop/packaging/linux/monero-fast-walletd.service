@@ -6,13 +6,15 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=simple
+UMask=0077
 ExecStart=@AGENT_EXEC@ --config @AGENT_CONFIG@
 Environment=@AGENT_LIBRARY_ENV@
 Restart=on-failure
 RestartSec=15
 TimeoutStopSec=10
-NoNewPrivileges=true
-PrivateTmp=true
+# Preserve host UIDs for Arti's ownership checks and AppImage's fusermount.
+# PrivateTmp in an unprivileged user service implicitly enables PrivateUsers.
+PrivateUsers=false
 
 [Install]
 WantedBy=default.target

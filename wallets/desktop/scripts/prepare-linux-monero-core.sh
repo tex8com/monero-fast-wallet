@@ -16,6 +16,11 @@ product_dirty=false
 [[ -z "$(git -C "${repo_root}" status --porcelain)" ]] || product_dirty=true
 feature_manifest_hash="$(sha256sum "${feature_manifest}" | awk '{print $1}')"
 grpc_sdk_version="v1.80.0"
+linux_build_jobs="${JOBS:-4}"
+[[ "${linux_build_jobs}" =~ ^[1-9][0-9]*$ ]] || {
+  echo "JOBS must be a positive integer." >&2
+  exit 1
+}
 monero_build_dir="${MONERO_BUILD_DIR:-${MONERO_COMMON_CORE_BUILD_ROOT}/desktop-monero-wallet-api-linux-${MONERO_COMMON_CORE_TREE}-grpc-${grpc_sdk_version}}"
 fast_crypto_dir="${monero_source_dir}/external/monero-fast-crypto"
 fast_crypto_target_dir="${MONERO_DESKTOP_FAST_CRYPTO_TARGET_DIR:-${repo_root}/build/desktop-fast-crypto-linux}"
@@ -140,10 +145,12 @@ build_fast_wallet_protocol() (
   trap 'rm -rf "${build_root}"' EXIT
   build_source="${build_root}/fast-wallet-protocol"
   recipient_source="${build_root}/mfw-recipient-protocol"
-  mkdir -p "${build_source}" "${recipient_source}"
+  product_source="${build_root}/product-core"
+  mkdir -p "${build_source}" "${recipient_source}" "${product_source}"
   cp "${fast_wallet_protocol_root}/Cargo.toml" "${fast_wallet_protocol_root}/Cargo.lock" \
     "${build_source}/"
   cp -R "${fast_wallet_protocol_root}/src" "${fast_wallet_protocol_root}/include" \
+    "${fast_wallet_protocol_root}/test-vectors" \
     "${build_source}/"
   cp \
     "${repo_root}/native/mfw-recipient-protocol/Cargo.toml" \
@@ -151,6 +158,13 @@ build_fast_wallet_protocol() (
     "${repo_root}/native/mfw-recipient-protocol/README.md" \
     "${recipient_source}/"
   cp -R "${repo_root}/native/mfw-recipient-protocol/src" "${recipient_source}/"
+  # mobile-fast-crypto embeds Product Core in this one Rust archive. Preserve
+  # its path dependency and compile-time schema/generated inputs, but never
+  # copy an existing target cache into the isolated source tree.
+  cp "${product_core_root}/Cargo.toml" "${product_core_root}/Cargo.lock" \
+    "${product_source}/"
+  cp -R "${product_core_root}/src" "${product_core_root}/schema" \
+    "${product_core_root}/generated" "${product_source}/"
   cargo --config "$(wallet_cpu_cargo_config)" metadata \
     --manifest-path "${build_source}/Cargo.toml" \
     --features mobile-fast-crypto --format-version 1 >/dev/null
@@ -256,7 +270,7 @@ PKG_CONFIG_LIBDIR="${grpc_pkg_config_libdir}" PKG_CONFIG_PATH="" \
   -DRANDOMX_ENABLE_JIT=OFF \
   -DMONERO_FAST_CRYPTO_LIBRARY="${fast_wallet_protocol_library}" \
   -DMANUAL_SUBMODULES=1
-cmake --build "${monero_build_dir}" --target wallet_api --parallel 4
+cmake --build "${monero_build_dir}" --target wallet_api --parallel "${linux_build_jobs}"
 tex8_write_common_core_stamp "${monero_build_dir}/.tex8-monero-core-tree"
 
 archives=(

@@ -97,6 +97,34 @@ if [[ ! -s "${notification_agent}" ]]; then
   echo "The closed-app notification helper was not built: ${notification_agent}" >&2
   exit 1
 fi
+# Tauri resolves resource paths from src-tauri, independently of Cargo's output
+# directory. Stage the helper even when CARGO_TARGET_DIR lives outside the repo.
+notification_agent_resource="${desktop_dir}/src-tauri/target/release/$(basename "${notification_agent}")"
+mkdir -p "$(dirname "${notification_agent_resource}")"
+if [[ ! "${notification_agent}" -ef "${notification_agent_resource}" ]]; then
+  cp "${notification_agent}" "${notification_agent_resource}"
+fi
+chmod u+x "${notification_agent_resource}"
+cmp -s "${notification_agent}" "${notification_agent_resource}" || {
+  echo "The staged notification helper differs from the Cargo output." >&2
+  exit 1
+}
+# Keep the exact resource fingerprint with the build output. AppImage inspection
+# can compare its packaged helper against this record instead of a later Cargo
+# binary, which Tauri may rebuild with a different build-script environment.
+node - "${notification_agent}" "${notification_agent_resource}" <<'NODE'
+const { createHash } = require('node:crypto');
+const { readFileSync, realpathSync, writeFileSync } = require('node:fs');
+const [source, resource] = process.argv.slice(2);
+const provenance = {
+  schemaVersion: 1,
+  source: realpathSync(source),
+  resource: realpathSync(resource),
+  sha256: createHash('sha256').update(readFileSync(resource)).digest('hex'),
+};
+writeFileSync(`${resource}.provenance.json`, `${JSON.stringify(provenance, null, 2)}\n`);
+process.stdout.write(`Notification helper resource: ${JSON.stringify(provenance)}\n`);
+NODE
 tauri_build_args=(--bundles "${bundle}")
 if (( ${#tauri_config_args[@]} > 0 )); then
   tauri_build_args+=("${tauri_config_args[@]}")

@@ -1,8 +1,9 @@
 use arti_client::{config::TorClientConfigBuilder, TorClient};
 use reqwest::Proxy;
 use serde::Serialize;
+#[cfg(not(target_os = "linux"))]
+use std::fs;
 use std::{
-    fs,
     net::{Ipv4Addr, Ipv6Addr, TcpListener as StdTcpListener},
     panic::{self, AssertUnwindSafe},
     path::PathBuf,
@@ -25,6 +26,12 @@ use tor_rtcompat::{tokio::TokioNativeTlsRuntime as EmbeddedTorRuntime, ToplevelB
 /// client. The native Monero Fast Node gRPC block provider is intentionally
 /// separate and remains Clearnet.
 const PREFERRED_TOR_SOCKS_ADDRESS: &str = "127.0.0.1:19050";
+
+#[cfg(target_os = "linux")]
+pub fn prepare_private_directories(data_dir: &std::path::Path) -> Result<(), String> {
+    crate::linux_private_directory::prepare_tor_directories(data_dir)
+        .map_err(|error| format!("Private Tor directories: {error}"))
+}
 
 static TOR_STARTED: OnceLock<()> = OnceLock::new();
 static TOR_STATUS: OnceLock<Mutex<TorStatus>> = OnceLock::new();
@@ -203,8 +210,13 @@ async fn run_embedded_tor_with_runtime(
 ) -> Result<(), String> {
     let state_dir = data_dir.join("state");
     let cache_dir = data_dir.join("cache");
-    fs::create_dir_all(&state_dir).map_err(|error| format!("Tor state directory: {error}"))?;
-    fs::create_dir_all(&cache_dir).map_err(|error| format!("Tor cache directory: {error}"))?;
+    #[cfg(target_os = "linux")]
+    prepare_private_directories(&data_dir)?;
+    #[cfg(not(target_os = "linux"))]
+    {
+        fs::create_dir_all(&state_dir).map_err(|error| format!("Tor state directory: {error}"))?;
+        fs::create_dir_all(&cache_dir).map_err(|error| format!("Tor cache directory: {error}"))?;
+    }
 
     // Bind before bootstrap. Local callers can connect immediately while Arti
     // obtains directory data in the background; the app UI is never blocked.
@@ -217,7 +229,9 @@ async fn run_embedded_tor_with_runtime(
         .config(config)
         .create_unbootstrapped_async()
         .await
-        .map_err(|error| format!("Embedded Tor client: {error}"))?;
+        // Keep the underlying local filesystem-permission cause available;
+        // Display alone hides the path/owner/mode that Arti rejected.
+        .map_err(|error| format!("Embedded Tor client: {error:?}"))?;
 
     set_status(TorStatus::Bootstrapping);
     let status_client = client.clone();
