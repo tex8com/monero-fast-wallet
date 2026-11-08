@@ -18,6 +18,12 @@ cargo build -p cuprated --release --locked --manifest-path node/mfn-monero-fast-
 node/mfn-monero-fast-node/target/release/cuprated --help
 ```
 
+Run the isolated RPC height regression without building the node:
+
+```bash
+python3 node/mfn-monero-fast-node/scripts/test-get-version-height.py
+```
+
 Run it with a local configuration file:
 
 ```bash

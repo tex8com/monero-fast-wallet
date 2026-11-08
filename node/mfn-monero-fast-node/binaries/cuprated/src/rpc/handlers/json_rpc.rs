@@ -804,7 +804,9 @@ async fn get_version(
     mut state: CupratedRpcHandler,
     _: GetVersionRequest,
 ) -> Result<GetVersionResponse, Error> {
-    let current_height = helper::top_height(&mut state).await?.0;
+    // Match get_info's block count, not the last block's zero-based index.
+    // Read the count directly instead of adding one to a potentially maximal index.
+    let (current_height, _) = blockchain::chain_height(&mut state.blockchain_read).await?;
     let target_height = current_height; // TODO: wire up blockchain_manager
 
     let mut hard_forks = Vec::with_capacity(HardFork::COUNT);
