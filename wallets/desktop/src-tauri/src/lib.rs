@@ -1642,7 +1642,7 @@ async fn app_protection_snapshot(
 /// Move every readable per-wallet credential into the single process-wide
 /// AppVault immediately after the one app authorization. The migration marker
 /// and all imported credentials are one atomic generation. Missing records do
-/// not block healthy wallets and keep the marker open for a later recovery.
+/// not block healthy wallets and retain legacy credentials for later recovery.
 fn migrate_and_prime_app_session_credentials(app: &AppHandle) -> Result<(), String> {
     let mut normal_ids = HashSet::new();
     let mut fast_ids = HashSet::new();
@@ -1668,11 +1668,15 @@ fn migrate_and_prime_app_session_credentials(app: &AppHandle) -> Result<(), Stri
                     continue;
                 }
                 match secure_store::load_wallet_password_current(&physical_id) {
-                    Ok(Some(mut credential)) => {
-                        credential.zeroize();
+                    Ok(Some(credential)) => {
+                        entries.push((
+                            secure_store::wallet_app_vault_key(&physical_id)?,
+                            credential,
+                        ));
+                        legacy_normal_cleanup.push(physical_id);
                         normal_loaded += 1;
                     }
-                    Ok(None) if !previously_committed => {
+                    Ok(None) => {
                         match secure_store::load_legacy_wallet_password_current(&physical_id) {
                             Ok(Some(credential)) => {
                                 entries.push((
@@ -1688,7 +1692,7 @@ fn migrate_and_prime_app_session_credentials(app: &AppHandle) -> Result<(), Stri
                             }
                         }
                     }
-                    Ok(None) | Err(_) => {
+                    Err(_) => {
                         unavailable += 1;
                         all_accounted_for = false;
                     }
@@ -1708,11 +1712,15 @@ fn migrate_and_prime_app_session_credentials(app: &AppHandle) -> Result<(), Stri
                     continue;
                 }
                 match secure_store::load_fast_wallet_password_current(&wallet.id) {
-                    Ok(Some(mut credential)) => {
-                        credential.zeroize();
+                    Ok(Some(credential)) => {
+                        entries.push((
+                            secure_store::fast_wallet_app_vault_key(&wallet.id)?,
+                            credential,
+                        ));
+                        legacy_fast_cleanup.push(wallet.id);
                         fast_loaded += 1;
                     }
-                    Ok(None) if !previously_committed => {
+                    Ok(None) => {
                         match secure_store::load_legacy_fast_wallet_password_current(&wallet.id) {
                             Ok(Some(credential)) => {
                                 entries.push((
@@ -1728,7 +1736,7 @@ fn migrate_and_prime_app_session_credentials(app: &AppHandle) -> Result<(), Stri
                             }
                         }
                     }
-                    Ok(None) | Err(_) => {
+                    Err(_) => {
                         unavailable += 1;
                         all_accounted_for = false;
                     }
@@ -1741,13 +1749,21 @@ fn migrate_and_prime_app_session_credentials(app: &AppHandle) -> Result<(), Stri
         }
     }
 
-    if !previously_committed {
-        if all_accounted_for {
-            secure_store::commit_legacy_wallet_credentials(&entries)?;
-        } else if !entries.is_empty() {
-            secure_store::merge_legacy_wallet_credentials(&entries)?;
-        }
+    // A global marker proves neither membership nor persistence for this ID.
+    // Even current values may come from a prior failed in-memory mutation, so
+    // persist this exact cleanup batch before removing any legacy credential.
+    // Missing IDs may still recover after an earlier migration was committed.
+    let persisted = if !previously_committed && all_accounted_for {
+        secure_store::commit_legacy_wallet_credentials(&entries)
+    } else if !entries.is_empty() {
+        secure_store::merge_legacy_wallet_credentials(&entries)
+    } else {
+        Ok(())
+    };
+    for (_, value) in &mut entries {
+        value.zeroize();
     }
+    persisted?;
 
     // Deletion is deliberately after the authenticated AppVault write. If the
     // process stops here, the next unlock safely retries this idempotent step.
@@ -1757,19 +1773,6 @@ fn migrate_and_prime_app_session_credentials(app: &AppHandle) -> Result<(), Stri
     for wallet_id in &legacy_fast_cleanup {
         let _ = secure_store::delete_legacy_fast_wallet_password(wallet_id);
     }
-    if previously_committed {
-        for wallet_id in &normal_ids {
-            let _ = secure_store::delete_legacy_wallet_password(wallet_id);
-        }
-        for wallet_id in &fast_ids {
-            let _ = secure_store::delete_legacy_fast_wallet_password(wallet_id);
-        }
-    }
-
-    for (_, value) in &mut entries {
-        value.zeroize();
-    }
-
     diagnostics::record(
         app,
         "security.session-credentials-primed",

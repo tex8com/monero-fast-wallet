@@ -27,3 +27,12 @@ local advisory database and does not disable yanked-package checks.
 Passing this dependency gate does not establish installed-package behavior,
 formal constant-time guarantees, current native-library advisories, or macOS and
 Windows readiness. Those require their own target builds and runtime checks.
+
+Credential migration removes a legacy OS credential only after the exact
+per-identity batch has been successfully persisted to AppVault. A global
+migration marker is not proof of membership or durability. Missing identities
+can still recover from their current OS store after an earlier migration;
+Vault read errors retain the original. Failed writes retain originals even
+when an earlier attempt changed the in-memory values or marker. Run
+`python3 wallets/desktop/scripts/test-app-vault-migration.py` for isolated
+regressions executing the production function without wallet or OS-store access.
