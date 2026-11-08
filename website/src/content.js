@@ -35,6 +35,13 @@ export const walletReleases = {
       sha256: "ca8b1aa2ec13c09ba95b2b5d8c039467d1326d62d8e27b075b1362198242bd5e", size: 407452168,
     }],
   },
+  ios: {
+    version: "1.0.116", package: "ipa", alpha: 1,
+    releaseTag: "v1.0.116-ios-sideload-alpha.1",
+    releaseUrl: `${repositoryUrl}/releases/tag/v1.0.116-ios-sideload-alpha.1`,
+    downloadUrl: `${repositoryUrl}/releases/download/v1.0.116-ios-sideload-alpha.1/Monero-Fast-Wallet-1.0.116-ios-arm64-sideload.ipa`,
+    sha256: "ece1b4a740d914a5a2614e69e39fde898ca076d4e8c61eced2920719a2aa2513", size: 22047204,
+  },
 };
 import { generatedWebsiteCopy, localeMetadata } from "./locales.generated.js";
 
@@ -158,10 +165,10 @@ export const copy = {
     derivationMethod: "Beschleunigung, Methodik und Rohdaten",
     downloadEyebrow: "Eine Wallet, jeder Bildschirm",
     downloadTitle: "Lade das passende Paket für dein Gerät.",
-    downloadBody: "Die Alpha-Version gibt es als Android-APK, macOS-DMG für Apple Silicon, Setup-EXE für Windows ARM64 und DEB/AppImage für Linux ARM64. Linux wurde mit Ubuntu 24.04 ARM64 getestet. iOS folgt.",
+    downloadBody: "Die Alpha-Version gibt es als Android-APK, macOS-DMG für Apple Silicon, Setup-EXE für Windows ARM64 und DEB/AppImage für Linux ARM64. Linux wurde mit Ubuntu 24.04 ARM64 getestet. Für iOS gibt es eine experimentelle Sideload-IPA ohne iPhone-Test. Der App-Store-Release steht noch aus.",
     coming: "Bald verfügbar",
     packages: { apk: "APK herunterladen", dmg: "DMG herunterladen", exe: "EXE herunterladen", rpm: "RPM herunterladen", deb: "DEB herunterladen", appimage: "AppImage herunterladen" },
-    releaseGate: "Downloads über den datensparsamen TEX8-Downloadpfad. Release-Hinweise, Dateien und Prüfsummen findest du auch auf GitHub.",
+    releaseGate: "Downloads über TEX8 und GitHub. Die experimentelle iOS-IPA kommt direkt von GitHub. Release-Hinweise und Prüfsummen stehen im jeweiligen Release.",
     nodeEyebrow: "Monero Fast Node · MFN",
     nodeTitle: "Der schnelle Weg ins Monero-Netzwerk.",
     nodeBody: "Monero Fast Node ist die optimierte TEX8-Node-Infrastruktur. Sie liefert Blockchain-Daten effizient an die Wallet; dein nativer Wallet-Core prüft lokal, was dir gehört.",
@@ -188,7 +195,7 @@ export const copy = {
       ["Muss ich die Fast Wallet verwenden?", "Nein. Privacy funktioniert ohne gehostete Fast Wallet. Privacy + Komfort fügt sie als separate, optionale Empfangs-Wallet hinzu."],
       ["Kann TEX8 meine Coins ausgeben?", "Nein. Seed und Spend Key werden nicht an TEX8 übertragen. Der separate Fast-Wallet-Dienst kann keine Transaktion signieren."],
       ["Warum heißt der Node MFN?", "MFN steht für Monero Fast Node. Die optimierte TEX8-Node-Infrastruktur bleibt vollständig mit Monero kompatibel."],
-      ["Welche Downloads sind verfügbar?", "Android-APK, macOS-DMG für Apple Silicon, Setup-EXE für Windows 11 ARM64 und DEB/AppImage für Linux ARM64, getestet mit Ubuntu 24.04. Die Windows-Alpha ist unsigniert. Die Windows- und Linux-Pakete sind nur für ARM64. iOS folgt. Dateien und Prüfsummen findest du im jeweiligen GitHub-Release."],
+      ["Welche Downloads sind verfügbar?", "Android-APK, macOS-DMG für Apple Silicon, Setup-EXE für Windows 11 ARM64 und DEB/AppImage für Linux ARM64, getestet mit Ubuntu 24.04. Die Windows-Alpha ist unsigniert. Die Windows- und Linux-Pakete sind nur für ARM64. Für iOS gibt es eine experimentelle Sideload-IPA ohne iPhone-Test. Der App-Store-Release steht noch aus. Dateien und Prüfsummen findest du im jeweiligen GitHub-Release."],
     ],
     assistantTitle: "Monero Hilfe",
     assistantStatus: "Produktwissen aktiv",
@@ -290,10 +297,10 @@ export const copy = {
     derivationMethod: "Acceleration, method, and raw evidence",
     downloadEyebrow: "One wallet, every screen",
     downloadTitle: "Get the right package for your device.",
-    downloadBody: "The alpha release provides an Android APK, a macOS DMG for Apple Silicon, a Setup EXE for Windows ARM64, and DEB/AppImage for Linux ARM64. Linux was tested on Ubuntu 24.04 ARM64. iOS is coming soon.",
+    downloadBody: "The alpha release provides an Android APK, a macOS DMG for Apple Silicon, a Setup EXE for Windows ARM64, and DEB/AppImage for Linux ARM64. Linux was tested on Ubuntu 24.04 ARM64. iOS has an experimental sideload IPA without iPhone testing. The App Store release is still pending.",
     coming: "Coming soon",
     packages: { apk: "Download APK", dmg: "Download DMG", exe: "Download EXE", rpm: "Download RPM", deb: "Download DEB", appimage: "Download AppImage" },
-    releaseGate: "Downloads use the privacy-minimised TEX8 download path. Release notes, files and checksums are also available on GitHub.",
+    releaseGate: "Downloads are served by TEX8 and GitHub. The experimental iOS IPA downloads directly from GitHub. Release notes and checksums are in each release.",
     nodeEyebrow: "Monero Fast Node · MFN",
     nodeTitle: "The fast route into the Monero network.",
     nodeBody: "Monero Fast Node is the optimized TEX8 node infrastructure. It delivers blockchain data efficiently; your native wallet core checks locally what belongs to you.",
@@ -311,7 +318,7 @@ export const copy = {
     osiNote: "The OSI logo trademark belongs to the Open Source Initiative. This site is not affiliated with or endorsed by OSI.",
     faqEyebrow: "Straight answers",
     faqTitle: "What users really want to know.",
-    faqs: [["Is this a real Monero wallet?", "Yes. The native Monero wallet core is authoritative for wallet data, transactions, and synchronization."], ["Do I need Fast Wallet?", "No. Privacy works without a hosted Fast Wallet. Privacy + convenience adds it as a separate optional receive wallet."], ["Can TEX8 spend my coins?", "No. Seed and spend key are never transferred to TEX8. The separate Fast Wallet service cannot sign a transaction."], ["Why is the node called MFN?", "MFN stands for Monero Fast Node. The optimized TEX8 node infrastructure remains fully Monero compatible."], ["Which downloads are available?", "An Android APK, a macOS DMG for Apple Silicon, a Setup EXE for Windows 11 ARM64, and DEB/AppImage for Linux ARM64, tested on Ubuntu 24.04. The Windows alpha is unsigned. The Windows and Linux packages support ARM64 only. iOS is coming soon. Files and checksums are in each platform's GitHub release."]],
+    faqs: [["Is this a real Monero wallet?", "Yes. The native Monero wallet core is authoritative for wallet data, transactions, and synchronization."], ["Do I need Fast Wallet?", "No. Privacy works without a hosted Fast Wallet. Privacy + convenience adds it as a separate optional receive wallet."], ["Can TEX8 spend my coins?", "No. Seed and spend key are never transferred to TEX8. The separate Fast Wallet service cannot sign a transaction."], ["Why is the node called MFN?", "MFN stands for Monero Fast Node. The optimized TEX8 node infrastructure remains fully Monero compatible."], ["Which downloads are available?", "An Android APK, a macOS DMG for Apple Silicon, a Setup EXE for Windows 11 ARM64, and DEB/AppImage for Linux ARM64, tested on Ubuntu 24.04. The Windows alpha is unsigned. The Windows and Linux packages support ARM64 only. iOS has an experimental sideload IPA without iPhone testing. The App Store release is still pending. Files and checksums are in each platform's GitHub release."]],
     assistantTitle: "Monero help",
     assistantStatus: "Product knowledge active",
     assistantOpen: "Open AI help",
@@ -330,14 +337,16 @@ export const copy = {
 
 Object.assign(copy, generatedWebsiteCopy);
 const releaseLabels = {
-  en: { available: "Available", releaseNotes: "Release & checksums", githubRelease: "Download on GitHub", releaseUpdates: "Follow updates on", androidRequirements: "Android 7 or newer · ARM64", macosRequirements: "macOS 12 or newer · Apple Silicon", macosSigning: "Apple-notarized app · Developer ID-signed", windowsRequirements: "Windows 11 · ARM64 only (not Intel/AMD x64)", windowsSigning: "Unsigned alpha · Windows may show a warning", linuxRequirements: "Tested on Ubuntu 24.04 · ARM64 only (not x86_64)" },
-  de: { available: "Verfügbar", releaseNotes: "Release & Prüfsummen", githubRelease: "Download auf GitHub", releaseUpdates: "Updates auf", androidRequirements: "Ab Android 7 · ARM64", macosRequirements: "Ab macOS 12 · Apple Silicon", macosSigning: "App Apple-notarisiert · Developer-ID-signiert", windowsRequirements: "Windows 11 · nur ARM64 (kein Intel/AMD x64)", windowsSigning: "Unsignierte Alpha · Windows kann eine Warnung anzeigen", linuxRequirements: "Getestet mit Ubuntu 24.04 · nur ARM64 (kein x86_64)" },
+  en: { available: "Available", releaseNotes: "Release & checksums", githubRelease: "Download on GitHub", releaseUpdates: "Follow updates on", androidRequirements: "Android 7 or newer · ARM64", macosRequirements: "macOS 12 or newer · Apple Silicon", macosSigning: "Apple-notarized app · Developer ID-signed", windowsRequirements: "Windows 11 · ARM64 only (not Intel/AMD x64)", windowsSigning: "Unsigned alpha · Windows may show a warning", linuxRequirements: "Tested on Ubuntu 24.04 · ARM64 only (not x86_64)", experimental: "Experimental · untested on iPhone", iosRequirements: "iOS ARM64 · sideload/re-signing or compatible jailbreak required", iosSigning: "No App Store release · iPhone, Ledger and push tests pending; push may be unavailable after re-signing" },
+  de: { available: "Verfügbar", releaseNotes: "Release & Prüfsummen", githubRelease: "Download auf GitHub", releaseUpdates: "Updates auf", androidRequirements: "Ab Android 7 · ARM64", macosRequirements: "Ab macOS 12 · Apple Silicon", macosSigning: "App Apple-notarisiert · Developer-ID-signiert", windowsRequirements: "Windows 11 · nur ARM64 (kein Intel/AMD x64)", windowsSigning: "Unsignierte Alpha · Windows kann eine Warnung anzeigen", linuxRequirements: "Getestet mit Ubuntu 24.04 · nur ARM64 (kein x86_64)", experimental: "Experimentell · auf iPhone ungetestet", iosRequirements: "iOS ARM64 · Sideload/Neusignierung oder kompatibler Jailbreak erforderlich", iosSigning: "Kein App-Store-Release · iPhone-, Ledger- und Push-Tests offen; Push kann nach Neusignierung fehlen" },
 };
 // Newly published release labels use English until reviewed translations exist.
 for (const [language, text] of Object.entries(copy)) {
   Object.assign(text, releaseLabels[language] ?? releaseLabels.en);
+  text.packages.ipa = language === "de" ? "IPA herunterladen" : "Download IPA";
   if (language !== "de" && language !== "en") {
     text.downloadBody = copy.en.downloadBody;
+    text.releaseGate = copy.en.releaseGate;
     text.faqs = text.faqs.map((entry, index) => index === text.faqs.length - 1 ? [entry[0], copy.en.faqs.at(-1)[1]] : entry);
   }
 }

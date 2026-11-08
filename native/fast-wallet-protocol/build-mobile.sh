@@ -26,34 +26,12 @@ export MONERO_FAST_CRYPTO_SOURCE="${monero_fast_crypto_source}"
 # that source-only change in an isolated build copy so the checked-in lock
 # remains valid for ordinary protocol/service builds against crates.io.
 mobile_build_root="$(mktemp -d "${TMPDIR:-/tmp}/tex8-fast-wallet-protocol.XXXXXX")"
-mobile_build_source="${mobile_build_root}/fast-wallet-protocol"
-mkdir -p "${mobile_build_source}"
+mobile_build_source="${mobile_build_root}/native/fast-wallet-protocol"
 trap 'rm -rf "${mobile_build_root}"' EXIT
-cp "${script_dir}/Cargo.toml" "${script_dir}/Cargo.lock" "${mobile_build_source}/"
-cp -R "${script_dir}/src" "${script_dir}/include" "${script_dir}/test-vectors" \
-  "${mobile_build_source}/"
-# Preserve the repository-relative dependency layout inside the isolated
-# build, but copy source inputs only. Copying the dependency's reproducible
-# `target/` cache can add gigabytes and makes a clean mobile build depend on
-# stale host artifacts.
-mkdir -p "${mobile_build_root}/mfw-recipient-protocol"
-cp \
-  "${repo_root}/native/mfw-recipient-protocol/Cargo.toml" \
-  "${repo_root}/native/mfw-recipient-protocol/Cargo.lock" \
-  "${repo_root}/native/mfw-recipient-protocol/README.md" \
-  "${mobile_build_root}/mfw-recipient-protocol/"
-cp -R "${repo_root}/native/mfw-recipient-protocol/src" \
-  "${mobile_build_root}/mfw-recipient-protocol/"
-# Product Core is embedded in the same Rust archive as the protocol/crypto
-# ABIs. Copy source/schema inputs only, never an existing target cache.
-mkdir -p "${mobile_build_root}/product-core"
-cp "${repo_root}/native/product-core/Cargo.toml" \
-  "${repo_root}/native/product-core/Cargo.lock" \
-  "${mobile_build_root}/product-core/"
-cp -R "${repo_root}/native/product-core/src" \
-  "${repo_root}/native/product-core/schema" \
-  "${repo_root}/native/product-core/generated" \
-  "${mobile_build_root}/product-core/"
+# Preserve native/ and third_party/ together so the reviewed security
+# adapters resolve to the same source packages in every mobile build.
+source "${repo_root}/native/monero-bridge/scripts/stage-fast-wallet-protocol-source.sh"
+stage_fast_wallet_protocol_sources "${repo_root}" "${mobile_build_root}"
 cargo --config "$(wallet_cpu_cargo_config)" metadata \
   --manifest-path "${mobile_build_source}/Cargo.toml" \
   --features mobile-fast-crypto \
@@ -193,5 +171,7 @@ for target in "${targets[@]}"; do
   esac
 done
 
+cp "${mobile_build_source}/Cargo.lock" "${output_dir}/Cargo.lock"
+echo "RESOLVED_CARGO_LOCK_SHA256=$(shasum -a 256 "${output_dir}/Cargo.lock" | awk '{print $1}')" >> "${manifest}"
 echo "Built Fast Wallet protocol mobile artifacts under ${output_dir}"
 echo "Manifest: ${manifest}"

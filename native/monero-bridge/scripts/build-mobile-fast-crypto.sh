@@ -8,6 +8,7 @@ source "${script_dir}/prepare-common-monero-core.sh"
 monero_source_dir="${MONERO_SOURCE_DIR}"
 fast_crypto_dir="${FAST_CRYPTO_DIR:-${monero_source_dir}/external/monero-fast-crypto}"
 output_dir="${OUTPUT_DIR:-${repo_root}/build/mobile-fast-crypto}"
+cargo_target_dir="${CARGO_TARGET_DIR:-${fast_crypto_dir}/target}"
 android_api="${ANDROID_API:-24}"
 targets_csv="${TARGETS:-android-arm64,android-armv7,android-x86,android-x86_64,ios-device,ios-sim-arm64,ios-sim-x86_64}"
 
@@ -83,12 +84,12 @@ build_target() {
 
   cargo --config "$(wallet_cpu_cargo_config)" build \
     --manifest-path "${fast_crypto_dir}/Cargo.toml" \
-    --target-dir "${fast_crypto_dir}/target" \
+    --target-dir "${cargo_target_dir}" \
     --release \
     --locked \
     --target "${rust_target}"
 
-  local source_lib="${fast_crypto_dir}/target/${rust_target}/release/libmonero_fast_crypto.a"
+  local source_lib="${cargo_target_dir}/${rust_target}/release/libmonero_fast_crypto.a"
   local target_dir="${output_dir}/${label}"
   mkdir -p "${target_dir}"
   cp "${source_lib}" "${target_dir}/libmonero_fast_crypto.a"

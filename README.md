@@ -51,14 +51,15 @@ safe: every core-adjacent change remains security-sensitive, is kept narrow and
 versioned, and must pass the applicable build, compatibility and security
 gates before release.
 
-> **Development status (October 2026):** The source repository is public and
-> the Android application has completed a real Mainnet registration flow with
-> a physical Pixel and Ledger Nano X. This is still **alpha software, not a
-> production release approval**. The exact final Android artifact, macOS
-> acceptance and notarization, iOS hardware testing, Windows/Linux packaging,
-> an independent security review, and several operational and recovery tests
-> remain open release gates. See the public
-> [security and release status](docs/SECURITY.md) for the applicable gates.
+> **Development status (November 2026):** Android, Apple Silicon macOS,
+> Windows 11 ARM64 and Ubuntu 24.04 ARM64 alpha packages are publicly available
+> through the [project downloads](https://xmr.tex8.com/#downloads).
+> This is **alpha software, not production release approval**. The iOS sideload
+> build is experimental and has no physical iPhone acceptance. Store releases,
+> independent security review, reproducibility and the remaining recovery and
+> operational acceptance are separate gates. See the public
+> [security and release status](docs/SECURITY.md) and the scoped evidence in each
+> platform release.
 >
 > **V1 scope:** The first public version is planned to include complete `.mfw`
 > registration and resolution through the **Monero Fast Wallet Registry**, plus
@@ -243,9 +244,9 @@ Notification paths:
 
 | Platform | Path |
 | --- | --- |
-| macOS | APNs; notification delivery to a closed development app and launch on click have been observed |
-| Windows | Unprivileged WSS user agent → local Windows notification |
-| Linux | Unprivileged WSS user agent → DBus notification |
+| macOS | **Published Apple Silicon DMG alpha.** Developer ID-signed, Apple-notarized and owner-tested | App Store and production acceptance remain separate; see the exact release artifact and its scoped evidence |
+| Windows | **Published Windows 11 ARM64 Setup EXE alpha.** Push with the wallet open and closed, plus reopening from the notification, was owner-tested | Unsigned alpha; no Intel/AMD x64 package. Store, independent review and broader production acceptance remain separate |
+| Linux | **Published Ubuntu 24.04 ARM64 DEB and ARM64 AppImage alpha.** Installed DEB push with the wallet open/closed and notification reopening was owner-tested | No x86_64 package. Broader distribution/hardware coverage and production acceptance remain separate |
 | iOS / Android | Shared anonymous push-subscription contract; physical provider validation is still pending |
 
 All push messages remain generic. Wallet names, addresses, amounts,
@@ -504,13 +505,13 @@ CUDA `memcheck` and `initcheck` without errors.
 “Implemented” means that source code and focused tests exist; it does not
 automatically mean that an end-user artifact has been released.
 
-| Platform | Current status | Still required before release |
+| Platform | Current status | Separate production/store gates and limits |
 | --- | --- | --- |
-| iOS | **Not release-ready.** React Native app, native Monero core build path, native recovery input, app protection, BLE transport, and push contract are present | A volunteer with a physical iPhone must validate wallet, Ledger, APNs, lifecycle and accessibility before any iOS release |
-| Android | **Alpha candidate, not production-approved.** React Native app, JNI/core, USB/HID, BLE, Keystore, native recovery input, APK/AAB release paths, and a physical Pixel/Nano X Mainnet registration cycle are present | Rebuild and repeat the acceptance matrix on the exact final APK/AAB, complete Google Play validation and close the independent-review gates |
-| macOS | **Alpha candidate under active acceptance.** Tauri 2 app with locally linked core and packaged Metal backend; a Developer ID-signed DMG exists | Rebuild from the final source, validate wallet removal, Tor/node switching, complete sync, send/receive, Ledger, push and updates, then notarize and staple the exact DMG |
-| Windows | **Deferred until macOS acceptance.** UI, Rust host, protection contracts, and notification-agent contracts are present | Build and load the native core as a DLL under Windows, then complete wallet, Ledger, push, update and installer validation |
-| Linux | **Deferred until macOS acceptance.** ARM64 AppImage assembled locally with the core; DBus agent contract is present | Clean-user, real-node, Ledger, notification, update and package validation |
+| iOS | **Experimental sideload build.** Device ARM64 archive/package scripts, native core, recovery input, app protection, BLE and push contracts are present | No physical iPhone available. Wallet, Ledger BLE, app protection, APNs and lifecycle acceptance remain open; see [sideload limits](docs/IOS_SIDELOAD.md). No App Store release |
+| Android | **Published ARM64 APK alpha.** Physical Pixel/Nano X Mainnet flows have been exercised during development | Google Play, independent review and the production acceptance matrix remain separate from the downloadable alpha |
+| macOS | **Published Apple Silicon DMG alpha.** Developer ID-signed, Apple-notarized and owner-tested | App Store and production acceptance remain separate; see the exact release artifact and its scoped evidence |
+| Windows | **Published Windows 11 ARM64 Setup EXE alpha.** Push with the wallet open and closed, plus reopening from the notification, was owner-tested | Unsigned alpha; no Intel/AMD x64 package. Store, independent review and broader production acceptance remain separate |
+| Linux | **Published Ubuntu 24.04 ARM64 DEB and ARM64 AppImage alpha.** Installed DEB push with the wallet open/closed and notification reopening was owner-tested | No x86_64 package. Broader distribution/hardware coverage and production acceptance remain separate |
 | Services | Scanner, Gateway, Monero Fast Node, integrated durable delayed-claim relay, Monero News, and the replacement Monero Enthusiast V1 service stack exist. MFN RPC/gRPC, name resolution and relay capability are live on the first-party and Community Node paths | Complete backup/restore, rotation, sustained-load, abuse, provider-delivery and monitoring acceptance; repeat a physical delayed-claim cycle for each release route where required |
 
 All five app targets are built from one authenticated Monero Core patch tree.

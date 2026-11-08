@@ -51,18 +51,18 @@ function downloadCard(markup, title) {
 }
 
 function assertPublishedDownloadCards(markup, gateway = false) {
-  for (const [platform, title] of [["android", "Android"], ["macos", "macOS"], ["windows", "Windows ARM64"], ["linux", "Linux ARM64"]]) {
+  for (const [platform, title] of [["android", "Android"], ["macos", "macOS"], ["windows", "Windows ARM64"], ["linux", "Linux ARM64"], ["ios", "iPhone &amp; iPad"]]) {
     const release = walletReleases[platform];
     const card = downloadCard(markup, title);
-    const expectedDownload = gateway ? `/download/mfw/${platform}/${release.package}` : release.downloadUrl;
+    const expectedDownload = gateway && platform !== "ios" ? `/download/mfw/${platform}/${release.package}` : release.downloadUrl;
     assert.ok(card.includes(`href="${expectedDownload}"`), `${platform} direct download`);
     assert.ok(card.includes(`href="${release.releaseUrl}"`), `${platform} release notes`);
     const visibleText = card.replace(/<[^>]*>/g, "");
     assert.match(visibleText, /1\.0\.116/);
     assert.match(visibleText, new RegExp(`Alpha\\s*${release.alpha}`));
   }
-  assert.equal((markup.match(/store-badge is-live/g) ?? []).length, 4);
-  assert.equal((markup.match(/store-badge is-pending/g) ?? []).length, 1);
+  assert.equal((markup.match(/store-badge is-live/g) ?? []).length, 5);
+  assert.equal((markup.match(/store-badge is-pending/g) ?? []).length, 0);
   assert.doesNotMatch(markup, /href="\/download\/mfw\/ios\//);
   assert.ok(markup.includes(`href="${repositoryUrl}"`), "downloads link the public source repository");
 }
@@ -157,6 +157,13 @@ test("download formats stay visible with a concrete alpha release and honest pla
       sha256: "ca8b1aa2ec13c09ba95b2b5d8c039467d1326d62d8e27b075b1362198242bd5e", size: 407452168,
     }],
   },
+  ios: {
+    version: "1.0.116", package: "ipa", alpha: 1,
+    releaseTag: "v1.0.116-ios-sideload-alpha.1",
+    releaseUrl: "https://github.com/tex8com/monero-fast-wallet/releases/tag/v1.0.116-ios-sideload-alpha.1",
+    downloadUrl: "https://github.com/tex8com/monero-fast-wallet/releases/download/v1.0.116-ios-sideload-alpha.1/Monero-Fast-Wallet-1.0.116-ios-arm64-sideload.ipa",
+    sha256: "ece1b4a740d914a5a2614e69e39fde898ca076d4e8c61eced2920719a2aa2513", size: 22047204,
+  },
   });
 });
 
@@ -200,6 +207,45 @@ test("the Windows setup is explicitly ARM64 and unsigned in all 18 locales", () 
     assert.doesNotMatch(card, /Apple-notarized|Developer ID|Developer-ID|Apple-notarisiert/);
     assert.match(text.downloadBody, /Windows ARM64/);
     assert.doesNotMatch(text.faqs.at(-1)[1], /iOS, Windows (?:and|und) Linux/);
+  }
+});
+
+const sideloadFixture = {
+  version: "1.0.116", package: "ipa", alpha: 1,
+  releaseTag: "v1.0.116-ios-sideload-alpha.1",
+  releaseUrl: `${repositoryUrl}/releases/tag/v1.0.116-ios-sideload-alpha.1`,
+  downloadUrl: `${repositoryUrl}/releases/download/v1.0.116-ios-sideload-alpha.1/Monero-Fast-Wallet-1.0.116-ios-arm64-sideload.ipa`,
+  sha256: "e".repeat(64), size: 123456,
+};
+
+test("the IPA is a direct sideload download with device and push limits in every locale", () => {
+  const components = downloadComponentsFor({ ...walletReleases, ios: sideloadFixture });
+  const catalog = [{ product: "mfw", platform: "ios", package: "ipa", version: sideloadFixture.version,
+    sha256: sideloadFixture.sha256, size: sideloadFixture.size, download_path: "/download/mfw/ios/ipa" }];
+  for (const text of Object.values(copy)) {
+    const html = renderToStaticMarkup(React.createElement(components.Downloads, { text, releases: catalog }));
+    const card = downloadCard(html, "iPhone &amp; iPad");
+    assert.ok(card.includes(`href="${sideloadFixture.downloadUrl}"`));
+    assert.match(card, /download-platform-status experimental/);
+    assert.ok(card.includes(text.experimental));
+    assert.ok(card.includes(text.iosRequirements));
+    assert.ok(card.includes(text.iosSigning));
+    assert.match(text.experimental, /untested|ungetestet/);
+    assert.match(text.iosSigning, /push|Push/);
+    assert.doesNotMatch(card, /href="(?:\/download\/mfw\/ios\/|https:\/\/apps\.apple\.com\/)/);
+  }
+});
+
+test("an incomplete IPA approval cannot activate a catalog download", () => {
+  for (const ios of [undefined, { ...sideloadFixture, sha256: null },
+    { ...sideloadFixture, size: 0 }, { ...sideloadFixture, size: "123456" },
+    { ...sideloadFixture, package: "appstore" },
+    { ...sideloadFixture, downloadUrl: "https://invalid.example/wallet.ipa" }]) {
+    const components = downloadComponentsFor({ ...walletReleases, ios });
+    const html = renderToStaticMarkup(React.createElement(components.Downloads, { text: copy.en, releases: [] }));
+    const card = downloadCard(html, "iPhone &amp; iPad");
+    assert.match(card, /store-badge is-pending/);
+    assert.doesNotMatch(card, /href=/);
   }
 });
 

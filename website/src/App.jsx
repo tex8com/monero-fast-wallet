@@ -348,7 +348,7 @@ function ProductFocus({ language }) {
       body: "Monero senden, empfangen und mit Ledger nutzen – auf Mobilgerät und Desktop, mit demselben nativen Wallet-Core.",
       points: ["Selbstverwahrt: deine Schlüssel bleiben bei dir", "Eine Oberfläche für Software- und Ledger-Wallets", "Guthaben und Transaktionen werden lokal geprüft"],
       metric: availablePlatforms,
-      metricText: linuxAvailable ? "iOS folgt" : windowsAvailable ? "iOS und Linux folgen" : "iOS, Windows und Linux folgen",
+      metricText: publishedWalletRelease("ios") ? "iOS: experimentelle Sideload-IPA" : linuxAvailable ? "iOS folgt" : windowsAvailable ? "iOS und Linux folgen" : "iOS, Windows und Linux folgen",
       primary: "Wallet-Vorteile",
       secondary: "Downloads",
     },
@@ -376,7 +376,7 @@ function ProductFocus({ language }) {
       body: "Send, receive, and use Monero with Ledger on mobile and desktop, powered by the same native wallet core.",
       points: ["Self-custodial: your keys stay with you", "One experience for software and Ledger wallets", "Balances and transactions are verified locally"],
       metric: availablePlatforms,
-      metricText: linuxAvailable ? "iOS is coming soon" : windowsAvailable ? "iOS and Linux are coming soon" : "iOS, Windows and Linux are coming soon",
+      metricText: publishedWalletRelease("ios") ? "iOS: experimental sideload IPA" : linuxAvailable ? "iOS is coming soon" : windowsAvailable ? "iOS and Linux are coming soon" : "iOS, Windows and Linux are coming soon",
       primary: "Wallet benefits",
       secondary: "Downloads",
     },
@@ -751,7 +751,7 @@ function Benchmark({ text }) {
 const platforms = [
   { id: "android", title: "Android", packages: ["apk"], publishedPackage: "apk", requirements: "androidRequirements" },
   { id: "macos", title: "macOS", packages: ["dmg"], publishedPackage: "dmg", requirements: "macosRequirements", signing: "macosSigning" },
-  { id: "ios", title: "iPhone & iPad", packages: ["appstore"] },
+  { id: "ios", title: "iPhone & iPad", packages: ["ipa"], publishedPackage: "ipa", packageLabel: "IPA · Sideload", requirements: "iosRequirements", signing: "iosSigning", experimental: true, directDownload: true },
   { id: "windows", title: "Windows ARM64", packages: ["exe"], publishedPackage: "exe", packageLabel: "Setup EXE", requirements: "windowsRequirements", signing: "windowsSigning" },
   { id: "linux", title: "Linux ARM64", packages: ["deb", "appimage", "rpm"], publishedPackage: "deb", packageLabel: "DEB", requirements: "linuxRequirements" },
 ];
@@ -777,7 +777,8 @@ function publishedWalletRelease(platformId, packageKind) {
 function walletReleaseMap(releases) {
   return new Map(releases.filter((release) => {
     const approved = publishedWalletRelease(release?.platform, release?.package);
-    return release?.product === "mfw" && approved && release.version === approved.version
+    const directOnly = platforms.find((platform) => platform.id === release?.platform)?.directDownload;
+    return !directOnly && release?.product === "mfw" && approved && release.version === approved.version
       && release.sha256 === approved.sha256 && release.size === approved.size
       && release.download_path === `/download/mfw/${release.platform}/${release.package}`
       && release.package === approved.package;
@@ -796,8 +797,8 @@ function Downloads({ text, releases }) {
           .map((kind) => publishedWalletRelease(platform.id, kind)).filter(Boolean) : [];
         return <article className="download-card" key={platform.id}>
           <h3>{platform.title}</h3>
-          <span className={`download-platform-status ${published ? "available" : "pending"}`}>{published ? text.available : text.coming}</span>
-          {published ? <a className="store-badge is-live" href={primary ? primary.download_path : published.downloadUrl}>
+          <span className={`download-platform-status ${published ? platform.experimental ? "experimental" : "available" : "pending"}`}>{published ? platform.experimental ? text.experimental : text.available : text.coming}</span>
+          {published ? <a className="store-badge is-live" href={primary && !platform.directDownload ? primary.download_path : published.downloadUrl}>
             <strong>{platform.packageLabel ?? platform.publishedPackage.toUpperCase()}</strong><span>{text.packages[platform.publishedPackage]} ↓</span>
           </a> : <div className="store-badge is-pending"><strong>{text.coming}</strong></div>}
           <div className="package-links">{published ? <>

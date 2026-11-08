@@ -13,23 +13,23 @@ jobs="${JOBS:-8}"
 ios_deployment_target="${IOS_DEPLOYMENT_TARGET:-15.1}"
 clean_after_install="${CLEAN_AFTER_INSTALL:-1}"
 
-openssl_version="${OPENSSL_VERSION:-3.0.19}"
-openssl_sha256="${OPENSSL_SHA256:-fa5a4143b8aae18be53ef2f3caf29a2e0747430b8bc74d32d88335b94ab63072}"
-libiconv_version="${LIBICONV_VERSION:-1.15}"
-libiconv_sha256="${LIBICONV_SHA256:-ccf536620a45458d26ba83887a983b96827001e92a13847b45e4925cc8913178}"
+openssl_version="${OPENSSL_VERSION:-3.5.9}"
+openssl_sha256="${OPENSSL_SHA256:-603f5602e2eef00d77fbd429d34dcd5822bb301757a1bc9cdb24c670f1eb859a}"
+libiconv_version="${LIBICONV_VERSION:-1.19.1}"
+libiconv_sha256="${LIBICONV_SHA256:-9a06844846d664d7122161700c10a64480d7c7bcead3091925a785b38c91edab}"
 boost_version="${BOOST_VERSION:-1.69.0}"
 boost_version_underscore="${boost_version//./_}"
 boost_sha256="${BOOST_SHA256:-9a2c2819310839ea373f42d69e733c339b4e9a19deab6bfec448281554aa4dbb}"
 boost_libraries="${BOOST_LIBRARIES:-chrono,filesystem,program_options,system,thread,date_time,regex,serialization,locale}"
-sodium_version="${SODIUM_VERSION:-1.0.18}"
-sodium_sha256="${SODIUM_SHA256:-6f504490b342a4f8a4c4a02fc9b866cbef8622d5df4e5452b46be121e46636c1}"
-zeromq_version="${ZEROMQ_VERSION:-4.3.4}"
-zeromq_sha256="${ZEROMQ_SHA256:-c593001a89f5a85dd2ddf564805deb860e02471171b3f204944857336295c3e5}"
-expat_version="${EXPAT_VERSION:-2.6.0}"
+sodium_version="${SODIUM_VERSION:-1.0.22}"
+sodium_sha256="${SODIUM_SHA256:-adbdd8f16149e81ac6078a03aca6fc03b592b89ef7b5ed83841c086191be3349}"
+zeromq_version="${ZEROMQ_VERSION:-4.3.5}"
+zeromq_sha256="${ZEROMQ_SHA256:-6653ef5910f17954861fe72332e68b03ca6e4d9c7160eb3a8de5a5a913bfab43}"
+expat_version="${EXPAT_VERSION:-2.10.0}"
 expat_version_tag="${expat_version//./_}"
-expat_sha256="${EXPAT_SHA256:-ff60e6a6b6ce570ae012dc7b73169c7fdf4b6bf08c12ed0ec6f55736b78d85ba}"
-unbound_version="${UNBOUND_VERSION:-1.19.1}"
-unbound_sha256="${UNBOUND_SHA256:-bc1d576f3dd846a0739adc41ffaa702404c6767d2b6082deb9f2f97cbb24a3a9}"
+expat_sha256="${EXPAT_SHA256:-44e0139015f1c9908d0876b5516235136f16b14932d8f6634a16737a12742f53}"
+unbound_version="${UNBOUND_VERSION:-1.26.2}"
+unbound_sha256="${UNBOUND_SHA256:-d8ee7aa6bbb3ff1be7d9e57637d0d0ec2f18273a8efff1a0afe2c665858b96f7}"
 
 if [[ ! -f "${monero_source_dir}/contrib/depends/config.sub" ]]; then
   echo "Monero source checkout not found at ${monero_source_dir}" >&2
@@ -230,7 +230,9 @@ build_libiconv() {
       "${monero_source_dir}/contrib/depends/config.guess" \
       "${monero_source_dir}/contrib/depends/config.sub" \
       build-aux/
-    patch -p1 < "${monero_source_dir}/contrib/depends/patches/libiconv/fix-whitespace.patch"
+    if [[ "${libiconv_version}" == "1.15" ]]; then
+      patch -p1 < "${monero_source_dir}/contrib/depends/patches/libiconv/fix-whitespace.patch"
+    fi
     env \
       CC="${cc}" \
       CXX="${cxx}" \
@@ -372,7 +374,7 @@ build_sodium() {
 
   download_source \
     "${archive_name}" \
-    "https://download.libsodium.org/libsodium/releases/old/${archive_name}" \
+    "https://github.com/jedisct1/libsodium/releases/download/${sodium_version}-RELEASE/${archive_name}" \
     "${sodium_sha256}"
 
   cc="$(tool_for_label "${label}" clang)"
@@ -389,11 +391,13 @@ build_sodium() {
   echo "==> build libsodium ${sodium_version} for ${label}"
   (
     cd "${source_dir}"
-    if command -v autoconf >/dev/null 2>&1; then
+    if [[ "${sodium_version}" == "1.0.18" ]] && command -v autoconf >/dev/null 2>&1; then
       patch -p1 < "${monero_source_dir}/contrib/depends/patches/sodium/disable-glibc-getrandom-getentropy.patch"
       autoconf
     fi
-    patch -p1 < "${monero_source_dir}/contrib/depends/patches/sodium/fix-whitespace.patch"
+    if [[ "${sodium_version}" == "1.0.18" ]]; then
+      patch -p1 < "${monero_source_dir}/contrib/depends/patches/sodium/fix-whitespace.patch"
+    fi
     env \
       CC="${cc}" \
       CXX="${cxx}" \
@@ -448,7 +452,9 @@ build_zeromq() {
   echo "==> build ZeroMQ ${zeromq_version} for ${label}"
   (
     cd "${source_dir}"
-    patch -p1 < "${monero_source_dir}/contrib/depends/patches/zeromq/06aba27b04c5822cb88a69677382a0f053367143.patch"
+    if [[ "${zeromq_version}" == "4.3.4" ]]; then
+      patch -p1 < "${monero_source_dir}/contrib/depends/patches/zeromq/06aba27b04c5822cb88a69677382a0f053367143.patch"
+    fi
     env \
       CC="${cc}" \
       CXX="${cxx}" \
@@ -570,7 +576,7 @@ build_unbound() {
   echo "==> build Unbound ${unbound_version} for ${label}"
   (
     cd "${source_dir}"
-    if command -v autoconf >/dev/null 2>&1; then
+    if [[ "${unbound_version}" == "1.19.1" ]] && command -v autoconf >/dev/null 2>&1; then
       patch -p1 < "${monero_source_dir}/contrib/depends/patches/unbound/disable-glibc-reallocarray.patch"
       autoconf
     fi
@@ -593,6 +599,9 @@ build_unbound() {
       ac_cv_sizeof_size_t=8 \
       ac_cv_sizeof_unsigned_long=8 \
       ac_cv_sizeof_pthread_t=8 \
+      ac_cv_func_malloc_0_nonnull=yes \
+      ac_cv_func_realloc_0_nonnull=yes \
+      ac_cv_func_reallocarray=no \
       ./configure \
         --host="$(target_host "${label}")" \
         --prefix="${prefix}" \

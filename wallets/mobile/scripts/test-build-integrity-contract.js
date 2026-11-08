@@ -96,7 +96,7 @@ assert.match(iosBuildInstall, /MARKETING_VERSION="\$IOS_VERSION_NAME"/);
 assert.match(iosBuildInstall, /CURRENT_PROJECT_VERSION="\$IOS_BUILD_NUMBER"/);
 assert.match(
   iosBuildInstall,
-  /MONERO_WALLET_IOS_XCODEBUILD_QUIET:-1/,
+  /MONERO_WALLET_IOS_XCODEBUILD_QUIET:-0/,
 );
 assert.match(iosBuildInstall, /xcodebuild_args\+=\( -quiet \)/);
 assert.match(

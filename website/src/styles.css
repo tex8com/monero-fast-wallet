@@ -490,6 +490,7 @@ h3 { letter-spacing: -.025em; }
 .download-platform-status { margin: -5px 0 14px; padding: 4px 9px; border: 1px solid var(--line); border-radius: 999px; font-size: 10px; font-weight: 800; }
 .download-platform-status.available { color: var(--green); border-color: rgba(25,217,154,.3); background: rgba(25,217,154,.06); }
 .download-platform-status.pending { color: var(--quiet); }
+.download-platform-status.experimental { color: #ffc463; border-color: #ffc46366; background: #ffc4630f; }
 .store-badge { width: 100%; height: 84px; display: grid; place-items: center; border: 1px solid rgba(255,255,255,.08); border-radius: 15px; background: transparent; transition: .2s ease; }
 .store-badge { opacity: .72; cursor: default; }
 .store-badge.is-live { opacity: 1; cursor: pointer; }
